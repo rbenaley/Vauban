@@ -154,6 +154,9 @@ pub struct CreateAssetWebForm {
     /// `kerberos_restricted_admin`. Stored as
     /// `connection_config.rdp_auth_mode`. Ignored for non-RDP assets.
     pub rdp_auth_mode: Option<String>,
+    /// MCP upstream SPKI pin (`SHA256:<base64>`), stored as
+    /// `connection_config.mcp_upstream_tls_spki`. Ignored for non-MCP assets.
+    pub mcp_tls_spki: Option<String>,
     /// Hop-2 transport for an MCP asset: `direct` or `tunnel`.
     pub mcp_transport: Option<String>,
 }
@@ -399,6 +402,12 @@ pub async fn create_asset_web(
         eff_public_key.as_deref(),
         form.rdp_auth_mode.as_deref(),
     );
+    if parsed_asset_type == crate::models::asset::AssetType::Mcp
+        && let Err(msg) =
+            super::apply_mcp_tls_spki(&mut connection_config, form.mcp_tls_spki.as_deref())
+    {
+        return flash_redirect(flash.error(msg), &create_form_draft_path(&form));
+    }
     apply_mcp_transport(
         &mut connection_config,
         parsed_asset_type,
@@ -1320,6 +1329,23 @@ pub async fn asset_edit(
             .get("rdp_auth_mode")
             .and_then(|v| v.as_str()),
     );
+    let mcp_tls_spki = asset_connection_config
+        .get("mcp_upstream_tls_spki")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let mcp_tools = crate::services::mcp_discover::catalog_from_config(&asset_connection_config)
+        .iter()
+        .map(|t| crate::templates::assets::asset_edit::McpToolRow::from_tool(t, browser_tz.0))
+        .collect();
+    let mcp_instructions =
+        crate::services::mcp_discover::instructions_from_config(&asset_connection_config)
+            .as_ref()
+            .map(|e| {
+                crate::templates::assets::asset_edit::McpInstructionsRow::from_entry(
+                    e,
+                    browser_tz.0,
+                )
+            });
 
     let asset = crate::templates::assets::asset_edit::AssetEdit {
         uuid: asset_uuid_val.to_string(),
@@ -1343,6 +1369,17 @@ pub async fn asset_edit(
         rdp_server_cert_fingerprint,
         rdp_domain,
         rdp_auth_mode,
+        mcp_tls_spki,
+        mcp_transport: match asset_connection_config
+            .get("transport")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+        {
+            Some("tunnel") => "tunnel".to_string(),
+            _ => "direct".to_string(),
+        },
+        mcp_tools,
+        mcp_instructions,
     };
 
     let base = BaseTemplate::new(
@@ -1405,6 +1442,9 @@ pub struct UpdateAssetForm {
     pub rdp_auth_mode: Option<String>,
     /// Present on IACS asset edits; selects the industrial protocol.
     pub asset_type: Option<String>,
+    /// MCP upstream SPKI pin (see `CreateAssetWebForm::mcp_tls_spki`).
+    /// Blank keeps the stored pin.
+    pub mcp_tls_spki: Option<String>,
 }
 
 /// Form data for deleting an asset (admin web form).
@@ -1753,6 +1793,16 @@ pub async fn update_asset_web(
         eff_update_public_key.as_deref(),
         form.rdp_auth_mode.as_deref(),
     );
+    if effective_asset_type == crate::models::asset::AssetType::Mcp
+        && let Err(msg) =
+            super::apply_mcp_tls_spki(&mut connection_config, form.mcp_tls_spki.as_deref())
+    {
+        return htmx_or_flash_redirect(
+            &headers,
+            flash.error(msg),
+            &format!("/assets/manage/{asset_uuid}/edit"),
+        );
+    }
     apply_mcp_transport(
         &mut connection_config,
         effective_asset_type,
@@ -1788,6 +1838,14 @@ pub async fn update_asset_web(
     let actor_id =
         crate::services::audit_authors::resolve_actor_id(&mut conn, &auth_user.uuid).await;
 
+    let mcp_upstream_moved = crate::services::mcp_session::mcp_upstream_moved(
+        &existing,
+        effective_asset_type,
+        form.hostname.trim(),
+        form.port,
+        &connection_config,
+    );
+
     let result = diesel::update(a::assets.filter(a::uuid.eq(asset_uuid)))
         .set((
             a::name.eq(&sanitized_name),
@@ -1814,6 +1872,20 @@ pub async fn update_asset_web(
                 )
                 .user(auth_user.uuid.clone()),
             );
+            if mcp_upstream_moved {
+                crate::services::session_termination::end_visits_on_reconfigured_asset(
+                    &state,
+                    existing.id,
+                )
+                .await;
+            }
+            crate::services::mcp_rule_prune::prune_after_asset_change(
+                &state,
+                &mut conn,
+                existing.id,
+                "asset_updated",
+            )
+            .await;
             htmx_or_flash_redirect(
                 &headers,
                 flash.success("Asset updated successfully"),
@@ -1948,70 +2020,76 @@ pub async fn delete_asset_web(
     let now = Utc::now();
     // Issue #22 — re-stamp `updated_by_id` on soft-delete: the
     // tombstone's audit pair must reflect the operator that
-    // performed the deletion, not the original creator. Resolved
-    // outside the transaction so we never block the row write on
-    // a `users` lookup latency. Best-effort: a `None` collapses
+    // performed the deletion, not the original creator. Best-effort: a `None` collapses
     // to the muted em-dash on the `/assets/manage/deleted` page.
     let actor_id =
         crate::services::audit_authors::resolve_actor_id(&mut conn, &auth_user.uuid).await;
-    let result = conn
-        .transaction::<Vec<i32>, diesel::result::Error, _>(|conn| {
-            Box::pin(async move {
-                diesel::update(a::assets.filter(a::id.eq(asset_id)))
-                    .set((
-                        a::is_deleted.eq(true),
-                        a::deleted_at.eq(now),
-                        a::updated_at.eq(now),
-                        a::updated_by_id.eq(actor_id),
-                        a::connection_config.eq(serde_json::json!({})),
-                    ))
-                    .execute(conn)
-                    .await?;
-
-                // Returning ids lets us schedule per-session
-                // hydration AFTER the transaction commits (issue
-                // #29 v1.4 PRIMARY path).
-                let terminated_ids: Vec<i32> = diesel::update(
-                    ps::proxy_sessions
-                        .filter(ps::asset_id.eq(asset_id))
-                        .filter(ps::status.eq("active")),
-                )
-                .set((
-                    ps::status.eq("terminated"),
-                    ps::disconnected_at.eq(now),
-                    ps::updated_at.eq(now),
-                ))
-                .returning(ps::id)
-                .get_results(conn)
-                .await?;
-
-                Ok(terminated_ids)
-            })
-        })
-        .await;
+    let asset_groups_before =
+        match crate::services::mcp_rule_prune::asset_group_ids_of(&mut conn, asset_id).await {
+            Ok(groups) => groups,
+            Err(e) => {
+                tracing::error!(asset_id, error = %e, "asset delete: asset groups lookup failed");
+                return htmx_or_flash_redirect(
+                    &headers,
+                    flash.error("Failed to delete asset. Please try again."),
+                    &format!("/assets/manage/{}", asset_uuid),
+                );
+            }
+        };
+    let result = diesel::update(
+        a::assets
+            .filter(a::id.eq(asset_id))
+            .filter(a::is_deleted.eq(false)),
+    )
+    .set((
+        a::is_deleted.eq(true),
+        a::deleted_at.eq(now),
+        a::updated_at.eq(now),
+        a::updated_by_id.eq(actor_id),
+        a::connection_config.eq(serde_json::json!({})),
+    ))
+    .execute(&mut conn)
+    .await;
 
     match result {
-        Ok(terminated_ids) => {
-            for sid in terminated_ids {
-                std::mem::drop(crate::services::recording_hydrator::enqueue_hydration(
-                    &state,
-                    sid,
-                    std::time::Duration::from_secs(
-                        state.config.recording.hydration_enqueue_delay_secs,
-                    ),
-                ));
+        Ok(_) => {
+            // The tombstone is committed first so no new visit can open on
+            // the asset; then every open visit (live or suspended, any
+            // protocol) is ended in the database AND in its proxy. A DB flip
+            // alone leaves proxy-mcp relaying until the ticket expires.
+            if let Err(e) = crate::services::session_termination::terminate_open_sessions_on_asset(
+                &state,
+                asset_id,
+                crate::services::session_termination::REASON_ASSET_DELETED,
+            )
+            .await
+            {
+                tracing::error!(
+                    asset_id,
+                    error = %e,
+                    "asset delete: could not list open sessions to end; the recheck will retry"
+                );
             }
 
             if let Err(err) = diesel::update(
                 ps::proxy_sessions
                     .filter(ps::asset_id.eq(asset_id))
-                    .filter(ps::status.eq_any(vec!["pending", "connecting"])),
+                    .filter(ps::status.eq("pending")),
             )
             .set((ps::status.eq("orphaned"), ps::updated_at.eq(now)))
             .execute(&mut conn)
             .await
             {
                 tracing::error!("Failed to orphan approvals after delete: {}", err);
+            }
+
+            if asset_type_val == AssetType::Mcp {
+                crate::services::mcp_rule_prune::prune_after_change(
+                    &state,
+                    asset_groups_before,
+                    "asset_deleted",
+                )
+                .await;
             }
 
             crate::services::emit_audit(

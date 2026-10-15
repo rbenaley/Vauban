@@ -26,6 +26,7 @@ impl RecordingData {
         match self.session_type.as_str() {
             "ssh" => "bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300",
             "rdp" => "bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300",
+            "mcp" => "bg-orange-100 text-orange-800 dark:bg-orange-900/50 dark:text-orange-300",
             _ => "bg-gray-100 text-gray-800 dark:bg-gray-900/50 dark:text-gray-300",
         }
     }
@@ -33,6 +34,17 @@ impl RecordingData {
     /// Check if this is an SSH session (terminal replay).
     pub fn is_ssh(&self) -> bool {
         self.session_type == "ssh"
+    }
+
+    /// MCP sessions mirror events into asciicast v2 (`session.cast`) for the
+    /// same player as SSH (JSONL remains the integrity SoT).
+    pub fn is_mcp(&self) -> bool {
+        self.session_type == "mcp"
+    }
+
+    /// Asciinema player path (SSH PTY cast or MCP json-events cast).
+    pub fn uses_asciinema(&self) -> bool {
+        self.is_ssh() || self.is_mcp()
     }
 
     /// Check if this is an RDP session (video replay).
@@ -96,6 +108,78 @@ mod tests {
     fn test_type_class_rdp() {
         let data = create_test_recording_data("rdp");
         assert!(data.type_class().contains("blue"));
+    }
+
+    #[test]
+    fn test_type_class_mcp() {
+        let data = create_test_recording_data("mcp");
+        assert!(data.type_class().contains("orange"));
+    }
+
+    #[test]
+    fn test_mcp_uses_asciinema_not_video() {
+        let data = create_test_recording_data("mcp");
+        assert!(data.is_mcp());
+        assert!(data.uses_asciinema());
+        assert!(!data.is_ssh());
+        assert!(!data.is_graphical());
+        assert!(create_test_recording_data("ssh").uses_asciinema());
+        assert!(!create_test_recording_data("rdp").uses_asciinema());
+    }
+
+    fn render(rec: RecordingData) -> String {
+        use crate::templates::base::{UserContext, VaubanConfig};
+        RecordingPlayTemplate {
+            title: "Recording".to_string(),
+            user: Some(UserContext {
+                uuid: "admin".to_string(),
+                username: "admin".to_string(),
+                display_name: "Admin".to_string(),
+                is_superuser: true,
+                is_staff: false,
+            }),
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+                ..Default::default()
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            recording: rec,
+        }
+        .render()
+        .unwrap()
+    }
+
+    #[test]
+    fn test_mcp_recording_renders_asciinema_player() {
+        // MCP recording dirs end with `/` like segmented RDP ones: the type
+        // must win over the path shape.
+        let mut rec = create_test_recording_data("mcp");
+        rec.recording_path = Some("recordings/2026/10/uuid-mcp/".to_string());
+        let html = render(rec);
+        assert!(html.contains("asciinema-player.min.js"));
+        assert!(html.contains("asciinema-init.js"));
+        assert!(html.contains("data-src=\"/recordings/session-uuid/session.cast\""));
+        assert!(
+            !html.contains("<video"),
+            "MCP must not fall into the RDP video player"
+        );
+        assert!(!html.contains("shaka-player"));
+        assert!(!html.contains("manifest.mpd"));
+    }
+
+    #[test]
+    fn test_mcp_recording_unavailable_renders_fallback() {
+        let mut rec = create_test_recording_data("mcp");
+        rec.recording_path = None;
+        let html = render(rec);
+        assert!(html.contains("Asciicast recording not available"));
+        assert!(!html.contains("<video"));
+        assert!(!html.contains("data-src="));
     }
 
     #[test]
@@ -375,7 +459,7 @@ mod tests {
 
         let html = template.render().unwrap();
         assert!(
-            html.contains("SSH Recording not available"),
+            html.contains("Asciicast recording not available"),
             "unavailable SSH should show fallback message"
         );
         assert!(

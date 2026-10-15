@@ -28,10 +28,10 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 tokio-rustls = "0.26"
 base64 = "0.22"
-
-hyper = { version = "1", features = ["server", "http1"] }
+hyper = { version = "1.8", features = ["client", "server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "service"] }
 http-body-util = "0.1"
+bytes = "1"
 
 [dev-dependencies]
 shared = { workspace = true, features = ["test-seams", "json-redact", "access-guard", "session-token", "tls-pin"] }
@@ -39,3 +39,4 @@ proptest = "1"
 tokio = { workspace = true, features = ["test-util"] }
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

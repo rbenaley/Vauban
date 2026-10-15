@@ -70,7 +70,9 @@ struct McpJsonlMeta {
     blake3_hex: String,
     total_bytes: u64,
     duration_ms: u64,
-    event_count: u64,
+    /// vauban-proxy-mcp writes `total_events` in `meta.json`.
+    #[serde(alias = "event_count")]
+    total_events: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -494,7 +496,7 @@ pub fn parse_meta(session_kind: SessionKind, buf: &str) -> Result<IntegrityBundl
                 blake3_hex: meta.blake3_hex,
                 size_bytes: meta.total_bytes as i64,
                 duration_ms: meta.duration_ms as i64,
-                event_count: Some(meta.event_count as i32),
+                event_count: Some(meta.total_events as i32),
                 format,
                 width: 0,
                 height: 0,
@@ -641,6 +643,28 @@ mod tests {
             },
         ];
         assert_ne!(aggregate_rdp_blake3(&a), aggregate_rdp_blake3(&b));
+    }
+
+    #[test]
+    fn test_parse_meta_mcp_proxy_shape() {
+        let json = r#"{
+            "blake3_hex": "4cad24c50f7fdbce88c18387664e9f92c98444f2036b51b9c21c93ceda5ae8f8",
+            "cast_blake3_hex": "a00ae25d5251ba640d8522dbba2b68383411fb1deb8e6d2913895f14fa009db1",
+            "cast_path": "2026/10/ed8ccf90-e71c-4574-b039-3151c58f5b11/session.cast",
+            "duration_ms": 1006,
+            "equivalence_verified": true,
+            "format": "mcp-jsonl-v1",
+            "partial": false,
+            "payload_encoding": "json-events-v1",
+            "playback": "asciicast-v2",
+            "total_bytes": 743,
+            "total_events": 4
+        }"#;
+        let bundle = parse_meta(SessionKind::Mcp, json).unwrap();
+        assert_eq!(bundle.format, FORMAT_MCP_JSONL);
+        assert_eq!(bundle.size_bytes, 743);
+        assert_eq!(bundle.duration_ms, 1006);
+        assert_eq!(bundle.event_count, Some(4));
     }
 
     #[test]

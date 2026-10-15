@@ -29,4 +29,17 @@ if ! awk '/^lint:/{p=1;next} p && /^[a-zA-Z]/{exit} p' "${JUST}" | grep -q 'path
     exit 1
 fi
 
-echo "[lint] just validate is wired to just lint"
+# MCP packaging dry-check (Mac-safe). Live FreeBSD A–C stays in the staging runbook.
+if ! awk '/^validate:/{p=1;next} p && /^[a-zA-Z]/{exit} p' "${JUST}" | grep -q 'just check-mcp-pkg'; then
+    echo "[lint] just validate must run \`just check-mcp-pkg\`" >&2
+    exit 1
+fi
+
+# Feature-gated MCP suites (shared `required-features`) never run under
+# `just test`; the pyramid recipe is the only place they run.
+if ! awk '/^validate:/{p=1;next} p && /^[a-zA-Z]/{exit} p' "${JUST}" | grep -q 'just test-mcp-pyramid'; then
+    echo "[lint] just validate must run \`just test-mcp-pyramid\`" >&2
+    exit 1
+fi
+
+echo "[lint] just validate is wired to just lint + test-mcp-pyramid + check-mcp-pkg"

@@ -39,7 +39,9 @@ pub async fn suspend_mcp_session(
     };
     proxy.suspend_session(&sid, reason, actor_user_id)?;
 
-    let updated = set_status(state, session.uuid, SessionStatus::Suspended).await?;
+    let updated = set_status_if_open(state, session.uuid, SessionStatus::Suspended)
+        .await?
+        .ok_or_else(|| AppError::Validation("session ended while suspending".into()))?;
     notify_mcp_session_state(state, &sid, "suspended", reason, updated.user_id).await;
     Ok(updated)
 }
@@ -68,7 +70,9 @@ pub async fn resume_mcp_session(
     };
     proxy.resume_session(&sid, actor_user_id)?;
 
-    let updated = set_status(state, session.uuid, SessionStatus::Active).await?;
+    let updated = set_status_if_open(state, session.uuid, SessionStatus::Active)
+        .await?
+        .ok_or_else(|| AppError::Validation("session ended while resuming".into()))?;
     notify_mcp_session_state(state, &sid, "active", "resume", updated.user_id).await;
     Ok(updated)
 }
@@ -93,32 +97,29 @@ fn ensure_mcp(session: &ProxySession) -> AppResult<()> {
     Ok(())
 }
 
-async fn set_status(
+/// Moves a session that is still live or suspended, in one statement, so
+/// a notify or control racing a termination cannot bring an ended session
+/// back. `None` when nothing moved.
+async fn set_status_if_open(
     state: &AppState,
     session_uuid: Uuid,
     status: SessionStatus,
-) -> AppResult<ProxySession> {
+) -> AppResult<Option<ProxySession>> {
     let mut conn = state
         .db_pool
         .get()
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {e}")))?;
-    diesel::update(proxy_sessions.filter(uuid_col.eq(session_uuid)))
-        .set(status_col.eq(status.as_str()))
-        .execute(&mut conn)
-        .await
-        .map_err(AppError::Database)?;
-    let updated: ProxySession = proxy_sessions
-        .filter(uuid_col.eq(session_uuid))
-        .first(&mut conn)
-        .await
-        .map_err(AppError::Database)?;
-    info!(
-        session_id = %session_uuid,
-        status = status.as_str(),
-        "MCP session status updated"
-    );
-    Ok(updated)
+    diesel::update(
+        proxy_sessions
+            .filter(uuid_col.eq(session_uuid))
+            .filter(status_col.eq_any(SessionStatus::OPEN_AS_STR)),
+    )
+    .set(status_col.eq(status.as_str()))
+    .get_result::<ProxySession>(&mut conn)
+    .await
+    .optional()
+    .map_err(AppError::Database)
 }
 
 /// Apply proxy→web `McpSessionStateNotify` (envelope auto-suspend / resume).
@@ -139,7 +140,15 @@ pub async fn apply_proxy_state_notify(
             )));
         }
     };
-    let updated = set_status(state, session_uuid, target).await?;
+    let Some(updated) = set_status_if_open(state, session_uuid, target).await? else {
+        info!(
+            session_id = %session_id,
+            status = status,
+            reason = reason,
+            "MCP proxy state notify ignored: session already ended"
+        );
+        return Ok(());
+    };
     info!(
         session_id = %session_id,
         status = status,

@@ -11,7 +11,6 @@
 )]
 
 use super::*;
-use anyhow::anyhow;
 use std::sync::Arc;
 
 fn rb() -> (McpUpstreamRebroker, mpsc::UnboundedReceiver<Message>) {
@@ -29,28 +28,6 @@ fn block_on<F: std::future::Future>(fut: F) -> F::Output {
         .build()
         .unwrap()
         .block_on(fut)
-}
-
-#[test]
-fn dead_pipe_detects_header_eof_and_epipe() {
-    assert!(is_dead_upstream_io(&anyhow!(
-        "upstream closed before HTTP headers"
-    )));
-    assert!(is_dead_upstream_io(&anyhow!("Broken pipe (os error 32)")));
-    assert!(is_dead_upstream_io(&anyhow!("Connection reset by peer")));
-    assert!(!is_dead_upstream_io(&anyhow!("upstream JSON body")));
-    assert!(!is_dead_upstream_io(&anyhow!("HTTP headers too large")));
-    for kind in [
-        io::ErrorKind::BrokenPipe,
-        io::ErrorKind::ConnectionReset,
-        io::ErrorKind::UnexpectedEof,
-        io::ErrorKind::ConnectionAborted,
-    ] {
-        let e = io::Error::new(kind, "peer");
-        assert!(is_dead_upstream_io(&e.into()), "{kind:?} must be dead-pipe");
-    }
-    let other = io::Error::other("not a pipe");
-    assert!(!is_dead_upstream_io(&other.into()));
 }
 
 #[test]

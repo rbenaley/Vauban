@@ -321,3 +321,215 @@ async fn mcp_create_validation_error_repopulates_non_secret_fields() {
         "create form must not echo the submitted secret"
     );
 }
+
+/// ADR 010: the MCP create form stores the upstream SPKI pin and refuses a
+/// malformed one with a visible error.
+#[tokio::test]
+#[serial]
+async fn mcp_create_stores_tls_pin_and_rejects_malformed() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("mcp_pin")).await;
+    let csrf = app.generate_csrf_token();
+    let pin = format!("SHA256:{}=", "A".repeat(43));
+
+    let host_ok = format!("{}.mcp-pin.test", unique_name("up"));
+    let name_ok = unique_name("mcp-pin-ok");
+    let ok = app
+        .server
+        .post("/assets/manage/new")
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("name", name_ok.as_str()),
+            ("hostname", host_ok.as_str()),
+            ("port", "19001"),
+            ("asset_type", "mcp"),
+            ("status", "online"),
+            ("mcp_tls_spki", pin.as_str()),
+        ])
+        .await;
+    let ok_loc = ok
+        .headers()
+        .get(LOCATION)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(matches!(ok.status_code().as_u16(), 302 | 303));
+    let ok_flash = extract_flash_cookie(&ok).unwrap_or_default();
+    let asset = read_asset_by_hostname(&mut conn, &host_ok)
+        .await
+        .unwrap_or_else(|| panic!("MCP asset with pin must be persisted: {ok_loc} {ok_flash}"));
+    assert_eq!(
+        asset.connection_config["mcp_upstream_tls_spki"].as_str(),
+        Some(pin.as_str())
+    );
+
+    let edit_url = format!("/assets/manage/{}/edit", asset.uuid);
+    let edit = app
+        .server
+        .post(&edit_url)
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("name", name_ok.as_str()),
+            ("hostname", host_ok.as_str()),
+            ("port", "19001"),
+            ("status", "online"),
+            ("mcp_tls_spki", "SHA256:short"),
+        ])
+        .await;
+    let edit_loc = edit
+        .headers()
+        .get(LOCATION)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert_eq!(edit_loc, edit_url, "malformed pin on edit must bounce back");
+    let edit_flash = extract_flash_cookie(&edit).expect("edit must flash the pin error");
+    let edit_page = app
+        .server
+        .get(&edit_url)
+        .add_header(
+            COOKIE,
+            format!("access_token={}; {}", admin.token, edit_flash),
+        )
+        .await
+        .text();
+    assert!(
+        edit_page.contains("MCP upstream TLS pin must be SHA256:"),
+        "edit flash must explain the pin format"
+    );
+    let unchanged = read_asset_by_hostname(&mut conn, &host_ok)
+        .await
+        .expect("asset");
+    assert_eq!(
+        unchanged.connection_config["mcp_upstream_tls_spki"].as_str(),
+        Some(pin.as_str()),
+        "rejected edit must keep the stored pin"
+    );
+
+    let new_pin = format!("SHA256:{}A=", "B".repeat(42));
+    let rotated = app
+        .server
+        .post(&edit_url)
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("name", name_ok.as_str()),
+            ("hostname", host_ok.as_str()),
+            ("port", "19001"),
+            ("status", "online"),
+            ("mcp_tls_spki", new_pin.as_str()),
+        ])
+        .await;
+    assert!(matches!(rotated.status_code().as_u16(), 302 | 303));
+    let rotated_asset = read_asset_by_hostname(&mut conn, &host_ok)
+        .await
+        .expect("asset");
+    assert_eq!(
+        rotated_asset.connection_config["mcp_upstream_tls_spki"].as_str(),
+        Some(new_pin.as_str()),
+        "valid pin on edit must replace the stored one"
+    );
+
+    let host_bad = format!("{}.mcp-pin-bad.test", unique_name("up"));
+    let name_bad = unique_name("mcp-pin-bad");
+    let bad = app
+        .server
+        .post("/assets/manage/new")
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("name", name_bad.as_str()),
+            ("hostname", host_bad.as_str()),
+            ("port", "19001"),
+            ("asset_type", "mcp"),
+            ("status", "online"),
+            ("mcp_tls_spki", "SHA256:short"),
+        ])
+        .await;
+    let location = bad
+        .headers()
+        .get(LOCATION)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(location.starts_with("/assets/manage/new?"), "{location}");
+    assert!(read_asset_by_hostname(&mut conn, &host_bad).await.is_none());
+    let flash = extract_flash_cookie(&bad).expect("malformed pin must set a flash");
+    let form = app
+        .server
+        .get(&location)
+        .add_header(COOKIE, format!("access_token={}; {}", admin.token, flash))
+        .await;
+    let body = form.text();
+    assert!(
+        body.contains("MCP upstream TLS pin must be SHA256:"),
+        "malformed pin flash must be visible; got: {}",
+        &body[..body.len().min(1500)]
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn create_form_mcp_has_tls_pin_field() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("mcp_pin_ui")).await;
+    let response = app
+        .server
+        .get("/assets/manage/new")
+        .add_header(COOKIE, format!("access_token={}", admin.token))
+        .await;
+    assert_status(&response, 200);
+    let body = response.text();
+    assert!(
+        body.contains("name=\"mcp_tls_spki\""),
+        "MCP create form must expose the SPKI pin input"
+    );
+}
+
+/// The edit page preselects the stored MCP transport: saving the form
+/// unchanged must not turn a tunnel asset back into a direct one.
+#[tokio::test]
+#[serial]
+async fn mcp_edit_page_preselects_the_stored_transport() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("mcp_tr_edit")).await;
+    for (transport, other) in [("tunnel", "direct"), ("direct", "tunnel")] {
+        let asset: Asset = diesel::insert_into(assets::table)
+            .values(&vauban_web::models::asset::NewAsset {
+                uuid: Uuid::new_v4(),
+                name: unique_name("mcp-tr-edit"),
+                hostname: format!("{}.mcp.test", unique_name("up")),
+                port: 19001,
+                asset_type: AssetType::Mcp,
+                status: "online".into(),
+                description: None,
+                connection_config: serde_json::json!({ "transport": transport }),
+                created_by_id: None,
+                updated_by_id: None,
+                connection_username: String::new(),
+            })
+            .get_result(&mut conn)
+            .await
+            .unwrap();
+        let page = app
+            .server
+            .get(&format!("/assets/manage/{}/edit", asset.uuid))
+            .add_header(COOKIE, format!("access_token={}", admin.token))
+            .await
+            .text();
+        assert!(
+            page.contains(&format!(r#"<option value="{transport}" selected>"#)),
+            "{transport} must be preselected"
+        );
+        assert!(
+            !page.contains(&format!(r#"<option value="{other}" selected>"#)),
+            "{other} must not be preselected"
+        );
+    }
+    crate::common::test_db::cleanup(&mut conn).await;
+}

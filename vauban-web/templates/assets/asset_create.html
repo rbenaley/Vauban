@@ -189,6 +189,23 @@
             </div>
         </div>
 
+        {# MCP upstreams are always HTTPS, loopback included (ADR 010):
+           sessions and discover refuse an asset without this pin. #}
+        <div x-show="isMcp" x-cloak class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+            <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+                <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Upstream TLS</h3>
+            </div>
+            <div class="px-4 py-5 sm:p-6">
+                <label for="mcp_tls_spki" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Server SPKI pin</label>
+                <input type="text" name="mcp_tls_spki" id="mcp_tls_spki" autocomplete="off" spellcheck="false"
+                       class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm font-mono"
+                       maxlength="64" placeholder="SHA256:base64-of-the-SPKI-digest">
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    <code>SHA256:</code> + base64 of the SHA-256 of the MCP server's SubjectPublicKeyInfo. Vauban connects to the upstream in HTTPS only; sessions and tool discovery are refused until a pin is set.
+                </p>
+            </div>
+        </div>
+
         <div x-show="isMcp" x-cloak class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
             <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
                 <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">MCP transport</h3>

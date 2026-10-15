@@ -51,11 +51,14 @@ pub struct McpAccessRuleForm {
     pub priority: String,
     /// Product default `suspend_group` (see [`Default`]).
     pub mcp_drift_iam: String,
+    /// Edited rule (empty on create): the matrix reload keeps its modes.
+    pub rule_uuid: String,
 }
 
 impl Default for McpAccessRuleForm {
     fn default() -> Self {
         Self {
+            rule_uuid: String::new(),
             name: String::new(),
             description: String::new(),
             user_group_id: String::new(),
@@ -67,6 +70,13 @@ impl Default for McpAccessRuleForm {
             mcp_drift_iam: shared::mcp_drift_iam::default_mcp_drift_iam(),
         }
     }
+}
+
+/// The tool matrix alone, swapped in when the asset group changes.
+#[derive(Template)]
+#[template(path = "mcp/access_matrix.html")]
+pub struct McpAccessMatrixTemplate {
+    pub sections: Vec<McpMatrixSection>,
 }
 
 #[derive(Template)]

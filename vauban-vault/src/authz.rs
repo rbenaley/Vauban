@@ -32,13 +32,16 @@
 //!   a submitted code.
 //! - `proxy_ssh`: Decrypt{credentials} (read-only).
 //! - `proxy_rdp`: Decrypt{credentials} (read-only).
+//! - `proxy_mcp`: Decrypt{credentials} (read-only). Materialises the MCP
+//!   upstream bearer from the asset `credential_blob` at session open and at
+//!   admin Discover; web never forwards it in clear.
 //! - `audit`: Decrypt{audit} ONLY. The audit service unseals its Ed25519
 //!   signing-key seed at boot from the dedicated `audit` key domain; it can do
 //!   nothing else (no Encrypt, no credentials/mfa, no Mfa* verb).
 //! - `supervisor`: NOTHING. The supervisor channel is control-only.
 //! - unknown label / any other couple: NOTHING.
 //!
-//! The matrix is forward-looking: `auth` / `proxy_ssh` / `proxy_rdp` do not
+//! `proxy_mcp` is a live client. `auth` / `proxy_ssh` / `proxy_rdp` do not
 //! send vault traffic yet (web decrypts and forwards plaintext over its own
 //! peer pipe), but their least-privilege grant is pre-declared so wiring them
 //! later does not require relaxing the vault.
@@ -61,6 +64,8 @@ pub enum VaultPeer {
     ProxySsh,
     /// vauban-proxy-rdp: read-only credential decryption.
     ProxyRdp,
+    /// vauban-proxy-mcp: read-only credential decryption (upstream bearer).
+    ProxyMcp,
     /// vauban-audit: read-only decryption of the `audit` domain ONLY (unseals
     /// the Ed25519 signing-key seed for the tamper-evident WORM log).
     Audit,
@@ -72,7 +77,7 @@ impl VaultPeer {
     /// Number of `VaultPeer` variants. Kept in lock-step with the enum by
     /// `count_matches_all_variants`; consumed by the drift tests.
     #[allow(dead_code)]
-    pub const COUNT: usize = 6;
+    pub const COUNT: usize = 7;
 
     /// All variants, for table-driven tests and drift checks.
     #[allow(dead_code)]
@@ -81,6 +86,7 @@ impl VaultPeer {
         VaultPeer::Auth,
         VaultPeer::ProxySsh,
         VaultPeer::ProxyRdp,
+        VaultPeer::ProxyMcp,
         VaultPeer::Audit,
         VaultPeer::Supervisor,
     ];
@@ -89,7 +95,8 @@ impl VaultPeer {
     ///
     /// Returns `None` for any unknown label (treated as a hard deny by the
     /// caller). The labels MUST match the `peer_channels` names set in
-    /// `main.rs` (`"web"`, `"auth"`, `"proxy_ssh"`, `"proxy_rdp"`).
+    /// `main.rs` (`"web"`, `"auth"`, `"proxy_ssh"`, `"proxy_rdp"`,
+    /// `"proxy_mcp"`, `"audit"`).
     /// `Supervisor` is intentionally NOT reachable from a label: it is only
     /// minted directly for the supervisor control channel.
     #[must_use]
@@ -99,6 +106,7 @@ impl VaultPeer {
             "auth" => Some(VaultPeer::Auth),
             "proxy_ssh" => Some(VaultPeer::ProxySsh),
             "proxy_rdp" => Some(VaultPeer::ProxyRdp),
+            "proxy_mcp" => Some(VaultPeer::ProxyMcp),
             "audit" => Some(VaultPeer::Audit),
             _ => None,
         }
@@ -112,6 +120,7 @@ impl VaultPeer {
             VaultPeer::Auth => "auth",
             VaultPeer::ProxySsh => "proxy_ssh",
             VaultPeer::ProxyRdp => "proxy_rdp",
+            VaultPeer::ProxyMcp => "proxy_mcp",
             VaultPeer::Audit => "audit",
             VaultPeer::Supervisor => "supervisor",
         }
@@ -156,6 +165,7 @@ pub fn is_authorized(peer: VaultPeer, msg: &Message) -> bool {
         // ---- proxies: read-only credential decryption ----
         (VaultPeer::ProxySsh, Message::VaultDecrypt { domain, .. }) => domain == DOMAIN_CREDENTIALS,
         (VaultPeer::ProxyRdp, Message::VaultDecrypt { domain, .. }) => domain == DOMAIN_CREDENTIALS,
+        (VaultPeer::ProxyMcp, Message::VaultDecrypt { domain, .. }) => domain == DOMAIN_CREDENTIALS,
 
         // ---- audit: read-only decryption of the audit signing-key seed ----
         (VaultPeer::Audit, Message::VaultDecrypt { domain, .. }) => domain == DOMAIN_AUDIT,
@@ -276,7 +286,7 @@ mod tests {
                 _ => false,
             },
             VaultPeer::Auth => verb == "MfaVerify",
-            VaultPeer::ProxySsh | VaultPeer::ProxyRdp => {
+            VaultPeer::ProxySsh | VaultPeer::ProxyRdp | VaultPeer::ProxyMcp => {
                 verb == "Decrypt" && domain == "credentials"
             }
             VaultPeer::Audit => verb == "Decrypt" && domain == "audit",
@@ -348,6 +358,7 @@ mod tests {
             VaultPeer::Auth,
             VaultPeer::ProxySsh,
             VaultPeer::ProxyRdp,
+            VaultPeer::ProxyMcp,
             VaultPeer::Audit,
             VaultPeer::Supervisor,
         ] {
@@ -383,7 +394,11 @@ mod tests {
     /// SECURITY: proxies are read-only on credentials and nothing else.
     #[test]
     fn proxies_are_credentials_read_only() {
-        for peer in [VaultPeer::ProxySsh, VaultPeer::ProxyRdp] {
+        for peer in [
+            VaultPeer::ProxySsh,
+            VaultPeer::ProxyRdp,
+            VaultPeer::ProxyMcp,
+        ] {
             assert!(is_authorized(peer, &decrypt("credentials")));
             assert!(!is_authorized(peer, &decrypt("mfa")));
             assert!(!is_authorized(peer, &encrypt("credentials")));
@@ -423,6 +438,10 @@ mod tests {
             Some(VaultPeer::ProxyRdp)
         );
         assert_eq!(
+            VaultPeer::from_channel_label("proxy_mcp"),
+            Some(VaultPeer::ProxyMcp)
+        );
+        assert_eq!(
             VaultPeer::from_channel_label("audit"),
             Some(VaultPeer::Audit)
         );
@@ -455,12 +474,72 @@ mod tests {
             VaultPeer::Auth,
             VaultPeer::ProxySsh,
             VaultPeer::ProxyRdp,
+            VaultPeer::ProxyMcp,
             VaultPeer::Supervisor,
         ] {
             assert!(
                 !is_authorized(peer, &decrypt("audit")),
                 "peer {peer:?} must not decrypt the audit domain"
             );
+        }
+    }
+
+    /// The MCP proxy decrypts the upstream bearer itself: without this
+    /// grant every MCP asset with a secret fails open/discover.
+    #[test]
+    fn proxy_mcp_decrypts_credentials_only() {
+        assert_eq!(
+            VaultPeer::from_channel_label("proxy_mcp"),
+            Some(VaultPeer::ProxyMcp)
+        );
+        assert!(is_authorized(VaultPeer::ProxyMcp, &decrypt("credentials")));
+        for domain in ["mfa", "audit", "secrets", "unknown"] {
+            assert!(!is_authorized(VaultPeer::ProxyMcp, &decrypt(domain)));
+        }
+        assert!(!is_authorized(VaultPeer::ProxyMcp, &encrypt("credentials")));
+        assert!(!is_authorized(VaultPeer::ProxyMcp, &mfa_generate()));
+        assert!(!is_authorized(VaultPeer::ProxyMcp, &mfa_verify()));
+        assert!(!is_authorized(VaultPeer::ProxyMcp, &mfa_get_secret()));
+    }
+
+    #[test]
+    fn denied_response_and_verb_cover_every_mfa_verb() {
+        match denied_response(&mfa_generate()) {
+            Some(Message::VaultMfaGenerateResponse {
+                request_id: 3,
+                encrypted_secret: None,
+                plaintext_secret: None,
+                error: Some(_),
+            }) => {}
+            other => panic!("expected denied MfaGenerateResponse, got {other:?}"),
+        }
+        match denied_response(&mfa_verify()) {
+            Some(Message::VaultMfaVerifyResponse {
+                request_id: 4,
+                valid: false,
+                error: Some(_),
+            }) => {}
+            other => panic!("expected denied MfaVerifyResponse, got {other:?}"),
+        }
+        assert_eq!(
+            verb_and_domain(&mfa_generate()),
+            Some(("VaultMfaGenerate", "mfa"))
+        );
+        assert_eq!(
+            verb_and_domain(&mfa_get_secret()),
+            Some(("VaultMfaGetSecret", "mfa"))
+        );
+    }
+
+    #[test]
+    fn channel_labels_round_trip_except_supervisor() {
+        for &peer in &VaultPeer::ALL {
+            let back = VaultPeer::from_channel_label(peer.as_str());
+            if peer == VaultPeer::Supervisor {
+                assert_eq!(back, None);
+            } else {
+                assert_eq!(back, Some(peer));
+            }
         }
     }
 

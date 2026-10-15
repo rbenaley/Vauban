@@ -9,7 +9,13 @@ use uuid::Uuid;
 use vauban_web::models::access_rule::{AccessRule, NewAccessRule};
 use vauban_web::models::asset::{Asset, AssetType, NewAsset, NewAssetAssetGroup};
 use vauban_web::schema::{
-    access_rules, asset_asset_groups, asset_groups, assets, proxy_sessions, vauban_groups,
+    access_rules, asset_asset_groups, asset_groups, assets, proxy_sessions, users, vauban_groups,
+};
+
+use std::collections::BTreeSet;
+use vauban_web::services::mcp_session::{
+    effective_tools_from_access, resolve_asset_catalog, resolve_rule_hitl_tools,
+    resolve_rule_require_plan_tools,
 };
 
 use crate::common::{TestApp, assertions::*, test_db};
@@ -66,6 +72,7 @@ async fn mcp_access_uncheck_hitl_survives_save_despite_catalogue_flag() {
             status: "online".into(),
             description: Some("catalogue echo HITL sticky".into()),
             connection_config: serde_json::json!({
+                "allowed_tools": ["echo"],
                 "mcp_tool_catalog": [{
                     "name": "echo",
                     "description": "Echo a message back",
@@ -561,6 +568,7 @@ async fn mcp_access_create_form_persists_tools() {
             status: "online".into(),
             description: None,
             connection_config: serde_json::json!({
+                "allowed_tools": ["echo"],
                 "mcp_tool_catalog": [{
                     "name": "echo",
                     "description": "Echo",
@@ -689,6 +697,7 @@ async fn mcp_access_select_require_plan_then_all_off() {
             status: "online".into(),
             description: None,
             connection_config: serde_json::json!({
+                "allowed_tools": ["echo", "write_secret"],
                 "mcp_tool_catalog": [
                     {
                         "name": "echo",
@@ -803,7 +812,7 @@ async fn mcp_access_select_require_plan_then_all_off() {
     let detail_html = detail.text();
     assert!(
         detail_html.contains("Modes are this access rule only")
-            && detail_html.contains("does not restrict")
+            && detail_html.contains("this rule grants no tool")
             && detail_html.contains("echo")
             && detail_html.contains("Require plan")
             && !detail_html.contains("Allow-list"),
@@ -854,10 +863,490 @@ async fn mcp_access_select_require_plan_then_all_off() {
         .await
         .unwrap();
     assert!(
-        cleared.mcp_allowed_tools.is_none()
+        cleared.mcp_allowed_tools == Some(Vec::new())
             && cleared.mcp_hitl_tools.is_none()
             && cleared.mcp_require_plan_tools.is_none(),
-        "all Off must write NULL allow / HITL / plan columns"
+        "all Off must write an empty allow-list (grants nothing) and NULL gates"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Delete from the MCP nest: a forged CSRF token keeps the rule, a valid
+/// one removes it, and a second delete of the same UUID is refused.
+#[tokio::test]
+#[serial]
+async fn mcp_access_delete_needs_csrf_and_removes_the_rule_once() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("mcp_del")).await;
+    let ug = create_test_vauban_group(&mut conn, &unique_name("mcp-del-ug")).await;
+    let ag = create_test_asset_group(&mut conn, &unique_name("mcp-del-ag")).await;
+    let ug_id: i32 = vauban_groups::table
+        .filter(vauban_groups::uuid.eq(ug))
+        .select(vauban_groups::id)
+        .first(&mut conn)
+        .await
+        .unwrap();
+    let ag_id: i32 = asset_groups::table
+        .filter(asset_groups::uuid.eq(ag))
+        .select(asset_groups::id)
+        .first(&mut conn)
+        .await
+        .unwrap();
+
+    let csrf = app.generate_csrf_token();
+    let cookie = auth_csrf_cookie(&admin.token, &csrf);
+    let name = unique_name("mcp-del-rule");
+    let created = app
+        .server
+        .post("/sessions/mcp/access")
+        .add_header(AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(COOKIE, cookie.as_str())
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("name", name.as_str()),
+            ("description", "to delete"),
+            ("user_group_id", &ug_id.to_string()),
+            ("asset_group_id", &ag_id.to_string()),
+            ("priority", "0"),
+            ("is_active", "true"),
+        ])
+        .await;
+    let status = created.status_code().as_u16();
+    assert!(
+        status == 302 || status == 303,
+        "create must redirect, got {status}"
+    );
+    let rule_uuid: Uuid = access_rules::table
+        .filter(access_rules::name.eq(&name))
+        .select(access_rules::uuid)
+        .first(&mut conn)
+        .await
+        .unwrap();
+    let delete_url = format!("/sessions/mcp/access/{rule_uuid}/delete");
+    let location = |resp: &axum_test::TestResponse| {
+        resp.headers()
+            .get(LOCATION)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("")
+            .to_string()
+    };
+    async fn remaining(conn: &mut diesel_async::AsyncPgConnection, uuid: Uuid) -> i64 {
+        access_rules::table
+            .filter(access_rules::uuid.eq(uuid))
+            .count()
+            .get_result(conn)
+            .await
+            .unwrap()
+    }
+
+    let forged = app
+        .server
+        .post(&delete_url)
+        .add_header(AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(COOKIE, cookie.as_str())
+        .form(&[("csrf_token", "forged")])
+        .await;
+    assert_eq!(
+        location(&forged),
+        format!("/sessions/mcp/access/{rule_uuid}"),
+        "a forged CSRF token must bounce back to the rule"
+    );
+    assert_eq!(
+        remaining(&mut conn, rule_uuid).await,
+        1,
+        "forged delete must keep the rule"
+    );
+
+    let deleted = app
+        .server
+        .post(&delete_url)
+        .add_header(AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(COOKIE, cookie.as_str())
+        .add_header("HX-Request", "true")
+        .form(&[("csrf_token", csrf.as_str())])
+        .await;
+    // The detail page posts with htmx: a 303 would be followed and the
+    // list swapped inside the form.
+    assert_eq!(deleted.status_code().as_u16(), 200);
+    assert_eq!(
+        deleted
+            .headers()
+            .get("hx-redirect")
+            .and_then(|h| h.to_str().ok()),
+        Some("/sessions/mcp/access")
+    );
+    assert_eq!(
+        remaining(&mut conn, rule_uuid).await,
+        0,
+        "valid delete must remove the rule"
+    );
+
+    let again = app
+        .server
+        .post(&delete_url)
+        .add_header(AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(COOKIE, cookie.as_str())
+        .form(&[("csrf_token", csrf.as_str())])
+        .await;
+    let again_status = again.status_code().as_u16();
+    assert!(
+        (again_status == 302 || again_status == 303) && location(&again) == "/sessions/mcp/access",
+        "deleting a gone rule must flash back to the list, got {again_status}"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// A flash set by a redirect into the MCP zone is shown on the page it
+/// lands on: the flash middleware clears the cookie whether it is read or not.
+#[tokio::test]
+#[serial]
+async fn mcp_access_list_shows_the_flash_it_was_redirected_with() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("mcp_flash")).await;
+
+    let csrf = app.generate_csrf_token();
+    let resp = app
+        .server
+        .post(&format!("/sessions/mcp/access/{}/delete", Uuid::new_v4()))
+        .add_header(AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .form(&[("csrf_token", csrf.as_str())])
+        .await;
+    let flash = resp
+        .headers()
+        .get_all(axum::http::header::SET_COOKIE)
+        .iter()
+        .filter_map(|c| c.to_str().ok())
+        .find(|c| c.contains("__vauban_flash"))
+        .and_then(|c| c.split(';').next())
+        .map(str::to_string)
+        .expect("a refused delete redirects with a flash");
+
+    let page = app
+        .server
+        .get("/sessions/mcp/access")
+        .add_header(AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(
+            COOKIE,
+            format!("{}; {flash}", auth_csrf_cookie(&admin.token, &csrf)),
+        )
+        .await;
+    assert!(
+        page.text().contains("Access rule not found"),
+        "the flash must be rendered on the landing page"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// A rule that grants MCP but no approved tool: access allows the asset,
+/// the whitelist access computes is empty, so Connect and API hop 1 both
+/// refuse before anything is opened on the proxy.
+#[tokio::test]
+#[serial]
+async fn connect_and_hop1_refuse_when_no_approved_tool_is_granted() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("mcp_notool")).await;
+    let ug = create_test_vauban_group(&mut conn, &unique_name("mcp-notool-ug")).await;
+    crate::fixtures::add_user_to_vauban_group(&mut conn, admin.user.id, &ug).await;
+    let ug_id: i32 = vauban_groups::table
+        .filter(vauban_groups::uuid.eq(ug))
+        .select(vauban_groups::id)
+        .first(&mut conn)
+        .await
+        .unwrap();
+    let ag = create_test_asset_group(&mut conn, &unique_name("mcp-notool-ag")).await;
+    let ag_id: i32 = asset_groups::table
+        .filter(asset_groups::uuid.eq(ag))
+        .select(asset_groups::id)
+        .first(&mut conn)
+        .await
+        .unwrap();
+    let asset: Asset = diesel::insert_into(assets::table)
+        .values(&NewAsset {
+            uuid: Uuid::new_v4(),
+            name: unique_name("mcp-notool-asset"),
+            hostname: format!("{}.mcp.test", unique_name("up")),
+            port: 19001,
+            asset_type: AssetType::Mcp,
+            status: "online".into(),
+            description: None,
+            connection_config: serde_json::json!({ "allowed_tools": ["echo"] }),
+            created_by_id: None,
+            updated_by_id: None,
+            connection_username: String::new(),
+        })
+        .get_result(&mut conn)
+        .await
+        .unwrap();
+    diesel::insert_into(asset_asset_groups::table)
+        .values(&NewAssetAssetGroup {
+            asset_id: asset.id,
+            asset_group_id: ag_id,
+        })
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    diesel::insert_into(access_rules::table)
+        .values(&NewAccessRule {
+            uuid: Uuid::new_v4(),
+            name: unique_name("mcp-notool-rule"),
+            description: None,
+            user_group_id: ug_id,
+            asset_group_id: ag_id,
+            allowed_protocols: vec![Some("mcp".into())],
+            valid_from: None,
+            valid_until: None,
+            require_mfa: false,
+            require_approval: false,
+            max_session_duration: None,
+            is_active: true,
+            priority: 0,
+            created_by_id: None,
+            mcp_allowed_tools: Some(Vec::new()),
+            mcp_hitl_tools: None,
+            mcp_require_plan_tools: None,
+            mcp_drift_iam: "suspend_group".to_string(),
+        })
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+    let csrf = app.generate_csrf_token();
+    let resp = app
+        .server
+        .post(&format!("/assets/{}/connect-mcp", asset.uuid))
+        .add_header(AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .add_header("HX-Request", "true")
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("justification", "connect with every tool Off on the rule"),
+        ])
+        .await;
+    let body = resp.text();
+    let headers = format!("{:?}", resp.headers());
+    assert!(
+        body.contains("No MCP tools granted") || headers.contains("No MCP tools granted"),
+        "Connect must name the empty whitelist: {headers} {}",
+        body.chars().take(400).collect::<String>()
+    );
+
+    let resp = app
+        .server
+        .post("/api/v1/mcp/sessions")
+        .add_header(AUTHORIZATION, app.api_key_header(&admin.api_key))
+        .json(&serde_json::json!({
+            "asset_id": asset.uuid,
+            "justification": "hop 1 with every tool Off on the rule",
+        }))
+        .await;
+    assert_eq!(resp.status_code().as_u16(), 400, "{}", resp.text());
+    assert!(
+        resp.text().contains("No MCP tools granted"),
+        "{}",
+        resp.text()
+    );
+
+    let n: i64 = proxy_sessions::table
+        .filter(proxy_sessions::asset_id.eq(asset.id))
+        .count()
+        .get_result(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(n, 0, "a refused open leaves no proxy_sessions row");
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Hop-1 whitelist from the database: a tool is callable only if the
+/// catalogue approves it and every active MCP rule of the user names it.
+/// A NULL rule grants nothing; an inactive rule does not count.
+#[tokio::test]
+#[serial]
+async fn mcp_effective_tools_need_every_active_rule_and_the_catalogue() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user_id = crate::fixtures::create_simple_user(&mut conn, "mcp_eff").await;
+    let mut ug_ids = Vec::new();
+    for tag in ["mcp-eff-ug-a", "mcp-eff-ug-b"] {
+        let ug = create_test_vauban_group(&mut conn, &unique_name(tag)).await;
+        crate::fixtures::add_user_to_vauban_group(&mut conn, user_id, &ug).await;
+        ug_ids.push(
+            vauban_groups::table
+                .filter(vauban_groups::uuid.eq(ug))
+                .select(vauban_groups::id)
+                .first::<i32>(&mut conn)
+                .await
+                .unwrap(),
+        );
+    }
+    let ag = create_test_asset_group(&mut conn, &unique_name("mcp-eff-ag")).await;
+    let ag_id: i32 = asset_groups::table
+        .filter(asset_groups::uuid.eq(ag))
+        .select(asset_groups::id)
+        .first(&mut conn)
+        .await
+        .unwrap();
+    let asset: Asset = diesel::insert_into(assets::table)
+        .values(&NewAsset {
+            uuid: Uuid::new_v4(),
+            name: unique_name("mcp-eff-asset"),
+            hostname: format!("{}.mcp.test", unique_name("up")),
+            port: 19001,
+            asset_type: AssetType::Mcp,
+            status: "online".into(),
+            description: None,
+            connection_config: serde_json::json!({ "allowed_tools": ["echo", "delete_task"] }),
+            created_by_id: None,
+            updated_by_id: None,
+            connection_username: String::new(),
+        })
+        .get_result(&mut conn)
+        .await
+        .unwrap();
+    diesel::insert_into(asset_asset_groups::table)
+        .values(&NewAssetAssetGroup {
+            asset_id: asset.id,
+            asset_group_id: ag_id,
+        })
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+    let tools = |names: &[&str]| Some(names.iter().map(|n| Some(n.to_string())).collect());
+    let mut rule_uuids = Vec::new();
+    for (ug_id, allowed) in [
+        (ug_ids[0], tools(&["echo", "delete_task", "read_file"])),
+        (ug_ids[1], tools(&["echo"])),
+    ] {
+        let uuid = Uuid::new_v4();
+        diesel::insert_into(access_rules::table)
+            .values(&NewAccessRule {
+                uuid,
+                name: unique_name("mcp-eff-rule"),
+                description: None,
+                user_group_id: ug_id,
+                asset_group_id: ag_id,
+                allowed_protocols: vec![Some("mcp".into())],
+                valid_from: None,
+                valid_until: None,
+                require_mfa: false,
+                require_approval: false,
+                max_session_duration: None,
+                is_active: true,
+                priority: 0,
+                created_by_id: None,
+                mcp_allowed_tools: allowed,
+                mcp_hitl_tools: None,
+                mcp_require_plan_tools: None,
+                mcp_drift_iam: "suspend_group".to_string(),
+            })
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        rule_uuids.push(uuid);
+    }
+
+    let user_uuid: Uuid = users::table
+        .filter(users::id.eq(user_id))
+        .select(users::uuid)
+        .first(&mut conn)
+        .await
+        .unwrap();
+    let effective = async |asset: &Asset| {
+        let mut got = effective_tools_from_access(&app.app_state, &user_uuid.to_string(), asset)
+            .await
+            .unwrap();
+        got.sort();
+        got
+    };
+
+    assert_eq!(
+        effective(&asset).await,
+        vec!["echo".to_string()],
+        "both rules name echo; read_file is not approved, delete_task not granted by rule b"
+    );
+    assert_eq!(
+        resolve_asset_catalog(&asset),
+        Some(vec!["echo".to_string(), "delete_task".to_string()])
+    );
+
+    let names = |v: &[&str]| v.iter().map(|n| n.to_string()).collect::<BTreeSet<_>>();
+    assert!(
+        resolve_rule_hitl_tools(&mut conn, user_id, &asset)
+            .await
+            .unwrap()
+            .is_empty()
+            && resolve_rule_require_plan_tools(&mut conn, user_id, &asset)
+                .await
+                .unwrap()
+                .is_empty(),
+        "NULL gate columns add no gate"
+    );
+    diesel::update(access_rules::table.filter(access_rules::uuid.eq(rule_uuids[0])))
+        .set((
+            access_rules::mcp_hitl_tools.eq(tools(&["delete_task"])),
+            access_rules::mcp_require_plan_tools.eq(tools(&["echo"])),
+        ))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    diesel::update(access_rules::table.filter(access_rules::uuid.eq(rule_uuids[1])))
+        .set(access_rules::mcp_hitl_tools.eq(tools(&["echo"])))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(
+        resolve_rule_hitl_tools(&mut conn, user_id, &asset)
+            .await
+            .unwrap(),
+        names(&["delete_task", "echo"]),
+        "HITL is the union of every applicable rule"
+    );
+    assert_eq!(
+        resolve_rule_require_plan_tools(&mut conn, user_id, &asset)
+            .await
+            .unwrap(),
+        names(&["echo"]),
+        "Require plan is the union of every applicable rule"
+    );
+    diesel::update(access_rules::table.filter(access_rules::uuid.eq_any(&rule_uuids)))
+        .set((
+            access_rules::mcp_hitl_tools.eq(None::<Vec<Option<String>>>),
+            access_rules::mcp_require_plan_tools.eq(None::<Vec<Option<String>>>),
+        ))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+    diesel::update(access_rules::table.filter(access_rules::uuid.eq(rule_uuids[1])))
+        .set(access_rules::mcp_allowed_tools.eq(None::<Vec<Option<String>>>))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    assert!(
+        effective(&asset).await.is_empty(),
+        "a NULL rule grants nothing, so the intersection is empty"
+    );
+
+    diesel::update(access_rules::table.filter(access_rules::uuid.eq(rule_uuids[1])))
+        .set(access_rules::is_active.eq(false))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(
+        effective(&asset).await,
+        vec!["delete_task".to_string(), "echo".to_string()],
+        "an inactive rule does not apply"
     );
 
     test_db::cleanup(&mut conn).await;

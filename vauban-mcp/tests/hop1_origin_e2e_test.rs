@@ -174,7 +174,8 @@ async fn legacy_host_line_migrates_to_the_origin_on_the_same_pin() {
     let hop = hop::open_session(&http, &bastion.url, &key, "asset", "justification ok")
         .await
         .unwrap();
-    let outcome = session::post_tunnel(&hop, &origin, "{}", &hosts).await;
+    let tls = vauban_mcp::trust::client_config(&[]).expect("tls");
+    let outcome = session::post_tunnel(&hop, &origin, "{}", &hosts, &tls).await;
     if let Err(e) = &outcome {
         assert!(!e.contains("refusing"), "the pin must be accepted: {e}");
     }
@@ -196,7 +197,8 @@ async fn attack_legacy_host_line_refuses_a_different_pin_end_to_end() {
     let hop = hop::open_session(&http, &bastion.url, &key, "asset", "justification ok")
         .await
         .unwrap();
-    let err = session::post_tunnel(&hop, &origin, "{}", &hosts)
+    let tls = vauban_mcp::trust::client_config(&[]).expect("tls");
+    let err = session::post_tunnel(&hop, &origin, "{}", &hosts, &tls)
         .await
         .expect_err("a pin that differs from the legacy line must be refused");
     assert!(err.contains("legacy line `localhost`"), "{err}");

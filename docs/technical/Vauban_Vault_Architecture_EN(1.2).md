@@ -576,6 +576,9 @@ supervisor handed it. Authorization is thus a pure function of
   `Decrypt{mfa}` -- those return the TOTP secret in clear, whereas auth only
   needs a yes/no on a submitted code.
 - `proxy_ssh`, `proxy_rdp`: `Decrypt{credentials}` (read-only).
+- `proxy_mcp`: `Decrypt{credentials}` only. This peer is a live client:
+  the leaf asks the vault to materialise the upstream bearer for a visit.
+  It cannot encrypt, and it cannot touch `mfa`, `secrets`, or `audit`.
 - `audit`: `Decrypt{audit}` only. The audit service unseals its Ed25519
   signing-key seed (sealed with the dedicated `audit` keyring) exactly once at
   boot, then signs WORM segment seals locally. It can do nothing else: it
@@ -595,10 +598,11 @@ about the others. Domain separation also means a `credentials` ciphertext can
 never be opened through the vault-secrets path (and vice versa), even if a
 handler bug routes a ciphertext to the wrong surface.
 
-Note the matrix is *forward-looking*: `auth` / `proxy_ssh` / `proxy_rdp` do
-not emit vault traffic yet (web decrypts and forwards plaintext over its own
-peer pipe), but their least-privilege grants are pre-declared so wiring them
-later never requires relaxing the vault.
+`auth`, `proxy_ssh` and `proxy_rdp` do not emit vault traffic yet (web
+decrypts and forwards plaintext over its own peer pipe). Their
+least-privilege grants are pre-declared so wiring them later never
+requires relaxing the vault. `proxy_mcp` is not in that set: it already
+sends `Decrypt{credentials}`.
 
 #### Enforcement and observability
 

@@ -20,6 +20,8 @@ pub mod db;
 pub mod handlers;
 pub mod iacs;
 pub mod mcp_pdp;
+pub mod mcp_rule_tools;
+pub mod peer_authz;
 pub mod secrets;
 pub mod virtual_group;
 pub mod virtual_secret_group;

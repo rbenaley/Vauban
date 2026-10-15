@@ -865,6 +865,12 @@ pub struct McpConfig {
     pub bind_addr: Option<String>,
     #[serde(default)]
     pub allow_loopback_targets: bool,
+    /// Appliance default / max MCP visit length (seconds).
+    #[serde(default = "default_mcp_session_ttl_seconds")]
+    pub session_ttl_seconds: u64,
+    /// HITL pending Approve/Deny window (seconds). Not Mission Seal.
+    #[serde(default = "default_mcp_hitl_pending_ttl_seconds")]
+    pub hitl_pending_ttl_seconds: u64,
     /// Production visits refuse a `tools/call` outside a sealed mandate.
     #[serde(default = "default_require_seal")]
     pub require_seal: bool,
@@ -913,12 +919,26 @@ fn default_relay_max_inflight() -> u32 {
     64
 }
 
+fn default_mcp_session_ttl_seconds() -> u64 {
+    3600
+}
+
+fn default_mcp_hitl_pending_ttl_seconds() -> u64 {
+    900
+}
+
+fn clamp_mcp_ttl_secs(raw: u64) -> u64 {
+    raw.clamp(30, 28_800)
+}
+
 impl Default for McpConfig {
     fn default() -> Self {
         Self {
             enabled: false,
             bind_addr: None,
             allow_loopback_targets: false,
+            session_ttl_seconds: default_mcp_session_ttl_seconds(),
+            hitl_pending_ttl_seconds: default_mcp_hitl_pending_ttl_seconds(),
             require_seal: default_require_seal(),
             max_tunnels: default_max_tunnels(),
             relay_max_inflight: default_relay_max_inflight(),
@@ -1372,6 +1392,10 @@ impl SupervisorConfig {
                     "VAUBAN_DATABASE_URL".to_string(),
                     self.database.url.to_string(),
                 ));
+                vars.push((
+                    "MCP_SESSION_TTL_SECONDS".to_string(),
+                    clamp_mcp_ttl_secs(self.mcp.session_ttl_seconds).to_string(),
+                ));
             }
             "proxy_rdp" => {
                 vars.push((
@@ -1495,6 +1519,14 @@ impl SupervisorConfig {
                 vars.push((
                     "VAUBAN_MCP_TUNNEL_IDLE_SECS".to_string(),
                     self.mcp.tunnel_idle_seconds.to_string(),
+                ));
+                vars.push((
+                    "SESSION_TTL_SECONDS".to_string(),
+                    clamp_mcp_ttl_secs(self.mcp.session_ttl_seconds).to_string(),
+                ));
+                vars.push((
+                    "HITL_PENDING_TTL_SECONDS".to_string(),
+                    clamp_mcp_ttl_secs(self.mcp.hitl_pending_ttl_seconds).to_string(),
                 ));
             }
             _ => {}
@@ -2160,12 +2192,29 @@ mod tests {
     fn test_service_env_vars_access() {
         let config = test_config();
         let vars = config.service_env_vars("access");
-        assert_eq!(vars.len(), 3);
+        assert_eq!(vars.len(), 4);
         assert_eq!(vars[0].0, "VAUBAN_ACCESS_MODEL_PATH");
         assert_eq!(vars[0].1, "config/access/model.conf");
         assert_eq!(vars[1].0, "VAUBAN_ACCESS_POLICY_PATH");
         assert_eq!(vars[1].1, "config/access/default_policy.csv");
         assert_eq!(vars[2].0, "VAUBAN_DATABASE_URL");
+        assert_eq!(vars[3].0, "MCP_SESSION_TTL_SECONDS");
+        assert_eq!(vars[3].1, "3600");
+    }
+
+    #[test]
+    fn test_service_env_vars_proxy_mcp_ttl() {
+        let config = test_config();
+        let vars = config.service_env_vars("proxy_mcp");
+        let map: std::collections::HashMap<_, _> = vars.into_iter().collect();
+        assert_eq!(
+            map.get("SESSION_TTL_SECONDS").map(String::as_str),
+            Some("3600")
+        );
+        assert_eq!(
+            map.get("HITL_PENDING_TTL_SECONDS").map(String::as_str),
+            Some("900")
+        );
     }
 
     #[test]

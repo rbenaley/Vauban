@@ -25,25 +25,6 @@ use tracing::{info, warn};
 
 use crate::fd_passing::{PendingConnections, claim_pending_wait, owned_fd_to_tcp_stream};
 
-/// True when the brokered HTTP stream is gone (peer close / EPIPE).
-pub fn is_dead_upstream_io(err: &anyhow::Error) -> bool {
-    use std::io::ErrorKind;
-    if let Some(ioe) = err.downcast_ref::<io::Error>() {
-        return matches!(
-            ioe.kind(),
-            ErrorKind::BrokenPipe
-                | ErrorKind::ConnectionReset
-                | ErrorKind::UnexpectedEof
-                | ErrorKind::ConnectionAborted
-        );
-    }
-    let s = format!("{err:#}");
-    s.contains("upstream closed before HTTP headers")
-        || s.contains("Broken pipe")
-        || s.contains("os error 32")
-        || s.contains("Connection reset")
-}
-
 pub struct McpUpstreamRebroker {
     pub supervisor_tx: mpsc::UnboundedSender<Message>,
     pub pending: PendingConnections,

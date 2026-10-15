@@ -828,6 +828,9 @@ pub async fn add_group_member_web(
                 )
                 .user(auth_user.uuid.clone()),
             );
+            // A new group brings its rules: the MCP Allow intersection of
+            // the member's open visits can only shrink, never widen.
+            crate::services::mcp_recheck::notify_policy_changed(&state).await;
             flash_redirect(
                 flash.success("Member added successfully"),
                 &format!("/accounts/groups/{}", uuid_str),
@@ -966,6 +969,7 @@ pub async fn remove_group_member_web(
                 )
                 .user(auth_user.uuid.clone()),
             );
+            crate::services::mcp_recheck::notify_policy_changed(&state).await;
             htmx_or_flash_redirect(
                 &headers,
                 flash.success("Member removed successfully"),

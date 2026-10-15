@@ -18,6 +18,7 @@
 //! - Policy evaluation and caching
 //! - Authorization decisions
 
+use vauban_access::peer_authz::{self, AccessPeer};
 use vauban_access::{admin_count, db, handlers, virtual_group, virtual_secret_group};
 
 use anyhow::{Context, Result};
@@ -38,6 +39,8 @@ struct ServiceState {
     start_time: Instant,
     requests_processed: u64,
     requests_failed: u64,
+    /// Requests refused by the `peer_authz` matrix (anomaly counter).
+    requests_denied: u64,
     draining: bool,
     /// Flag set by ControlMessage::Shutdown to break the main loop
     /// and allow destructors to run.
@@ -64,6 +67,7 @@ impl Default for ServiceState {
             start_time: Instant::now(),
             requests_processed: 0,
             requests_failed: 0,
+            requests_denied: 0,
             draining: false,
             shutdown_requested: false,
             enforcer: None,
@@ -208,6 +212,10 @@ fn run_service() -> Result<()> {
         // 20260711000000_vault_secrets migration (ON CONFLICT-safe).
         rt.block_on(virtual_secret_group::init_or_die(&pool))
             .context("Boot-time virtual secret group invariant check failed")?;
+
+        // Rule tool columns hold approved names only: clear names left by
+        // assets deleted or tools quarantined while this check did not run.
+        rt.block_on(vauban_access::mcp_rule_tools::prune_at_boot(&pool));
 
         // SECURITY (operational visibility): warn loudly if the
         // deployment cannot honor separation-of-duties end-to-end
@@ -410,7 +418,13 @@ fn main_loop(
             if idx == 0 {
                 match supervisor.recv() {
                     Ok(msg) => {
-                        if let Err(e) = handle_message(supervisor, state, msg) {
+                        if let Err(e) = dispatch_authorized(
+                            supervisor,
+                            state,
+                            msg,
+                            Some(AccessPeer::Supervisor),
+                            "supervisor",
+                        ) {
                             warn!("Error handling supervisor message: {}", e);
                             state.requests_failed += 1;
                         }
@@ -430,7 +444,8 @@ fn main_loop(
                     let (name, channel) = peers[peer_idx];
                     match channel.recv() {
                         Ok(msg) => {
-                            if let Err(e) = handle_message(channel, state, msg) {
+                            let peer = AccessPeer::from_channel_label(name);
+                            if let Err(e) = dispatch_authorized(channel, state, msg, peer, name) {
                                 warn!("Error handling message from {}: {}", name, e);
                                 state.requests_failed += 1;
                             }
@@ -447,6 +462,28 @@ fn main_loop(
             }
         }
     }
+}
+
+/// Authorize `(peer, verb)` on the supervisor-attested channel
+/// label BEFORE any handler runs (`peer_authz` matrix). An unknown label is
+/// `None` and denies everything.
+fn dispatch_authorized(
+    channel: &IpcChannel,
+    state: &mut ServiceState,
+    msg: Message,
+    peer: Option<AccessPeer>,
+    label: &str,
+) -> Result<()> {
+    if !peer.is_some_and(|p| peer_authz::is_authorized(p, &msg)) {
+        state.requests_denied += 1;
+        let verb = peer_authz::verb_name(&msg);
+        warn!(peer = label, verb = %verb, "access request denied (peer x verb matrix)");
+        if let Some(resp) = peer_authz::denied_response(&msg) {
+            channel.send(&resp)?;
+        }
+        return Ok(());
+    }
+    handle_message(channel, state, msg)
 }
 
 fn handle_message(channel: &IpcChannel, state: &mut ServiceState, msg: Message) -> Result<()> {
@@ -638,6 +675,7 @@ fn handle_control(
                 recording_ack_dropped: 0,
                 recording_try_send_full: 0,
                 recording_ack_wait_ms_max: 0,
+                audit_events_dropped: 0,
             };
             let pong = Message::Control(ControlMessage::Pong { seq, stats });
             channel.send(&pong)?;
@@ -752,6 +790,99 @@ mod tests {
             response,
             Message::Control(ControlMessage::Pong { seq: 5, .. })
         ));
+    }
+
+    // ==================== MCP peer x verb gate ====================
+
+    #[test]
+    fn test_dispatch_denies_diagnostic_token_from_proxy_mcp() {
+        let (client, service) = IpcChannel::pair().unwrap();
+        let mut state = ServiceState::default();
+        let msg = Message::AccessRequest {
+            request_id: 77,
+            request: shared::messages::AccessRequest::IssueDiagnosticToken {
+                user_uuid: "u".into(),
+                asset_uuid: "a".into(),
+                protocol: "mcp".into(),
+                host: "h".into(),
+                port: 1,
+                target_service: shared::messages::Service::ProxyMcp,
+                session_id: "s".into(),
+                caller_has_assets_manage: true,
+            },
+        };
+        dispatch_authorized(
+            &service,
+            &mut state,
+            msg,
+            Some(AccessPeer::ProxyMcp),
+            "proxy_mcp",
+        )
+        .unwrap();
+        match client.recv().unwrap() {
+            Message::AccessResponse {
+                request_id: 77,
+                response: shared::messages::AccessResponse::SessionTokenDenied,
+            } => {}
+            other => panic!("expected SessionTokenDenied, got {other:?}"),
+        }
+        assert_eq!(state.requests_denied, 1);
+        assert_eq!(state.requests_processed, 0, "handler must not run");
+    }
+
+    #[test]
+    fn test_dispatch_unknown_label_and_control_from_peer_denied() {
+        let (_client, service) = IpcChannel::pair().unwrap();
+        let mut state = ServiceState::default();
+        let ping = Message::Control(ControlMessage::Ping { seq: 1 });
+        dispatch_authorized(&service, &mut state, ping.clone(), None, "bogus").unwrap();
+        dispatch_authorized(&service, &mut state, ping, Some(AccessPeer::Web), "web").unwrap();
+        assert_eq!(state.requests_denied, 2);
+    }
+
+    #[test]
+    fn test_dispatch_allows_supervisor_control_and_web_rbac() {
+        let (client, service) = IpcChannel::pair().unwrap();
+        let mut state = ServiceState::default();
+        let ping = Message::Control(ControlMessage::Ping { seq: 4 });
+        dispatch_authorized(
+            &service,
+            &mut state,
+            ping,
+            Some(AccessPeer::Supervisor),
+            "supervisor",
+        )
+        .unwrap();
+        assert!(matches!(
+            client.recv().unwrap(),
+            Message::Control(ControlMessage::Pong { seq: 4, .. })
+        ));
+        let rbac = Message::RbacCheck {
+            request_id: 5,
+            subject: "s".into(),
+            object: "o".into(),
+            action: "a".into(),
+        };
+        dispatch_authorized(&service, &mut state, rbac, Some(AccessPeer::Web), "web").unwrap();
+        assert!(matches!(
+            client.recv().unwrap(),
+            Message::RbacResponse { request_id: 5, .. }
+        ));
+        assert_eq!(state.requests_denied, 0);
+        assert_eq!(state.requests_processed, 1);
+    }
+
+    #[test]
+    fn test_main_loop_routes_every_channel_through_peer_gate() {
+        let src = include_str!("main.rs");
+        let start = src.find("fn main_loop(").unwrap();
+        let end = start + src[start..].find("\nfn dispatch_authorized").unwrap();
+        let body = &src[start..end];
+        assert!(
+            !body.contains("handle_message("),
+            "main_loop must not bypass the gate"
+        );
+        assert_eq!(body.matches("dispatch_authorized(").count(), 2);
     }
 
     // ==================== No-enforcer deny-by-default test ====================

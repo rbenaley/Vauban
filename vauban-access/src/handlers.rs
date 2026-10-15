@@ -4,7 +4,8 @@ use diesel::prelude::*;
 use diesel::sql_types::Bool as SqlBool;
 use diesel_async::AsyncConnection;
 use diesel_async::RunQueryDsl;
-use shared::mcp_policy::mcp_rule_callable_tools;
+use diesel_async::scoped_futures::ScopedFutureExt;
+use shared::mcp_policy::{McpRuleToolColumns, effective_callable_tools};
 use shared::messages::{
     AccessCheckResult, AccessCheckResultEntry, AccessRequest, AccessResponse, AccessRuleData,
     AccessRuleInfo, AccessibleGroupEntry, ApprovalDecisionKind, ApprovalDenyReason, AssetGroupInfo,
@@ -18,6 +19,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::db::{DbConnection, DbPool};
+use crate::mcp_rule_tools::{RuleToolsError, lock_rule_tools, validate_rule_tools};
 use crate::schema::{
     access_rules, approval_audit_log, asset_asset_groups, asset_groups, assets, proxy_sessions,
     user_groups, users, vauban_groups,
@@ -83,7 +85,7 @@ macro_rules! access_rule_columns {
 
 pub async fn handle_access_request(pool: &DbPool, request: AccessRequest) -> AccessResponse {
     if crate::mcp_pdp::is_mandate_request(&request) {
-        return crate::mcp_pdp::handle(request);
+        return crate::mcp_pdp::handle(Some(pool), request).await;
     }
 
     let mut conn = match pool.get().await {
@@ -525,7 +527,18 @@ pub async fn handle_access_request(pool: &DbPool, request: AccessRequest) -> Acc
         | AccessRequest::CheckStepAuthorized { .. }
         | AccessRequest::CommitMcpMandateStep { .. }
         | AccessRequest::RollbackMcpMandateStep { .. }
-        | AccessRequest::ClearMcpMandate { .. } => crate::mcp_pdp::handle(request),
+        | AccessRequest::ClearMcpMandate { .. } => {
+            crate::mcp_pdp::handle(Some(pool), request).await
+        }
+
+        AccessRequest::PruneMcpRuleTools { asset_group_ids } => {
+            match crate::mcp_rule_tools::prune_mcp_rule_tools(&mut conn, asset_group_ids.as_deref())
+                .await
+            {
+                Ok(rules_changed) => AccessResponse::McpRuleToolsPruned { rules_changed },
+                Err(e) => AccessResponse::Error(format!("Failed to prune MCP rule tools: {e}")),
+            }
+        }
     }
 }
 
@@ -784,12 +797,7 @@ pub(crate) async fn compute_mcp_effective_tools(
     }
 
     let now = Utc::now();
-    type McpRuleToolRow = (
-        Option<Vec<Option<String>>>,
-        Option<Vec<Option<String>>>,
-        Option<Vec<Option<String>>>,
-    );
-    let rows: Vec<McpRuleToolRow> = access_rules::table
+    let rows: Vec<McpRuleToolColumns> = access_rules::table
         .filter(access_rules::user_group_id.eq_any(&group_ids))
         .filter(access_rules::asset_group_id.eq_any(&asset_group_ids))
         .filter(access_rules::is_active.eq(true))
@@ -813,34 +821,9 @@ pub(crate) async fn compute_mcp_effective_tools(
         .await
         .map_err(|e| format!("access rules: {e}"))?;
 
-    if rows.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut effective: Option<BTreeSet<String>> = None;
-    let mut saw_restricting_rule = false;
-    for (allow, hitl, plan) in rows {
-        let Some(set) = mcp_rule_callable_tools(allow, hitl, plan) else {
-            continue;
-        };
-        saw_restricting_rule = true;
-        effective = Some(match effective {
-            None => set,
-            Some(prev) => prev.intersection(&set).cloned().collect(),
-        });
-    }
-
-    let merged: BTreeSet<String> = match (effective, catalog, saw_restricting_rule) {
-        (None, Some(cat), false) => cat,
-        (None, None, false) => BTreeSet::new(),
-        (Some(rule_set), Some(cat), _) => rule_set.intersection(&cat).cloned().collect(),
-        (Some(rule_set), None, _) => rule_set,
-        (None, _, true) => BTreeSet::new(),
-    };
-
-    let mut out: Vec<String> = merged.into_iter().collect();
-    out.sort();
-    Ok(out)
+    Ok(effective_callable_tools(rows, catalog)
+        .into_iter()
+        .collect())
 }
 
 pub(crate) fn mcp_appliance_ttl_secs() -> u64 {
@@ -1762,7 +1745,7 @@ async fn handle_create_access_rule(
         Err(e) => return AccessResponse::AccessRule(Err(e)),
     };
 
-    let protocols: Vec<Option<String>> = data.allowed_protocols.into_iter().map(Some).collect();
+    let protocols: Vec<Option<String>> = data.allowed_protocols.iter().cloned().map(Some).collect();
     // Issue #22 — stamp the audit pair so the Metadata UI on
     // `/assets/access/{uuid}` can surface "Created by" /
     // "Updated by" for every freshly-created rule. `None` here
@@ -1770,44 +1753,68 @@ async fn handle_create_access_rule(
     // live user row; we let the INSERT proceed and fall back to
     // the muted em-dash on render rather than refuse the write.
     let actor_id = resolve_actor_id(conn, actor_uuid).await;
+    let tool_cols = rule_tool_columns(&data);
+    let rule_name = data.name.clone();
 
-    let result = diesel::insert_into(access_rules::table)
-        .values((
-            access_rules::uuid.eq(new_uuid),
-            access_rules::name.eq(&data.name),
-            access_rules::description.eq(&data.description),
-            access_rules::user_group_id.eq(data.user_group_id),
-            access_rules::asset_group_id.eq(data.asset_group_id),
-            access_rules::allowed_protocols.eq(&protocols),
-            access_rules::valid_from.eq(valid_from),
-            access_rules::valid_until.eq(valid_until),
-            access_rules::require_mfa.eq(data.require_mfa),
-            access_rules::require_approval.eq(data.require_approval),
-            access_rules::max_session_duration.eq(data.max_session_duration),
-            access_rules::is_active.eq(data.is_active),
-            access_rules::priority.eq(data.priority),
-            access_rules::created_by_id.eq(actor_id),
-            access_rules::updated_by_id.eq(actor_id),
-            access_rules::created_at.eq(now),
-            access_rules::updated_at.eq(now),
-            access_rules::mcp_allowed_tools.eq(pg_text_array(&data.mcp_allowed_tools)),
-            access_rules::mcp_hitl_tools.eq(pg_text_array(&data.mcp_hitl_tools)),
-            access_rules::mcp_require_plan_tools.eq(pg_text_array(&data.mcp_require_plan_tools)),
-            access_rules::mcp_drift_iam.eq(&data.mcp_drift_iam),
-        ))
-        .execute(conn)
+    let result = conn
+        .transaction::<usize, RuleToolsError, _>(|conn| {
+            async move {
+                lock_rule_tools(conn).await?;
+                validate_rule_tools(conn, data.asset_group_id, &tool_cols).await?;
+                let (allow, hitl, plan) = tool_cols.clone();
+                Ok(diesel::insert_into(access_rules::table)
+                    .values((
+                        access_rules::uuid.eq(new_uuid),
+                        access_rules::name.eq(&data.name),
+                        access_rules::description.eq(&data.description),
+                        access_rules::user_group_id.eq(data.user_group_id),
+                        access_rules::asset_group_id.eq(data.asset_group_id),
+                        access_rules::allowed_protocols.eq(&protocols),
+                        access_rules::valid_from.eq(valid_from),
+                        access_rules::valid_until.eq(valid_until),
+                        access_rules::require_mfa.eq(data.require_mfa),
+                        access_rules::require_approval.eq(data.require_approval),
+                        access_rules::max_session_duration.eq(data.max_session_duration),
+                        access_rules::is_active.eq(data.is_active),
+                        access_rules::priority.eq(data.priority),
+                        access_rules::created_by_id.eq(actor_id),
+                        access_rules::updated_by_id.eq(actor_id),
+                        access_rules::created_at.eq(now),
+                        access_rules::updated_at.eq(now),
+                        access_rules::mcp_allowed_tools.eq(allow),
+                        access_rules::mcp_hitl_tools.eq(hitl),
+                        access_rules::mcp_require_plan_tools.eq(plan),
+                        access_rules::mcp_drift_iam.eq(&data.mcp_drift_iam),
+                    ))
+                    .execute(conn)
+                    .await?)
+            }
+            .scope_boxed()
+        })
         .await;
 
     match result {
         Ok(_) => {
-            info!(uuid = %new_uuid, name = %data.name, "Access rule created");
+            info!(uuid = %new_uuid, name = %rule_name, "Access rule created");
             match load_access_rule_by_uuid(conn, new_uuid).await {
                 Ok(info) => AccessResponse::AccessRule(Ok(info)),
                 Err(e) => AccessResponse::Error(e),
             }
         }
+        Err(e @ RuleToolsError::NotApproved(_)) => {
+            warn!(name = %rule_name, refusal = %e, "Access rule create refused");
+            AccessResponse::AccessRule(Err(e.to_string()))
+        }
         Err(e) => AccessResponse::AccessRule(Err(format!("Failed to create access rule: {}", e))),
     }
+}
+
+fn rule_tool_columns(data: &AccessRuleData) -> McpRuleToolColumns {
+    (
+        pg_text_array(&data.mcp_allowed_tools),
+        pg_text_array(&data.mcp_hitl_tools),
+        pg_text_array(&data.mcp_require_plan_tools),
+    )
 }
 
 async fn handle_get_access_rule(conn: &mut DbConnection, uuid_str: &str) -> AccessResponse {
@@ -1872,38 +1879,55 @@ async fn handle_update_access_rule(
         Err(e) => return AccessResponse::AccessRule(Err(e)),
     };
 
-    let protocols: Vec<Option<String>> = data.allowed_protocols.into_iter().map(Some).collect();
+    let protocols: Vec<Option<String>> = data.allowed_protocols.iter().cloned().map(Some).collect();
     let now = Utc::now();
     // Issue #22 — re-stamp `updated_by_id` on every update so the
     // "Updated by" cell on `/assets/access/{uuid}` reflects the
     // operator that performed the most recent edit.
     let actor_id = resolve_actor_id(conn, actor_uuid).await;
+    let tool_cols = rule_tool_columns(&data);
 
-    let affected = diesel::update(access_rules::table.filter(access_rules::uuid.eq(rule_uuid)))
-        .set((
-            access_rules::name.eq(&data.name),
-            access_rules::description.eq(&data.description),
-            access_rules::user_group_id.eq(data.user_group_id),
-            access_rules::asset_group_id.eq(data.asset_group_id),
-            access_rules::allowed_protocols.eq(&protocols),
-            access_rules::valid_from.eq(valid_from),
-            access_rules::valid_until.eq(valid_until),
-            access_rules::require_mfa.eq(data.require_mfa),
-            access_rules::require_approval.eq(data.require_approval),
-            access_rules::max_session_duration.eq(data.max_session_duration),
-            access_rules::is_active.eq(data.is_active),
-            access_rules::priority.eq(data.priority),
-            access_rules::updated_at.eq(now),
-            access_rules::updated_by_id.eq(actor_id),
-            access_rules::mcp_allowed_tools.eq(pg_text_array(&data.mcp_allowed_tools)),
-            access_rules::mcp_hitl_tools.eq(pg_text_array(&data.mcp_hitl_tools)),
-            access_rules::mcp_require_plan_tools.eq(pg_text_array(&data.mcp_require_plan_tools)),
-            access_rules::mcp_drift_iam.eq(&data.mcp_drift_iam),
-        ))
-        .execute(conn)
+    let affected = conn
+        .transaction::<usize, RuleToolsError, _>(|conn| {
+            async move {
+                lock_rule_tools(conn).await?;
+                validate_rule_tools(conn, data.asset_group_id, &tool_cols).await?;
+                let (allow, hitl, plan) = tool_cols.clone();
+                Ok(
+                    diesel::update(access_rules::table.filter(access_rules::uuid.eq(rule_uuid)))
+                        .set((
+                            access_rules::name.eq(&data.name),
+                            access_rules::description.eq(&data.description),
+                            access_rules::user_group_id.eq(data.user_group_id),
+                            access_rules::asset_group_id.eq(data.asset_group_id),
+                            access_rules::allowed_protocols.eq(&protocols),
+                            access_rules::valid_from.eq(valid_from),
+                            access_rules::valid_until.eq(valid_until),
+                            access_rules::require_mfa.eq(data.require_mfa),
+                            access_rules::require_approval.eq(data.require_approval),
+                            access_rules::max_session_duration.eq(data.max_session_duration),
+                            access_rules::is_active.eq(data.is_active),
+                            access_rules::priority.eq(data.priority),
+                            access_rules::updated_at.eq(now),
+                            access_rules::updated_by_id.eq(actor_id),
+                            access_rules::mcp_allowed_tools.eq(allow),
+                            access_rules::mcp_hitl_tools.eq(hitl),
+                            access_rules::mcp_require_plan_tools.eq(plan),
+                            access_rules::mcp_drift_iam.eq(&data.mcp_drift_iam),
+                        ))
+                        .execute(conn)
+                        .await?,
+                )
+            }
+            .scope_boxed()
+        })
         .await;
 
     match affected {
+        Err(e @ RuleToolsError::NotApproved(_)) => {
+            warn!(uuid = %uuid_str, refusal = %e, "Access rule update refused");
+            AccessResponse::AccessRule(Err(e.to_string()))
+        }
         Ok(0) => AccessResponse::AccessRule(Err(format!("Access rule {} not found", uuid_str))),
         Ok(_) => {
             info!(uuid = %uuid_str, "Access rule updated");
@@ -7356,5 +7380,738 @@ mod tests {
         cleanup_rule(&pool, &rule.uuid).await;
         cleanup_asset_group(&pool, &ag.uuid).await;
         cleanup_vauban_group(&pool, &ug.uuid).await;
+    }
+
+    /// Battle: readers compute the MCP effective tools while a writer flips
+    /// two rules together in one transaction. Every read sees one side of
+    /// the flip, never a torn mix (which would intersect to nothing).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn battle_mcp_effective_tools_vs_rule_mutation_under_contention() {
+        use super::compute_mcp_effective_tools;
+        use crate::schema::assets;
+        use diesel_async::AsyncConnection;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let pool = test_pool().await;
+        let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+            "postgresql://vauban_test:vauban_test@localhost/vauban_test".to_string()
+        });
+        let wide = Pool::builder(AsyncDieselConnectionManager::<AsyncPgConnection>::new(&url))
+            .max_size(8)
+            .build()
+            .unwrap();
+
+        let user_id = insert_test_user(&pool, &unique_name("mcp_battle_user")).await;
+        let user_uuid: Uuid = {
+            let mut conn = pool.get().await.unwrap();
+            users::table
+                .filter(users::id.eq(user_id))
+                .select(users::uuid)
+                .first(&mut conn)
+                .await
+                .unwrap()
+        };
+        let ug = create_test_vauban_group(&pool, &unique_name("mcp_battle_ug")).await;
+        let ug2 = create_test_vauban_group(&pool, &unique_name("mcp_battle_ug2")).await;
+        for group_id in [ug.id, ug2.id] {
+            handle_access_request(&pool, AccessRequest::AddGroupMember { group_id, user_id }).await;
+        }
+        let ag = create_test_asset_group(&pool, &unique_name("mcp_battle_ag")).await;
+        let (asset_id, asset_uuid) =
+            insert_test_asset_with_type(&pool, &unique_name("mcp_battle_asset"), "mcp", 443).await;
+        {
+            let mut conn = pool.get().await.unwrap();
+            diesel::update(assets::table.filter(assets::id.eq(asset_id)))
+                .set(assets::connection_config.eq(serde_json::json!({
+                    "allowed_tools": ["echo", "delete_task", "read_file"]
+                })))
+                .execute(&mut conn)
+                .await
+                .unwrap();
+        }
+        link_asset_to_group(&pool, asset_id, ag.id).await;
+        let r1 = create_test_rule(
+            &pool,
+            &unique_name("mcp_battle_r1"),
+            ug.id,
+            ag.id,
+            vec!["mcp"],
+        )
+        .await;
+        let r2 = create_test_rule(
+            &pool,
+            &unique_name("mcp_battle_r2"),
+            ug2.id,
+            ag.id,
+            vec!["mcp"],
+        )
+        .await;
+        let ids: Vec<Uuid> = [&r1.uuid, &r2.uuid]
+            .iter()
+            .map(|u| Uuid::parse_str(u).unwrap())
+            .collect();
+
+        async fn flip(pool: &DbPool, ids: &[Uuid], tool: &str) {
+            let mut conn = pool.get().await.unwrap();
+            let tool = tool.to_string();
+            let ids = ids.to_vec();
+            conn.transaction::<_, diesel::result::Error, _>(|c| {
+                Box::pin(async move {
+                    for id in ids {
+                        diesel::update(access_rules::table.filter(access_rules::uuid.eq(id)))
+                            .set(access_rules::mcp_allowed_tools.eq(Some(vec![Some(tool.clone())])))
+                            .execute(c)
+                            .await?;
+                    }
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
+        }
+        flip(&wide, &ids, "echo").await;
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let (wide, ids, stop) = (wide.clone(), ids.clone(), Arc::clone(&stop));
+            tokio::spawn(async move {
+                let mut i = 0u32;
+                while !AtomicBool::load(&stop, Ordering::Relaxed) {
+                    flip(
+                        &wide,
+                        &ids,
+                        if i.is_multiple_of(2) {
+                            "delete_task"
+                        } else {
+                            "echo"
+                        },
+                    )
+                    .await;
+                    i += 1;
+                }
+                i
+            })
+        };
+        let barrier = Arc::new(tokio::sync::Barrier::new(6));
+        let readers: Vec<_> = (0..6)
+            .map(|_| {
+                let (wide, barrier) = (wide.clone(), Arc::clone(&barrier));
+                let (user, asset) = (user_uuid.to_string(), asset_uuid.clone());
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    let mut seen = Vec::new();
+                    for _ in 0..40 {
+                        let mut conn = wide.get().await.unwrap();
+                        seen.push(
+                            compute_mcp_effective_tools(&mut conn, &user, &asset)
+                                .await
+                                .unwrap(),
+                        );
+                    }
+                    seen
+                })
+            })
+            .collect();
+        let mut reads = Vec::new();
+        for r in readers {
+            reads.extend(r.await.unwrap());
+        }
+        stop.store(true, Ordering::Relaxed);
+        let flips = writer.await.unwrap();
+        assert!(flips > 0, "the writer never ran");
+        for got in &reads {
+            assert!(
+                got == &vec!["echo".to_string()] || got == &vec!["delete_task".to_string()],
+                "torn decision: {got:?}"
+            );
+        }
+
+        cleanup_rule(&pool, &r1.uuid).await;
+        cleanup_rule(&pool, &r2.uuid).await;
+        cleanup_asset_group(&pool, &ag.uuid).await;
+        cleanup_vauban_group(&pool, &ug.uuid).await;
+        cleanup_vauban_group(&pool, &ug2.uuid).await;
+    }
+
+    // ==================== MCP rule tools: approved names only ====================
+    mod mcp_rule_tools_db {
+        use super::*;
+        use crate::schema::{asset_asset_groups, assets};
+        use chrono::Utc;
+        use shared::mcp_policy::McpRuleToolColumns;
+
+        type FormTools = (
+            Option<Vec<String>>,
+            Option<Vec<String>>,
+            Option<Vec<String>>,
+        );
+
+        fn names(list: &[&str]) -> Option<Vec<String>> {
+            Some(list.iter().map(|s| (*s).to_string()).collect())
+        }
+
+        fn mcp_rule_data(name: &str, ug_id: i32, ag_id: i32, tools: FormTools) -> AccessRuleData {
+            AccessRuleData {
+                name: name.to_string(),
+                description: None,
+                user_group_id: ug_id,
+                asset_group_id: ag_id,
+                allowed_protocols: vec!["mcp".to_string()],
+                valid_from: None,
+                valid_until: None,
+                require_mfa: false,
+                require_approval: false,
+                max_session_duration: None,
+                is_active: true,
+                priority: 0,
+                mcp_allowed_tools: tools.0,
+                mcp_hitl_tools: tools.1,
+                mcp_require_plan_tools: tools.2,
+                mcp_drift_iam: "suspend_group".into(),
+            }
+        }
+
+        async fn set_allowed_tools(pool: &DbPool, asset_id: i32, tools: &[&str]) {
+            let mut conn = pool.get().await.unwrap();
+            diesel::update(assets::table.filter(assets::id.eq(asset_id)))
+                .set(assets::connection_config.eq(serde_json::json!({ "allowed_tools": tools })))
+                .execute(&mut conn)
+                .await
+                .unwrap();
+        }
+
+        async fn rule_tool_cols(pool: &DbPool, uuid: &str) -> McpRuleToolColumns {
+            let mut conn = pool.get().await.unwrap();
+            access_rules::table
+                .filter(access_rules::uuid.eq(Uuid::parse_str(uuid).unwrap()))
+                .select((
+                    access_rules::mcp_allowed_tools,
+                    access_rules::mcp_hitl_tools,
+                    access_rules::mcp_require_plan_tools,
+                ))
+                .first(&mut conn)
+                .await
+                .unwrap()
+        }
+
+        fn pg(list: &[&str]) -> Option<Vec<Option<String>>> {
+            Some(list.iter().map(|s| Some((*s).to_string())).collect())
+        }
+
+        async fn prune(pool: &DbPool, groups: Option<Vec<i32>>) -> u32 {
+            match handle_access_request(
+                pool,
+                AccessRequest::PruneMcpRuleTools {
+                    asset_group_ids: groups,
+                },
+            )
+            .await
+            {
+                AccessResponse::McpRuleToolsPruned { rules_changed } => rules_changed,
+                other => panic!("expected McpRuleToolsPruned, got {other:?}"),
+            }
+        }
+
+        /// One MCP asset in its own asset group, catalogue `approved`.
+        async fn mcp_fixture(
+            pool: &DbPool,
+            tag: &str,
+            approved: &[&str],
+        ) -> (VaubanGroupInfo, AssetGroupInfo, i32) {
+            let ug = create_test_vauban_group(pool, &unique_name(&format!("{tag}_ug"))).await;
+            let ag = create_test_asset_group(pool, &unique_name(&format!("{tag}_ag"))).await;
+            let (asset_id, _) = insert_test_asset_with_type(
+                pool,
+                &unique_name(&format!("{tag}_asset")),
+                "mcp",
+                443,
+            )
+            .await;
+            set_allowed_tools(pool, asset_id, approved).await;
+            link_asset_to_group(pool, asset_id, ag.id).await;
+            (ug, ag, asset_id)
+        }
+
+        async fn mcp_fixture_cleanup(
+            pool: &DbPool,
+            ug: &VaubanGroupInfo,
+            ag: &AssetGroupInfo,
+            asset_id: i32,
+        ) {
+            cleanup_asset(pool, asset_id).await;
+            cleanup_asset_group(pool, &ag.uuid).await;
+            cleanup_vauban_group(pool, &ug.uuid).await;
+        }
+
+        #[tokio::test]
+        async fn mcp_rule_tools_create_and_update_refuse_unapproved_names() {
+            let pool = test_pool().await;
+            let (ug, ag, asset_id) = mcp_fixture(&pool, "mrt_write", &["echo"]).await;
+            let name = unique_name("mrt_write_rule");
+
+            let refused = handle_access_request(
+                &pool,
+                AccessRequest::CreateAccessRule {
+                    data: mcp_rule_data(
+                        &name,
+                        ug.id,
+                        ag.id,
+                        (names(&["echo", "create_task"]), None, None),
+                    ),
+                    actor_uuid: None,
+                },
+            )
+            .await;
+            match refused {
+                AccessResponse::AccessRule(Err(msg)) => {
+                    assert!(
+                        msg.starts_with(shared::mcp_policy::RULE_TOOLS_NOT_APPROVED),
+                        "{msg}"
+                    );
+                    assert!(
+                        msg.contains("create_task") && !msg.contains("echo"),
+                        "{msg}"
+                    );
+                }
+                other => panic!("pending tool must be refused, got {other:?}"),
+            }
+            let mut conn = pool.get().await.unwrap();
+            let written: i64 = access_rules::table
+                .filter(access_rules::name.eq(&name))
+                .count()
+                .get_result(&mut conn)
+                .await
+                .unwrap();
+            drop(conn);
+            assert_eq!(written, 0, "a refused create writes nothing");
+
+            let rule = match handle_access_request(
+                &pool,
+                AccessRequest::CreateAccessRule {
+                    data: mcp_rule_data(
+                        &name,
+                        ug.id,
+                        ag.id,
+                        (names(&["echo"]), names(&["echo"]), None),
+                    ),
+                    actor_uuid: None,
+                },
+            )
+            .await
+            {
+                AccessResponse::AccessRule(Ok(info)) => info,
+                other => panic!("approved names must be accepted, got {other:?}"),
+            };
+
+            for tools in [
+                (names(&["echo"]), None, names(&["create_task"])),
+                (names(&["echo"]), names(&["ghost"]), None),
+                (names(&["unknown"]), None, None),
+            ] {
+                match handle_access_request(
+                    &pool,
+                    AccessRequest::UpdateAccessRule {
+                        uuid: rule.uuid.clone(),
+                        data: mcp_rule_data(&name, ug.id, ag.id, tools),
+                        actor_uuid: None,
+                    },
+                )
+                .await
+                {
+                    AccessResponse::AccessRule(Err(msg)) => {
+                        assert!(
+                            msg.starts_with(shared::mcp_policy::RULE_TOOLS_NOT_APPROVED),
+                            "{msg}"
+                        )
+                    }
+                    other => {
+                        panic!("update naming a non-approved tool must be refused, got {other:?}")
+                    }
+                }
+            }
+            assert_eq!(
+                rule_tool_cols(&pool, &rule.uuid).await,
+                (pg(&["echo"]), pg(&["echo"]), None),
+                "a refused update leaves the row unchanged"
+            );
+
+            let other_ag = create_test_asset_group(&pool, &unique_name("mrt_write_other")).await;
+            match handle_access_request(
+                &pool,
+                AccessRequest::UpdateAccessRule {
+                    uuid: rule.uuid.clone(),
+                    data: mcp_rule_data(&name, ug.id, other_ag.id, (names(&["echo"]), None, None)),
+                    actor_uuid: None,
+                },
+            )
+            .await
+            {
+                AccessResponse::AccessRule(Err(_)) => {}
+                other => {
+                    panic!(
+                        "moving the rule to a group without the tool must be refused, got {other:?}"
+                    )
+                }
+            }
+
+            let mut ssh = mcp_rule_data(
+                &unique_name("mrt_write_ssh"),
+                ug.id,
+                ag.id,
+                (names(&["ghost"]), None, None),
+            );
+            ssh.allowed_protocols = vec!["ssh".into()];
+            assert!(
+                matches!(
+                    handle_access_request(
+                        &pool,
+                        AccessRequest::CreateAccessRule {
+                            data: ssh,
+                            actor_uuid: None
+                        }
+                    )
+                    .await,
+                    AccessResponse::AccessRule(Err(_))
+                ),
+                "tool names are checked whatever the protocols"
+            );
+
+            cleanup_rule(&pool, &rule.uuid).await;
+            cleanup_asset_group(&pool, &other_ag.uuid).await;
+            mcp_fixture_cleanup(&pool, &ug, &ag, asset_id).await;
+        }
+
+        #[tokio::test]
+        async fn mcp_rule_tools_prune_rewrites_every_rule_of_one_group() {
+            let pool = test_pool().await;
+            let (ug, ag, asset_id) = mcp_fixture(&pool, "mrt_two", &["echo", "purge"]).await;
+            let ug2 = create_test_vauban_group(&pool, &unique_name("mrt_two_ug2")).await;
+            let mut rules = Vec::new();
+            for (tag, ug_id) in [("mrt_two_a", ug.id), ("mrt_two_b", ug2.id)] {
+                match handle_access_request(
+                    &pool,
+                    AccessRequest::CreateAccessRule {
+                        data: mcp_rule_data(
+                            &unique_name(tag),
+                            ug_id,
+                            ag.id,
+                            (names(&["echo", "purge"]), None, None),
+                        ),
+                        actor_uuid: None,
+                    },
+                )
+                .await
+                {
+                    AccessResponse::AccessRule(Ok(info)) => rules.push(info),
+                    other => panic!("create {tag}: {other:?}"),
+                }
+            }
+
+            set_allowed_tools(&pool, asset_id, &["echo"]).await;
+            assert_eq!(prune(&pool, Some(vec![ag.id])).await, 2);
+            for rule in &rules {
+                assert_eq!(
+                    rule_tool_cols(&pool, &rule.uuid).await,
+                    (pg(&["echo"]), None, None)
+                );
+                cleanup_rule(&pool, &rule.uuid).await;
+            }
+            cleanup_vauban_group(&pool, &ug2.uuid).await;
+            mcp_fixture_cleanup(&pool, &ug, &ag, asset_id).await;
+        }
+
+        #[tokio::test]
+        async fn mcp_rule_tools_prune_follows_quarantine_regroup_and_delete() {
+            let pool = test_pool().await;
+            let (ug, ag, asset_id) =
+                mcp_fixture(&pool, "mrt_prune", &["echo", "purge", "read"]).await;
+            let (ug2, ag2, asset2) = mcp_fixture(&pool, "mrt_prune_other", &["purge"]).await;
+            let name = unique_name("mrt_prune_rule");
+            let rule = match handle_access_request(
+                &pool,
+                AccessRequest::CreateAccessRule {
+                    data: mcp_rule_data(
+                        &name,
+                        ug.id,
+                        ag.id,
+                        (
+                            names(&["echo", "purge", "read"]),
+                            names(&["purge"]),
+                            names(&["read"]),
+                        ),
+                    ),
+                    actor_uuid: None,
+                },
+            )
+            .await
+            {
+                AccessResponse::AccessRule(Ok(info)) => info,
+                other => panic!("create: {other:?}"),
+            };
+            let bystander = match handle_access_request(
+                &pool,
+                AccessRequest::CreateAccessRule {
+                    data: mcp_rule_data(
+                        &unique_name("mrt_prune_by"),
+                        ug2.id,
+                        ag2.id,
+                        (names(&["purge"]), None, None),
+                    ),
+                    actor_uuid: None,
+                },
+            )
+            .await
+            {
+                AccessResponse::AccessRule(Ok(info)) => info,
+                other => panic!("create bystander: {other:?}"),
+            };
+
+            assert_eq!(
+                prune(&pool, Some(vec![ag.id])).await,
+                0,
+                "nothing left the catalogue yet"
+            );
+
+            // Quarantine: `purge` goes back to pending, only that name leaves.
+            set_allowed_tools(&pool, asset_id, &["echo", "read"]).await;
+            assert_eq!(prune(&pool, Some(vec![ag.id])).await, 1);
+            assert_eq!(
+                rule_tool_cols(&pool, &rule.uuid).await,
+                (pg(&["echo", "read"]), None, pg(&["read"]))
+            );
+            set_allowed_tools(&pool, asset_id, &["echo", "purge", "read"]).await;
+            assert_eq!(prune(&pool, Some(vec![ag.id])).await, 0);
+            assert_eq!(
+                rule_tool_cols(&pool, &rule.uuid).await,
+                (pg(&["echo", "read"]), None, pg(&["read"])),
+                "re-approval does not bring the old mode back"
+            );
+
+            // Asset out of the group: nothing is approved on the group any more.
+            {
+                let mut conn = pool.get().await.unwrap();
+                diesel::delete(
+                    asset_asset_groups::table
+                        .filter(asset_asset_groups::asset_id.eq(asset_id))
+                        .filter(asset_asset_groups::asset_group_id.eq(ag.id)),
+                )
+                .execute(&mut conn)
+                .await
+                .unwrap();
+            }
+            assert_eq!(prune(&pool, Some(vec![ag.id])).await, 1);
+            assert_eq!(
+                rule_tool_cols(&pool, &rule.uuid).await,
+                (Some(vec![]), None, None)
+            );
+
+            // Back in the group, modes set again, then the asset is soft-deleted.
+            link_asset_to_group(&pool, asset_id, ag.id).await;
+            match handle_access_request(
+                &pool,
+                AccessRequest::UpdateAccessRule {
+                    uuid: rule.uuid.clone(),
+                    data: mcp_rule_data(
+                        &name,
+                        ug.id,
+                        ag.id,
+                        (names(&["echo"]), names(&["echo"]), None),
+                    ),
+                    actor_uuid: None,
+                },
+            )
+            .await
+            {
+                AccessResponse::AccessRule(Ok(_)) => {}
+                other => panic!("update: {other:?}"),
+            }
+            {
+                let mut conn = pool.get().await.unwrap();
+                diesel::update(assets::table.filter(assets::id.eq(asset_id)))
+                    .set((
+                        assets::is_deleted.eq(true),
+                        assets::deleted_at.eq(Utc::now()),
+                        assets::connection_config.eq(serde_json::json!({})),
+                    ))
+                    .execute(&mut conn)
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(prune(&pool, Some(vec![ag.id])).await, 1);
+            assert_eq!(
+                rule_tool_cols(&pool, &rule.uuid).await,
+                (Some(vec![]), None, None),
+                "a deleted asset leaves no mode behind"
+            );
+            assert_eq!(
+                rule_tool_cols(&pool, &bystander.uuid).await,
+                (pg(&["purge"]), None, None),
+                "a scoped prune never touches another group's rule"
+            );
+
+            cleanup_rule(&pool, &rule.uuid).await;
+            cleanup_rule(&pool, &bystander.uuid).await;
+            mcp_fixture_cleanup(&pool, &ug, &ag, asset_id).await;
+            mcp_fixture_cleanup(&pool, &ug2, &ag2, asset2).await;
+        }
+
+        #[tokio::test]
+        async fn mcp_rule_tools_boot_prune_clears_a_seeded_leftover() {
+            let pool = test_pool().await;
+            let (ug, ag, asset_id) = mcp_fixture(&pool, "mrt_boot", &["echo"]).await;
+            let rule = create_test_rule(
+                &pool,
+                &unique_name("mrt_boot_rule"),
+                ug.id,
+                ag.id,
+                vec!["mcp"],
+            )
+            .await;
+            {
+                let mut conn = pool.get().await.unwrap();
+                diesel::update(
+                    access_rules::table
+                        .filter(access_rules::uuid.eq(Uuid::parse_str(&rule.uuid).unwrap())),
+                )
+                .set((
+                    access_rules::mcp_allowed_tools.eq(pg(&["echo", "left_by_deleted_asset"])),
+                    access_rules::mcp_hitl_tools.eq(pg(&["left_by_deleted_asset"])),
+                ))
+                .execute(&mut conn)
+                .await
+                .unwrap();
+            }
+            crate::mcp_rule_tools::prune_at_boot(&pool).await;
+            assert_eq!(
+                rule_tool_cols(&pool, &rule.uuid).await,
+                (pg(&["echo"]), None, None)
+            );
+
+            cleanup_rule(&pool, &rule.uuid).await;
+            mcp_fixture_cleanup(&pool, &ug, &ag, asset_id).await;
+        }
+
+        /// Battle: writers keep naming `purge` on a rule while `purge` is
+        /// quarantined and the prune runs. A write validated against the old
+        /// catalogue cannot land after the prune: at the end no rule names it.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn battle_mcp_rule_tools_writes_vs_quarantine_prune() {
+            use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+            let pool = test_pool().await;
+            let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+                "postgresql://vauban_test:vauban_test@localhost/vauban_test".to_string()
+            });
+            let wide = Pool::builder(AsyncDieselConnectionManager::<AsyncPgConnection>::new(&url))
+                .max_size(16)
+                .build()
+                .unwrap();
+            let (ug, ag, asset_id) = mcp_fixture(&pool, "mrt_battle", &["echo", "purge"]).await;
+            let rules = vec![
+                create_test_rule(
+                    &pool,
+                    &unique_name("mrt_battle_rule"),
+                    ug.id,
+                    ag.id,
+                    vec!["mcp"],
+                )
+                .await,
+            ];
+
+            let stop = Arc::new(AtomicBool::new(false));
+            let accepted = Arc::new(AtomicU32::new(0));
+            let refused = Arc::new(AtomicU32::new(0));
+            let writers: Vec<_> = rules
+                .iter()
+                .flat_map(|r| std::iter::repeat_n(r.clone(), 12))
+                .map(|rule| {
+                    let (wide, stop, accepted, refused) = (
+                        wide.clone(),
+                        Arc::clone(&stop),
+                        Arc::clone(&accepted),
+                        Arc::clone(&refused),
+                    );
+                    let (ug_id, ag_id) = (ug.id, ag.id);
+                    tokio::spawn(async move {
+                        while !AtomicBool::load(&stop, Ordering::Relaxed) {
+                            let resp = handle_access_request(
+                                &wide,
+                                AccessRequest::UpdateAccessRule {
+                                    uuid: rule.uuid.clone(),
+                                    data: mcp_rule_data(
+                                        &rule.name,
+                                        ug_id,
+                                        ag_id,
+                                        (names(&["echo", "purge"]), names(&["purge"]), None),
+                                    ),
+                                    actor_uuid: None,
+                                },
+                            )
+                            .await;
+                            match resp {
+                                AccessResponse::AccessRule(Ok(_)) => {
+                                    accepted.fetch_add(1, Ordering::Relaxed)
+                                }
+                                AccessResponse::AccessRule(Err(_)) => {
+                                    refused.fetch_add(1, Ordering::Relaxed)
+                                }
+                                other => panic!("unexpected {other:?}"),
+                            };
+                        }
+                    })
+                })
+                .collect();
+
+            let mut survived = Vec::new();
+            for round in 0..80 {
+                set_allowed_tools(&wide, asset_id, &["echo", "purge"]).await;
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                set_allowed_tools(&wide, asset_id, &["echo"]).await;
+                prune(&wide, Some(vec![ag.id])).await;
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                for rule in &rules {
+                    let (allow, hitl, _) = rule_tool_cols(&pool, &rule.uuid).await;
+                    let named = shared::mcp_policy::flatten_pg_text_array(allow)
+                        .into_iter()
+                        .chain(shared::mcp_policy::flatten_pg_text_array(hitl))
+                        .any(|n| n == "purge");
+                    if named {
+                        survived.push(round);
+                    }
+                }
+            }
+            stop.store(true, Ordering::Relaxed);
+            assert!(
+                survived.is_empty(),
+                "a write validated before the quarantine landed after the prune in rounds {survived:?}"
+            );
+            for w in writers {
+                w.await.unwrap();
+            }
+
+            assert!(
+                AtomicU32::load(&accepted, Ordering::Relaxed) > 0,
+                "no write landed before the quarantine"
+            );
+            assert!(
+                AtomicU32::load(&refused, Ordering::Relaxed) > 0,
+                "no write was refused after the quarantine"
+            );
+            for rule in &rules {
+                let (allow, hitl, plan) = rule_tool_cols(&pool, &rule.uuid).await;
+                let all = shared::mcp_policy::flatten_pg_text_array(allow)
+                    .into_iter()
+                    .chain(shared::mcp_policy::flatten_pg_text_array(hitl))
+                    .chain(shared::mcp_policy::flatten_pg_text_array(plan))
+                    .collect::<Vec<_>>();
+                assert!(
+                    !all.contains(&"purge".to_string()),
+                    "quarantined name survived: {all:?}"
+                );
+            }
+
+            for rule in &rules {
+                cleanup_rule(&pool, &rule.uuid).await;
+            }
+            mcp_fixture_cleanup(&pool, &ug, &ag, asset_id).await;
+        }
     }
 }

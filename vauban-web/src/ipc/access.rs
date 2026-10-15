@@ -229,6 +229,19 @@ impl AccessIpcClient {
         }
     }
 
+    /// Ask vauban-access to erase MCP tool names no longer approved on the
+    /// rules of `asset_group_ids` (`None` = every rule).
+    pub async fn prune_mcp_rule_tools(&self, asset_group_ids: Option<Vec<i32>>) -> AppResult<u32> {
+        let resp = self
+            .send_access_request(AccessReq::PruneMcpRuleTools { asset_group_ids })
+            .await?;
+        match resp {
+            AccessResp::McpRuleToolsPruned { rules_changed } => Ok(rules_changed),
+            AccessResp::Error(e) => Err(AppError::Ipc(e)),
+            _ => Err(AppError::Ipc("unexpected response".to_string())),
+        }
+    }
+
     pub async fn issue_session_token(
         &self,
         params: shared::session_token::SessionTokenParams,

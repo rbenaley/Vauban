@@ -737,6 +737,9 @@ pub async fn asset_group_add_asset(
             )
             .user(auth_user.uuid.clone()),
         );
+        // Another rule now covers these assets: it can narrow the MCP
+        // Allow intersection of visits already open on them.
+        crate::services::mcp_recheck::notify_policy_changed(&state).await;
     }
 
     match added {
@@ -933,6 +936,13 @@ pub async fn asset_group_remove_asset(
                 )
                 .user(auth_user.uuid.clone()),
             );
+            crate::services::mcp_recheck::notify_policy_changed(&state).await;
+            crate::services::mcp_rule_prune::prune_after_change(
+                &state,
+                vec![group_pk],
+                "asset_group_member_removed",
+            )
+            .await;
             htmx_or_flash_redirect(
                 &headers,
                 flash.success("Asset removed from group successfully"),
@@ -1477,11 +1487,21 @@ pub async fn delete_asset_group_web(
             diesel::delete(aag::asset_asset_groups.filter(aag::asset_group_id.eq(group_info.id)))
                 .execute(&mut conn)
                 .await;
+        crate::services::mcp_rule_prune::prune_after_change(
+            &state,
+            vec![group_info.id],
+            "asset_group_deleted",
+        )
+        .await;
         client
             .delete_asset_group(&uuid_str)
             .await
             .map(|_| group_info.name)
     };
+
+    // The membership rows are gone even if the group delete itself failed:
+    // live visits granted through this group must be re-evaluated now.
+    crate::services::mcp_recheck::notify_policy_changed(&state).await;
 
     match result {
         Ok(group_name) => {

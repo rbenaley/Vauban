@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use vauban_mcp::cli::{self, Cli};
 use vauban_mcp::session::{self, known_hosts_path};
-use vauban_mcp::{hop, tofu};
+use vauban_mcp::{hop, tofu, trust};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -36,8 +36,13 @@ async fn run() -> Result<(), String> {
     }
     let cli_origin = tofu::origin_key(&cli.url)?;
     let key = cli::load_api_key(cli.api_key_file.as_ref())?;
+    let extra = match cli.ca_file.as_deref() {
+        Some(path) => trust::load_ca_file(path)?,
+        None => Vec::new(),
+    };
+    let tls = trust::client_config(&extra)?;
     let http = reqwest::Client::builder()
-        .use_rustls_tls()
+        .use_preconfigured_tls((*tls).clone())
         .build()
         .map_err(|e| format!("http client: {e}"))?;
     let hop = hop::open_session(&http, &cli.url, &key, &cli.asset, &cli.justification).await?;
@@ -54,11 +59,11 @@ async fn run() -> Result<(), String> {
         let response = if cli.transport == "direct" {
             session::post_direct(&http, &hop, &raw).await
         } else {
-            match session::post_tunnel(&hop, &cli_origin, &raw, &hosts).await {
+            match session::post_tunnel(&hop, &cli_origin, &raw, &hosts, &tls).await {
                 Ok(text) => Ok(text),
                 Err(first) => {
                     tracing::warn!(error = %first, "tunnel dropped, reconnecting once");
-                    session::post_tunnel(&hop, &cli_origin, &raw, &hosts).await
+                    session::post_tunnel(&hop, &cli_origin, &raw, &hosts, &tls).await
                 }
             }
         }?;

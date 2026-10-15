@@ -13,6 +13,20 @@ pub mod inner;
 pub mod pin;
 pub mod session;
 pub mod tofu;
+pub mod trust;
+
+/// `e` and its sources, so a TLS refusal is not hidden behind
+/// "error sending request".
+pub fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut source = e.source();
+    while let Some(s) = source {
+        out.push_str(": ");
+        out.push_str(&s.to_string());
+        source = s.source();
+    }
+    out
+}
 
 /// One stdio line. Logs never share this stream.
 pub fn parse_line(line: &str) -> Result<serde_json::Value, String> {
@@ -37,6 +51,13 @@ mod tests {
         fn random_lines_do_not_panic(raw in "\\PC{0,80}") {
             let _ = parse_line(&raw);
         }
+    }
+
+    #[test]
+    fn error_chain_keeps_the_cause() {
+        let inner = std::io::Error::other("invalid peer certificate: UnknownIssuer");
+        let outer = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, inner);
+        assert!(error_chain(&outer).contains("UnknownIssuer"));
     }
 
     #[test]

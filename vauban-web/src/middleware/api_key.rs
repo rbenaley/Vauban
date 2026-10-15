@@ -48,6 +48,8 @@ pub const API_KEY_PREFIX: &str = "vbn_";
 /// [`AuthUser`]. Consumed by [`api_scope_enforcement`].
 #[derive(Debug, Clone)]
 pub struct ApiKeyAuth {
+    /// `api_keys.uuid` of the authenticating key (MCP `revoke_opener_key`).
+    pub key_uuid: Uuid,
     pub scopes: Vec<ApiKeyScope>,
 }
 
@@ -138,7 +140,7 @@ pub fn extract_api_key(headers: &HeaderMap) -> Option<String> {
 
 /// Authenticate a raw API key against the database.
 ///
-/// Fail-closed (INV-2): returns `Some((AuthUser, scopes))` only when the
+/// Fail-closed (INV-2): returns `Some((AuthUser, ApiKeyAuth))` only when the
 /// key is found, `is_active`, not expired, and its owner is `is_active`.
 /// The synthesized `AuthUser` carries `mfa_verified = true` because an API
 /// key is a machine credential minted by an already-authenticated human,
@@ -148,14 +150,16 @@ pub async fn authenticate_api_key(
     state: &AppState,
     raw_key: &str,
     client_ip: Option<IpNetwork>,
-) -> Option<(AuthUser, Vec<ApiKeyScope>)> {
+) -> Option<(AuthUser, ApiKeyAuth)> {
     use crate::schema::{api_keys, users};
 
     let key_hash = ApiKey::hash_key(raw_key);
     let mut conn = state.db_pool.get().await.ok()?;
 
-    let (key_id, scopes_json, expires_at, user_uuid, username, is_superuser, is_staff): (
+    #[allow(clippy::type_complexity)]
+    let (key_id, key_uuid, scopes_json, expires_at, user_uuid, username, is_superuser, is_staff): (
         i32,
+        Uuid,
         serde_json::Value,
         Option<DateTime<Utc>>,
         Uuid,
@@ -170,6 +174,7 @@ pub async fn authenticate_api_key(
         .filter(users::is_deleted.eq(false))
         .select((
             api_keys::id,
+            api_keys::uuid,
             api_keys::scopes,
             api_keys::expires_at,
             users::uuid,
@@ -209,7 +214,7 @@ pub async fn authenticate_api_key(
         is_staff,
     };
 
-    Some((user, scopes))
+    Some((user, ApiKeyAuth { key_uuid, scopes }))
 }
 
 /// Map an API request to the scope it requires.
@@ -362,6 +367,7 @@ mod tests {
 
     fn auth(scopes: &[ApiKeyScope]) -> ApiKeyAuth {
         ApiKeyAuth {
+            key_uuid: Uuid::nil(),
             scopes: scopes.to_vec(),
         }
     }

@@ -787,11 +787,11 @@ async fn test_session_creation_wrong_protocol_denied() {
     let username = unique_name("test_ac_proto");
     let user = create_test_user(&mut conn, &app.auth_service, &username).await;
 
-    let ug = create_test_vauban_group(&mut conn, "test-ug-proto").await;
-    let ag = create_test_asset_group(&mut conn, "test-ag-proto").await;
+    let ug = create_test_vauban_group(&mut conn, &unique_name("test-ug-proto")).await;
+    let ag = create_test_asset_group(&mut conn, &unique_name("test-ag-proto")).await;
     add_user_to_vauban_group(&mut conn, user.user.id, &ug).await;
-    let asset_id =
-        create_test_asset_in_group(&mut conn, "test-proto-asset", user.user.id, &ag).await;
+    let asset_name = unique_name("test-proto-asset");
+    let asset_id = create_test_asset_in_group(&mut conn, &asset_name, user.user.id, &ag).await;
     let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
     // Only SSH is allowed
     create_test_access_rule(&mut conn, &ug, &ag, &["ssh"]).await;
@@ -879,6 +879,40 @@ async fn test_session_creation_superuser_bypass() {
         status == 200 || status == 201,
         "Superuser should bypass access rules, got {}",
         status
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Bypassing access rules does not bypass protocol coherence: RDP on an SSH asset is 400.
+#[tokio::test]
+#[serial]
+async fn test_session_creation_superuser_protocol_mismatch_rejected() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("su_mm_adm")).await;
+    let ag = create_test_asset_group(&mut conn, &unique_name("test-ag-su-mm")).await;
+    let asset_name = unique_name("test-su-mm-asset");
+    let asset_id = create_test_asset_in_group(&mut conn, &asset_name, admin.user.id, &ag).await;
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
+    let su = create_superuser_only(&mut conn, &app.auth_service, &unique_name("su_mm")).await;
+
+    let response = app
+        .server
+        .post("/api/v1/sessions")
+        .add_header(header::AUTHORIZATION, app.api_key_header(&su.api_key))
+        .json(&json!({
+            "asset_id": asset_uuid.to_string(),
+            "credential_id": "cred-test",
+            "session_type": "rdp"
+        }))
+        .await;
+
+    assert_status(&response, 400);
+    assert!(
+        response.text().contains("does not match asset type"),
+        "mismatch must be explicit for an allowed caller"
     );
 
     test_db::cleanup(&mut conn).await;

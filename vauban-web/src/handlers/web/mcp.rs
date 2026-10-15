@@ -10,7 +10,7 @@ use crate::error::AppError;
 use crate::models::asset::{Asset, AssetType};
 use crate::models::session::{NewProxySession, SessionType};
 use crate::services::mcp_session::{
-    MCP_PROTOCOL_VERSIONS, clamp_ttl_capped, open_on_proxy, resolve_effective_allowed_tools,
+    MCP_PROTOCOL_VERSIONS, clamp_ttl_capped, effective_tools_from_access, open_on_proxy,
 };
 use askama::Template;
 use axum::http::HeaderMap;
@@ -129,14 +129,15 @@ pub async fn connect_mcp(
 
     // Always required for MCP (agents); length matches SSH/RDP SEC-03
     // modal (min 10 / max 1000), independent of require_justification flag.
-    let justification = form.justification.unwrap_or_default().trim().to_string();
-    if justification.len() < 10 || justification.len() > 1000 {
+    let justification = form.justification.unwrap_or_default();
+    if !crate::handlers::api::mcp_sessions::mcp_justification_accepted(&justification) {
         return fail_connect(
             is_htmx,
             flash,
             "Justification is required for MCP sessions (10..1000 characters)",
         );
     }
+    let justification = justification.trim().to_string();
 
     let mut conn = match state.db_pool.get().await {
         Ok(c) => c,
@@ -213,14 +214,14 @@ pub async fn connect_mcp(
         Some(state.config.mcp.session_ttl_clamped()),
     );
     let expires_at = Utc::now() + Duration::seconds(ttl);
-    let allowed_tools = match resolve_effective_allowed_tools(&mut conn, user_id, &asset).await {
+    let allowed_tools = match effective_tools_from_access(&state, &auth_user.uuid, &asset).await {
         Ok(t) => t,
         Err(e) => {
-            tracing::error!(error = %e, "resolve MCP allowed_tools failed");
+            tracing::error!(error = %e, "access ComputeMcpEffectiveTools failed");
             return fail_connect(is_htmx, flash, "Failed to resolve MCP tool whitelist");
         }
     };
-    if allowed_tools.as_ref().is_some_and(|t| t.is_empty()) {
+    if allowed_tools.is_empty() {
         return fail_connect(
             is_htmx,
             flash,
@@ -236,6 +237,7 @@ pub async fn connect_mcp(
         crate::middleware::extract_client_ip(&headers, client_addr.addr(), &trusted);
 
     let session_uuid = Uuid::new_v4();
+    let connected_at = Utc::now();
     let new_session = NewProxySession {
         uuid: session_uuid,
         user_id,
@@ -258,6 +260,7 @@ pub async fn connect_mcp(
         industrial_protocol: None,
         ews_uuid: None,
         tunnel_target_addr: None,
+        connected_at: Some(connected_at),
     };
 
     if let Err(e) = diesel::insert_into(crate::schema::proxy_sessions::table)
@@ -279,7 +282,7 @@ pub async fn connect_mcp(
         session_uuid,
         expires_at,
         &justification,
-        allowed_tools.clone(),
+        connected_at,
     )
     .await
     {
@@ -309,7 +312,6 @@ pub async fn connect_mcp(
             .await
             .into_fields();
 
-    let tools_for_ui = allowed_tools.unwrap_or_default();
     let tmpl = McpSessionTemplate {
         title,
         user,
@@ -324,7 +326,7 @@ pub async fn connect_mcp(
         expires_at: expires_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         asset_name: asset.name,
         mcp_protocol_versions: MCP_PROTOCOL_VERSIONS.to_vec(),
-        allowed_tools: tools_for_ui,
+        allowed_tools,
     };
 
     match tmpl.render() {
@@ -333,11 +335,12 @@ pub async fn connect_mcp(
                 // Justification modal uses `htmx.ajax(..., {swap:'none'})`;
                 // asset-list MCP form may also use swap none. Override so
                 // the one-time bearer page still replaces the document.
+                // innerHTML keeps <body ws-connect> and its live socket.
                 return (
                     axum::http::StatusCode::OK,
                     [
                         ("HX-Retarget", "body"),
-                        ("HX-Reswap", "outerHTML"),
+                        ("HX-Reswap", "innerHTML"),
                         ("Content-Type", "text/html; charset=utf-8"),
                     ],
                     html,
@@ -408,8 +411,15 @@ mod tests {
         assert!(justification_bounds_match_sec03());
     }
 
+    /// Same seam as the API open: characters, not bytes, after trim.
     fn justification_bounds_match_sec03() -> bool {
+        use crate::handlers::api::mcp_sessions::mcp_justification_accepted;
         let src = include_str!("mcp.rs");
-        src.contains("justification.len() < 10 || justification.len() > 1000")
+        src.contains("mcp_justification_accepted(&justification)")
+            && !src.contains(concat!("justification", ".len()"))
+            && mcp_justification_accepted(&"é".repeat(10))
+            && mcp_justification_accepted(&"é".repeat(1000))
+            && !mcp_justification_accepted(&"é".repeat(9))
+            && !mcp_justification_accepted(&format!("  {}  ", "é".repeat(1001)))
     }
 }

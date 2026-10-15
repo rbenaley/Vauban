@@ -52,6 +52,10 @@
 
     <!-- Navigation -->
     <nav class="flex flex-1 flex-col">
+        {# Per-user WS OOB target (`/ws/notifications`): MCP notices for
+           the session owner, e.g. a tool quarantined after an upstream
+           definition change. Empty until a notice arrives. #}
+        <div id="sidebar-mcp-notice" data-testid="sidebar-mcp-notice"></div>
         <ul role="list" class="flex flex-1 flex-col gap-y-7">
             {# Issue #26 -- introduce a "User Zone" label symmetric to
                the existing "Administration" label below. The block
@@ -189,7 +193,7 @@
                     {% if sc.perms.sessions_supervise || sc.perms.access_rules_read %}
                     <li>
                         <a href="/sessions/mcp"
-                           class="group flex gap-x-3 rounded-md p-2 text-sm font-semibold leading-6 text-gray-400 hover:bg-gray-800 hover:text-white">
+                           class="group flex gap-x-3 rounded-md p-2 text-sm font-semibold leading-6 {% if sc.is_mcp %}bg-gray-800 text-white{% else %}text-gray-400 hover:bg-gray-800 hover:text-white{% endif %}">
                             <svg class="h-6 w-6 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
                                 <path stroke-linecap="round" stroke-linejoin="round" d="M7 7.3H11.05V6.6A.95.95 0 0 0 12.95 6.6V7.3H17A3 3 0 0 1 20 10.3V15.7A3 3 0 0 1 17 18.7H7A3 3 0 0 1 4 15.7V10.3A3 3 0 0 1 7 7.3Z"/>
                                 <circle cx="9.15" cy="13" r="1.55" fill="currentColor" stroke="none"/>
@@ -203,6 +207,9 @@
                                   title="MCP is a beta preview surface; UX, schema and audit shape may change between releases.">
                                 Beta
                             </span>
+                            {% if sc.perms.sessions_supervise %}
+                            <span id="sidebar-mcp-badge" data-testid="sidebar-mcp-badge" {% if sc.pending_mcp_count > 0 %}class="ml-auto inline-flex items-center rounded-full bg-vauban-600 px-2 py-0.5 text-xs font-medium text-white"{% endif %}>{% if sc.pending_mcp_count > 0 %}{{ sc.pending_mcp_count }}{% endif %}</span>
+                            {% endif %}
                         </a>
                     </li>
                     {% endif %}

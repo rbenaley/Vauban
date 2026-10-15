@@ -112,6 +112,7 @@ impl ServiceState {
             recording_ack_dropped,
             recording_try_send_full: 0,
             recording_ack_wait_ms_max,
+            audit_events_dropped: 0,
         }
     }
 }

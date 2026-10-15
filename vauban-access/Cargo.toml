@@ -40,5 +40,5 @@ ipnetwork = "0.21"
 serde_json = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 proptest = "1"

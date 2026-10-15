@@ -146,6 +146,8 @@ async fn e2e_revoke_blocks_new_sessions_and_terminates_live() {
     let grant_uuid = create_approved_session(&mut conn, user_id, asset_id, Some(3600)).await;
     let live_ssh = seed_live_session(&mut conn, user_id, asset_id, "ssh", "active", None).await;
     let live_rdp = seed_live_session(&mut conn, user_id, asset_id, "rdp", "connecting", None).await;
+    let paused_mcp =
+        seed_live_session(&mut conn, user_id, asset_id, "mcp", "suspended", None).await;
 
     assert!(
         connect_lookup(&mut conn, user_id, asset_id).await.is_some(),
@@ -210,6 +212,11 @@ async fn e2e_revoke_blocks_new_sessions_and_terminates_live() {
         session_status(&mut conn, live_rdp).await,
         "terminated",
         "live RDP session must be cascade-terminated"
+    );
+    assert_eq!(
+        session_status(&mut conn, paused_mcp).await,
+        "terminated",
+        "a suspended MCP session can be resumed, so the cascade cuts it too"
     );
 
     // Audit: an append-only `revoke` row landed.
@@ -1036,6 +1043,7 @@ async fn e2e_revoked_status_is_wired_in_ui_helpers() {
         approved_by: None,
         max_session_duration: None,
         decision_id: None,
+        contestation: None,
     };
     assert_eq!(item.status_label(), "Revoked");
     assert!(!item.is_approved(), "revoked grant must not be connectable");

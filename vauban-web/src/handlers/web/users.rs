@@ -2562,27 +2562,30 @@ pub async fn revoke_api_key(
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to revoke API key: {}", e)))?;
 
+    // Out-of-band on both paths: the WebSocket copy may replace the row
+    // before this response lands, so the form swaps nothing itself.
     let revoked_html = format!(
-        r#"<tr id="api-key-{}" class="opacity-50"><td colspan="6" class="px-6 py-4 text-center text-sm text-gray-500 dark:text-gray-400">API key revoked</td></tr>"#,
+        r#"<tr id="api-key-{}" hx-swap-oob="outerHTML" class="opacity-50"><td colspan="6" class="px-6 py-4 text-center text-sm text-gray-500 dark:text-gray-400">API key revoked</td></tr>"#,
         key_uuid
     );
 
-    // Send WebSocket notification if key was updated
     if updated > 0 {
         let channel = WsChannel::UserApiKeys(auth_user.uuid.clone());
-        // Send raw HTML with hx-swap-oob attribute for HTMX WebSocket extension
-        let ws_html = format!(
-            r#"<tr id="api-key-{}" hx-swap-oob="outerHTML" class="opacity-50"><td colspan="6" class="px-6 py-4 text-center text-sm text-gray-500 dark:text-gray-400">API key revoked</td></tr>"#,
-            key_uuid
-        );
         state
             .broadcast
-            .send_raw(&channel.as_str(), ws_html)
+            .send_raw(&channel.as_str(), revoked_html.clone())
             .await
             .ok();
+        crate::services::api_key_lifecycle::after_api_key_invalidated(
+            &state,
+            key_uuid,
+            user_id,
+            &auth_user.uuid,
+            crate::services::api_key_lifecycle::ApiKeyLifecycleAction::Revoked,
+        )
+        .await;
     }
 
-    // Return updated row HTML for direct HTMX swap
     Ok(Html(revoked_html).into_response())
 }
 
@@ -2816,15 +2819,15 @@ pub async fn deactivate_user(
     )
     .await;
 
-    // 2. Terminate all live proxy sessions (SSH/RDP/IACS) via the
-    //    shared terminate core (same seam as the API terminate endpoint
+    // 2. Terminate all open proxy sessions (SSH/RDP/IACS/MCP, suspended
+    //    included) via the shared terminate core (same seam as the API terminate endpoint
     //    and the JIT grant revocation cascade): DB update + recording
     //    fields, hydration enqueue and proxy-side force-close --
     //    including the IACS terminate IPC that this sweep previously
     //    lacked.
     let active_sessions: Vec<ProxySession> = proxy_sessions::table
         .filter(proxy_sessions::user_id.eq(user_id))
-        .filter(proxy_sessions::status.eq_any(SessionStatus::LIVE_AS_STR))
+        .filter(proxy_sessions::status.eq_any(SessionStatus::OPEN_AS_STR))
         .load(&mut conn)
         .await
         .unwrap_or_default();

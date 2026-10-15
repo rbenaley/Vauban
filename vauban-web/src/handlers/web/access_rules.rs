@@ -665,6 +665,8 @@ pub async fn create_access_rule_web(
                 )
                 .user(auth_user.uuid.clone()),
             );
+            // A new rule can narrow the MCP Allow intersection of live visits.
+            crate::services::mcp_recheck::notify_policy_changed(&state).await;
             flash_redirect(
                 flash.success(format!("Access rule '{}' created", sanitized_name)),
                 &format!("/assets/access/{}", info.uuid),
@@ -964,6 +966,7 @@ pub async fn update_access_rule_web(
                 )
                 .user(auth_user.uuid.clone()),
             );
+            crate::services::mcp_recheck::notify_policy_changed(&state).await;
             flash_redirect(
                 flash.success(format!("Access rule '{}' updated", sanitized_name)),
                 &format!("/assets/access/{}", uuid_str),
@@ -1051,6 +1054,7 @@ pub async fn delete_access_rule_web(
                 )
                 .user(auth_user.uuid.clone()),
             );
+            crate::services::mcp_recheck::notify_policy_changed(&state).await;
             htmx_or_flash_redirect(
                 &headers,
                 flash.success("Access rule deleted"),

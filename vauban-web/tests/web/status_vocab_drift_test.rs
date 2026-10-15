@@ -430,6 +430,18 @@ fn live_as_str_matches_is_live_for_every_variant() {
 }
 
 #[test]
+fn open_as_str_is_live_plus_suspended() {
+    for status in SessionStatus::ALL {
+        let s = status.as_str();
+        assert_eq!(
+            status.is_live() || *status == SessionStatus::Suspended,
+            SessionStatus::OPEN_AS_STR.contains(&s),
+            "OPEN_AS_STR disagrees with live-or-suspended for '{s}'"
+        );
+    }
+}
+
+#[test]
 fn operator_active_is_subset_of_live() {
     for s in SessionStatus::OPERATOR_ACTIVE_AS_STR {
         assert!(

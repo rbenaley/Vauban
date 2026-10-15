@@ -31,6 +31,74 @@ test *ARGS:
     cargo test --workspace {{ARGS}} -- --test-threads=1
     cargo test {{rdp_manifest}} {{ARGS}} -- --test-threads=1
 
+# MCP acceptance GWT filter (docs/technical/Vauban_MCP_Architecture_EN(1.0).md).
+# Covers V-1, V-8, V-15, L0-1, B-5, B-6, B-7, B-11 (proxy-mcp unit + web source pins).
+# V-15 AccessGuard timeout substrate is also asserted inside proxy-mcp `gwt_v15_*`.
+# Also runs the proxy `gwt_*` tests of the MCP security fixes.
+# FreeBSD live checklist: docs/runbooks/mcp_staging_gwt_acceptance.md
+test-mcp-gwt:
+    cargo test -p vauban-proxy-mcp --bin vauban-proxy-mcp gwt_ -- --test-threads=1
+    cargo test -p vauban-proxy-mcp --bin vauban-proxy-mcp upstream_rebroker -- --test-threads=1
+    cargo test -p vauban-supervisor --bin vauban-supervisor test_supervisor_tcp_broker_bypasses -- --test-threads=1
+    cargo test -p vauban-web --test integration_tests gwt_ -- --test-threads=1
+    cargo test -p vauban-web --test integration_tests mcp_audit_fixes -- --test-threads=1
+    cargo test -p vauban-web --test integration_tests mcp_security_fixes -- --test-threads=1
+    cargo test -p vauban-web --test integration_tests mcp_hitl_decide -- --test-threads=1
+    cargo test -p shared --lib --features access-guard test_authorize_timeout_when_backend_silent -- --test-threads=1
+    cargo test -p shared --lib --features access-guard,mcp-mandate test_mcp_mandate_ -- --test-threads=1
+    cargo test -p shared --lib --features mcp-mandate plan_mandate_pdp -- --test-threads=1
+    cargo test -p vauban-access --lib mcp_pdp -- --test-threads=1
+    cargo test -p vauban-access --lib peer_authz -- --test-threads=1
+    cargo test -p vauban-vault --bin vauban-vault proxy_mcp -- --test-threads=1
+    cargo test -p vauban-proxy-mcp --bin vauban-proxy-mcp mcp_fix_e2e -- --test-threads=1
+    cargo test -p vauban-proxy-mcp --bin vauban-proxy-mcp audit::tests -- --test-threads=1
+    cargo test -p vauban-proxy-mcp --bin vauban-proxy-mcp tool_drift -- --test-threads=1
+    cargo test -p vauban-proxy-mcp --bin vauban-proxy-mcp heartbeat_reports_worm_refusals -- --test-threads=1
+    cargo test -p shared --lib --features session-token replay_cache -- --test-threads=1
+    cargo test -p shared --lib --features json-redact json_redact -- --test-threads=1
+    cargo test -p vauban-web --lib mcp_discover -- --test-threads=1
+
+# MCP test pyramid (docs/technical/Vauban_MCP_Architecture_EN(1.0).md §13):
+# every in-process MCP layer (unit, invariant pins, proptest, battle, attack,
+# wire, web and IPC end to end). Filters are substrings of the test path, so
+# a new `mcp_*` test module is picked up without editing this recipe.
+# Smoke runbooks and `just test-full-stack mcp` are the two layers above it.
+test-mcp-pyramid:
+    cargo test -p shared --features mcp-mandate --test mcp_source_invariants --test mcp_policy_proptest --test mcp_mandate_battle --test mcp_wire_frozen_test -- --test-threads=1
+    cargo test -p shared --features session-token --test session_token_proptest --test mcp_replay_battle_test -- --test-threads=1
+    cargo test -p shared --features mcp-mandate --test mcp_mandate_proptest -- --test-threads=1
+    cargo test -p shared --features json-redact --test json_redact_proptest -- --test-threads=1
+    cargo test -p shared --lib --features access-guard,mcp-mandate,session-token,json-redact -- --test-threads=1 mcp json_redact replay_cache
+    cargo test -p vauban-proxy-mcp -- --test-threads=1
+    cargo test -p vauban-mcp -- --test-threads=1
+    cargo test -p vauban-access --lib -- --test-threads=1 mcp peer_authz
+    cargo test -p vauban-vault --bin vauban-vault -- --test-threads=1 proxy_mcp
+    cargo test -p vauban-supervisor --bin vauban-supervisor -- --test-threads=1 broker
+    cargo test -p vauban-supervisor --bin vauban-supervisor -- --test-threads=1 heartbeat_dispatches_tcp_connect_read_during_pong_wait
+    for f in vauban-proxy-mcp/scripts/check_mcp_*.sh; do bash "$f" || exit 1; done
+    cargo test -p vauban-web --lib -- --test-threads=1 mcp session_termination policy_recheck access_decision templates::sessions::recording_
+    cargo test -p vauban-web --test integration_tests -- --test-threads=1 mcp cutting_events jit_grant_revocation jit_revocation_pins
+
+# Full-stack tests (vauban-e2e, outside the workspace): real supervisor and
+# every service on a throw-away `vauban_e2e` database, driven by headless
+# Chrome. Mandatory after every merge. ARGS filter scenarios (`auth::`).
+# VAUBAN_E2E_HEADED=1 shows the browser, VAUBAN_E2E_KEEP=1 keeps the tree.
+test-full-stack *ARGS: build
+    VAUBAN_E2E_CHROMEDRIVER="$(bash vauban-e2e/scripts/chromedriver.sh)" \
+        cargo test --manifest-path vauban-e2e/Cargo.toml --target-dir target --test full_stack -- {{ARGS}}
+
+# Coverage gate for the MCP security fixes (MCP Arch §13.1):
+# 100 % on the fix modules, diff coverage on every other changed line.
+# Needs cargo-llvm-cov. MCP_FIX_BASE overrides the diff base.
+cov-mcp-fixes:
+    bash vauban-proxy-mcp/scripts/mcp_fix_cov.sh
+
+# Coverage ratchet for every MCP module (MCP Arch §13): each file stays at or
+# above vauban-proxy-mcp/scripts/mcp_cov_baseline.txt. Needs cargo-llvm-cov.
+# MCP_COV_WRITE_BASELINE=1 raises the floor in the commit that adds the tests.
+cov-mcp:
+    bash vauban-proxy-mcp/scripts/mcp_cov.sh
+
 # Run clippy on all crates (warnings are errors, same as the agent cycle).
 clippy *ARGS:
     cargo clippy --workspace --all-targets {{ARGS}} -- -D warnings
@@ -85,6 +153,8 @@ semgrep:
     "${SEMGREP}" --config .semgrep/untrusted-input.yml --error --quiet
 
 # Full validation cycle: build + lint + clippy + test (stops on first failure).
+# Packaging dry-check is extra (Mac-safe; FreeBSD live A–C stays in
+# docs/runbooks/mcp_staging_gwt_acceptance.md).
 # Exports VAUBAN_CONFIG_DIR to the repo config/ for the duration (release
 # binaries do not fall back to compile-time workspace paths).
 validate:
@@ -95,6 +165,8 @@ validate:
     just lint
     just clippy
     just test
+    just test-mcp-pyramid
+    just check-mcp-pkg
 
 # Build release binaries
 release:
@@ -114,6 +186,10 @@ run *ARGS:
 # Build the FreeBSD package (runs pkg/build-pkg.sh)
 package:
     cd pkg && ./build-pkg.sh
+
+# Dry-check MCP FreeBSD packaging (vb-mcp 910). On FreeBSD after pkg add: --live
+check-mcp-pkg *args:
+    ./pkg/check-mcp-pkg.sh {{args}}
 
 # Uses {{rdp_path}} (no --target-dir): `cargo update` only rewrites
 # Cargo.lock and rejects --target-dir.

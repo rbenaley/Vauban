@@ -18,10 +18,10 @@ use crate::auth::permissions::PermissionContext;
 use crate::error::{AppError, AppResult};
 use crate::middleware::api_key::ApiKeyAuth;
 use crate::middleware::auth::AuthUser;
-use crate::models::asset::{Asset, AssetType};
+use crate::models::asset::Asset;
 use crate::models::session::{NewProxySession, SessionType};
 use crate::services::mcp_session::{
-    MCP_PROTOCOL_VERSIONS, clamp_ttl_capped, open_on_proxy, resolve_effective_allowed_tools,
+    MCP_PROTOCOL_VERSIONS, clamp_ttl_capped, effective_tools_from_access, open_on_proxy,
 };
 
 const JUSTIFICATION_MIN: usize = 10;
@@ -65,11 +65,12 @@ pub async fn open_mcp_session(
     if !state.config.mcp.enabled {
         return Err(AppError::forbidden("assets:connect_mcp"));
     }
-    if api_key.is_none() {
+    let Some(axum::Extension(api_key)) = api_key else {
         return Err(AppError::Authorization(
             "MCP hop 1 requires a vbn_ API key".into(),
         ));
-    }
+    };
+    let api_key_id = api_key.key_uuid.to_string();
     let justification = request.justification.unwrap_or_default();
     if !mcp_justification_accepted(&justification) {
         return Err(AppError::Validation(
@@ -102,7 +103,7 @@ pub async fn open_mcp_session(
             diesel::result::Error::NotFound => AppError::NotFound("Asset not found".into()),
             other => AppError::Database(other),
         })?;
-    if asset.asset_type != AssetType::Mcp {
+    if !SessionType::Mcp.matches_asset(asset.asset_type) {
         return Err(AppError::Validation(format!(
             "Asset type '{}' is not MCP",
             asset.asset_type
@@ -128,8 +129,10 @@ pub async fn open_mcp_session(
         ));
     }
 
-    let allowed_tools = resolve_effective_allowed_tools(&mut conn, user_id, &asset).await?;
-    if allowed_tools.as_ref().is_some_and(|t| t.is_empty()) {
+    if effective_tools_from_access(&state, &user.uuid, &asset)
+        .await?
+        .is_empty()
+    {
         return Err(AppError::Validation(format!(
             "No MCP tools granted for asset '{}'",
             asset.name
@@ -143,11 +146,10 @@ pub async fn open_mcp_session(
     );
     let expires_at = Utc::now() + Duration::seconds(ttl);
     let session_uuid = Uuid::new_v4();
+    let connected_at = Utc::now();
     let trusted = state.config.security.parsed_trusted_proxies();
     let client_ip = crate::middleware::extract_client_ip(&headers, client_addr.addr(), &trusted);
-    let metadata = serde_json::json!({
-        "mcp_protocol_versions": MCP_PROTOCOL_VERSIONS,
-    });
+    let metadata = hop1_metadata(&api_key_id);
 
     let new_session = NewProxySession {
         uuid: session_uuid,
@@ -168,6 +170,7 @@ pub async fn open_mcp_session(
         industrial_protocol: None,
         ews_uuid: None,
         tunnel_target_addr: None,
+        connected_at: Some(connected_at),
     };
     diesel::insert_into(crate::schema::proxy_sessions::table)
         .values(&new_session)
@@ -177,12 +180,12 @@ pub async fn open_mcp_session(
     let bearer = match open_on_proxy(
         &state,
         &user.uuid,
-        Some("vbn"),
+        Some(&api_key_id),
         &asset,
         session_uuid,
         expires_at,
         &justification,
-        allowed_tools,
+        connected_at,
     )
     .await
     {
@@ -212,9 +215,38 @@ pub async fn open_mcp_session(
     }))
 }
 
+/// `proxy_sessions.metadata` for a hop-1 visit. `api_key_id` is read back by
+/// `mcp_drift` (`revoke_opener_key`).
+fn hop1_metadata(api_key_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "mcp_protocol_versions": MCP_PROTOCOL_VERSIONS,
+        "api_key_id": api_key_id,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hop1_metadata_carries_opener_key() {
+        let key = Uuid::new_v4().to_string();
+        let meta = hop1_metadata(&key);
+        assert_eq!(meta["api_key_id"].as_str(), Some(key.as_str()));
+        assert!(meta["mcp_protocol_versions"].is_array());
+    }
+
+    #[test]
+    fn hop1_passes_opener_key_to_proxy() {
+        let src = include_str!("mcp_sessions.rs");
+        let start = src
+            .find("pub async fn open_mcp_session")
+            .expect("open_mcp_session");
+        let body = &src[start..];
+        let end = body.find("\nfn hop1_metadata").expect("hop1_metadata");
+        assert!(body[..end].contains("Some(&api_key_id)"));
+        assert!(!body[..end].contains(concat!("Some(", "\"vbn\")")));
+    }
 
     #[test]
     fn justification_bounds() {

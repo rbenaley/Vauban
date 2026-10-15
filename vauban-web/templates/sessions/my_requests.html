@@ -208,10 +208,31 @@
                             {% endif %}
                             {% if let Some(did) = req.decision_id.as_ref() %}
                             <span class="font-mono text-xs text-gray-500 dark:text-gray-400">{{ did }}</span>
-                            <a href="/sessions/{{ req.uuid }}"
-                               class="inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-200 ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
-                                Contest
+                            {% if let Some(c) = req.contestation.as_ref() %}
+                            <a href="/sessions/contestations/{{ c.uuid }}" data-testid="contestation-{{ req.uuid }}"
+                               class="inline-flex items-center rounded-md bg-gray-100 dark:bg-gray-700 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600">
+                                Contestation: {{ c.status_label }}
                             </a>
+                            {% else %}
+                            {# Inline: a suspended subject no longer passes the
+                               session page's access-rule recheck. #}
+                            <details class="relative" data-testid="contest-{{ req.uuid }}">
+                                <summary class="list-none cursor-pointer inline-flex items-center rounded-md bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-200 ring-1 ring-inset ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600">
+                                    Contest
+                                </summary>
+                                <form method="post" action="/sessions/{{ req.uuid }}/contest" x-data="csrf"
+                                      class="absolute right-0 z-10 mt-2 w-80 space-y-2 rounded-md bg-white dark:bg-gray-800 p-3 shadow-lg ring-1 ring-gray-200 dark:ring-gray-700">
+                                    <input type="hidden" name="csrf_token" x-model="token" />
+                                    <label for="open_reason-{{ req.uuid }}" class="block text-xs font-medium text-gray-700 dark:text-gray-300">Why should {{ did }} be reviewed?</label>
+                                    <textarea id="open_reason-{{ req.uuid }}" name="open_reason" rows="3" required minlength="10" maxlength="1000"
+                                              class="block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"></textarea>
+                                    <button type="submit"
+                                            class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-vauban-500">
+                                        Open contestation
+                                    </button>
+                                </form>
+                            </details>
+                            {% endif %}
                             {% endif %}
                             {% if req.is_pending() %}
                             <form method="post" action="/sessions/my-requests/{{ req.uuid }}/cancel" x-data="csrf">

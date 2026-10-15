@@ -329,6 +329,19 @@ pub async fn update_asset(
         handle_error!(StatusCode::NOT_FOUND, "Asset not found");
     }
 
+    let new_hostname = request
+        .hostname
+        .clone()
+        .unwrap_or_else(|| existing.hostname.clone());
+    let new_port = request.port.unwrap_or(existing.port);
+    let mcp_upstream_moved = crate::services::mcp_session::mcp_upstream_moved(
+        &existing,
+        existing.asset_type,
+        &new_hostname,
+        new_port,
+        &existing.connection_config,
+    );
+
     let strip = |s: &str| -> String {
         ammonia::Builder::new()
             .tags(std::collections::HashSet::new())
@@ -351,8 +364,8 @@ pub async fn update_asset(
     let asset: Asset = match diesel::update(assets.filter(uuid.eq(asset_uuid)))
         .set((
             name_col.eq(sanitized_name),
-            hostname_col.eq(request.hostname.unwrap_or(existing.hostname)),
-            port_col.eq(request.port.unwrap_or(existing.port)),
+            hostname_col.eq(new_hostname),
+            port_col.eq(new_port),
             status_col.eq(request.status.unwrap_or(existing.status)),
             description_col.eq(sanitized_description),
             updated_at.eq(Utc::now()),
@@ -397,6 +410,10 @@ pub async fn update_asset(
         )
         .user(user.uuid.clone()),
     );
+    if mcp_upstream_moved {
+        crate::services::session_termination::end_visits_on_reconfigured_asset(&state, asset.id)
+            .await;
+    }
 
     if is_htmx {
         let mut response_headers = HeaderMap::new();

@@ -160,6 +160,101 @@ async fn test_recording_play_page_with_recorded_session() {
     );
 }
 
+/// Recording solution E: a finalized MCP recording (directory path, like a
+/// segmented RDP one) replays in the asciinema player from `session.cast`,
+/// and its detail page links to that player.
+#[tokio::test]
+async fn test_mcp_recording_play_page_uses_asciinema_player() {
+    use vauban_web::models::asset::{AssetType, NewAsset};
+    use vauban_web::schema::{assets, proxy_sessions::dsl};
+
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("mcp_play_admin");
+    let admin_id = create_simple_admin_user(&mut conn, &admin_name).await;
+    let admin_uuid = get_user_uuid(&mut conn, admin_id).await;
+    let asset_id: i32 = unwrap_ok!(
+        diesel::insert_into(assets::table)
+            .values(&NewAsset {
+                uuid: Uuid::new_v4(),
+                name: unique_name("mcp-play-asset"),
+                hostname: format!("{}.mcp.test", unique_name("up")),
+                port: 19001,
+                asset_type: AssetType::Mcp,
+                status: "online".into(),
+                description: None,
+                connection_config: serde_json::json!({}),
+                created_by_id: Some(admin_id),
+                updated_by_id: Some(admin_id),
+                connection_username: String::new(),
+            })
+            .returning(assets::id)
+            .get_result(&mut conn)
+            .await
+    );
+    let session_id = create_recorded_session_with_type(&mut conn, admin_id, asset_id, "mcp").await;
+    let session_uuid: Uuid = unwrap_ok!(
+        dsl::proxy_sessions
+            .filter(dsl::id.eq(session_id))
+            .select(dsl::uuid)
+            .first(&mut conn)
+            .await
+    );
+    unwrap_ok!(
+        diesel::update(dsl::proxy_sessions.filter(dsl::id.eq(session_id)))
+            .set((
+                dsl::recording_path.eq(format!("recordings/2026/10/{session_uuid}/")),
+                dsl::recording_blake3
+                    .eq("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+                dsl::recording_size_bytes.eq(4_096_i64),
+                dsl::recording_duration_ms.eq(9_000_i64),
+                dsl::recording_event_count.eq(5_i32),
+                dsl::recording_format.eq("mcp-jsonl-v1"),
+                dsl::recording_finalized_at.eq(chrono::Utc::now()),
+            ))
+            .execute(&mut conn)
+            .await
+    );
+
+    let token = app
+        .generate_test_token(&admin_uuid.to_string(), &admin_name, true, true)
+        .await;
+
+    let play = app
+        .server
+        .get(&format!("/sessions/recordings/{}/play", session_id))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+    assert_status(&play, 200);
+    let body = play.text();
+    assert!(body.contains("asciinema-player.min.js"), "asciinema player");
+    assert!(
+        body.contains(&format!(
+            "data-src=\"/recordings/{session_uuid}/session.cast\""
+        )),
+        "player must load the MCP asciicast mirror"
+    );
+    assert!(
+        !body.contains("<video"),
+        "MCP must not use the RDP video player"
+    );
+    assert!(!body.contains("manifest.mpd"));
+
+    let detail = app
+        .server
+        .get(&format!("/sessions/recordings/{}", session_uuid))
+        .add_header(COOKIE, format!("access_token={}", token))
+        .await;
+    assert_status(&detail, 200);
+    let body = detail.text();
+    assert!(body.contains("MCP JSONL"), "integrity format label");
+    assert!(
+        body.contains(&format!("/sessions/recordings/{}/play", session_id)),
+        "detail must link to the player"
+    );
+}
+
 #[tokio::test]
 async fn test_recording_play_not_found() {
     let app = TestApp::spawn().await;

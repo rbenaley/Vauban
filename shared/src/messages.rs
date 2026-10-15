@@ -278,7 +278,14 @@ pub enum ControlMessage {
 }
 
 /// Service health statistics reported in Pong messages.
+///
+/// `#[serde(default)]` fills a missing JSON field with zero. Bincode has no
+/// missing-field signal: a Pong minted by an older leaf simply ends before
+/// `audit_events_dropped`, and [`deserialize_u64_missing_as_zero`] turns that
+/// end-of-input into zero during a mixed restart. A complete payload still
+/// encodes the field (the frozen layout does not change).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ServiceStats {
     pub uptime_secs: u64,
     pub requests_processed: u64,
@@ -293,6 +300,48 @@ pub struct ServiceStats {
     pub recording_try_send_full: u64,
     /// IACS: max ack wait observed in the current 60s window (ms).
     pub recording_ack_wait_ms_max: u64,
+    /// MCP: visits refused because the audit pipe did not accept the WORM
+    /// event. Stays zero when every success was accepted. Not a count of
+    /// events discarded after they were promised.
+    #[serde(default, deserialize_with = "deserialize_u64_missing_as_zero")]
+    pub audit_events_dropped: u64,
+}
+
+/// Decode a trailing `u64`, or zero when the payload ends before the field.
+///
+/// Bincode reports a short struct as `UnexpectedEnd` while reading the next
+/// field. That is the wire shape of a Pong from a leaf that predates
+/// `audit_events_dropped`. Any other decode error still fails the message.
+fn deserialize_u64_missing_as_zero<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Visit;
+    impl serde::de::Visitor<'_> for Visit {
+        type Value = u64;
+
+        fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+            formatter.write_str("u64")
+        }
+
+        fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<u64, E> {
+            Ok(value)
+        }
+
+        fn visit_u32<E: serde::de::Error>(self, value: u32) -> Result<u64, E> {
+            Ok(u64::from(value))
+        }
+
+        fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<u64, E> {
+            u64::try_from(value).map_err(E::custom)
+        }
+    }
+
+    match deserializer.deserialize_u64(Visit) {
+        Ok(value) => Ok(value),
+        Err(err) if err.to_string().contains("UnexpectedEnd") => Ok(0),
+        Err(err) => Err(err),
+    }
 }
 
 /// Authentication result from vauban-auth.
@@ -1420,6 +1469,14 @@ pub enum AccessRequest {
     ClearMcpMandate {
         session_id: String,
     },
+
+    /// Erase MCP tool names that are no longer approved on a live MCP
+    /// asset of the rule's asset group. Sent by vauban-web after an asset
+    /// delete, a group membership change or a catalogue change.
+    /// `None` = every rule. Appended at END for wire compatibility.
+    PruneMcpRuleTools {
+        asset_group_ids: Option<Vec<i32>>,
+    },
 }
 
 /// Access control response from vauban-access.
@@ -1613,6 +1670,11 @@ pub enum AccessResponse {
     },
     /// Reply to Commit / Rollback / Clear (and unknown session).
     McpMandateAck,
+
+    /// Reply to `PruneMcpRuleTools`.
+    McpRuleToolsPruned {
+        rules_changed: u32,
+    },
 }
 
 /// Entry describing one secret group a user can access.
@@ -1869,11 +1931,20 @@ pub enum AuditEventType {
     LdapAggregationEmptied,
     /// Fail-closed threshold crossed: LDAP group memberships purged.
     LdapAggregationPurgedFailsafe,
+    // ---- appended for MCP two-phase tools/call recording ----
+    /// An allowed tools/call reached the upstream phase and failed
+    /// (`outcome` = `upstream_error` | `timeout` in the JSONL result line).
+    McpToolCallUpstreamFailed,
+    // ---- appended for MCP tool quarantine (CIS MCP 4.1.1) ----
+    /// A live upstream tool / instructions definition differs from the
+    /// approved fingerprint: quarantined by the proxy, set back to pending
+    /// by web.
+    McpToolDefinitionDrift,
 }
 
 impl AuditEventType {
     /// Number of variants. Pinned by `audit_event_type_count_is_pinned`.
-    pub const COUNT: usize = 79;
+    pub const COUNT: usize = 81;
 
     /// Every variant, for table-driven tests and drift checks.
     pub const ALL: [AuditEventType; Self::COUNT] = [
@@ -1956,6 +2027,8 @@ impl AuditEventType {
         AuditEventType::LdapAggregationReplaced,
         AuditEventType::LdapAggregationEmptied,
         AuditEventType::LdapAggregationPurgedFailsafe,
+        AuditEventType::McpToolCallUpstreamFailed,
+        AuditEventType::McpToolDefinitionDrift,
     ];
 
     /// Coarse category, for log pivoting and the drift test. EXHAUSTIVE match
@@ -2039,7 +2112,9 @@ impl AuditEventType {
             | AuditEventType::McpClientinfoDrift
             | AuditEventType::McpAccessDecision
             | AuditEventType::McpContestationOpened
-            | AuditEventType::McpContestationResolved => "mcp",
+            | AuditEventType::McpContestationResolved
+            | AuditEventType::McpToolCallUpstreamFailed
+            | AuditEventType::McpToolDefinitionDrift => "mcp",
             AuditEventType::ApiKeyRevoked | AuditEventType::ApiKeyRotated => "user",
         }
     }
@@ -2657,6 +2732,7 @@ pub enum Message {
         envelope_on_exceed: String, // "throttle" | "alert" | "suspend"
         upstream_host: String,
         upstream_port: u16,
+        /// `SHA256:<base64>` SPKI pin, required (ADR 010). `None` is refused.
         upstream_tls_spki_pin: Option<String>,
         forward_identity_headers: bool,
         credential_blob: Vec<u8>,
@@ -2668,6 +2744,8 @@ pub enum Message {
         /// Production visits refuse a `tools/call` that is not inside a
         /// sealed mandate.
         require_seal: bool,
+        /// Visit-start unix seconds; proxy YYYY/MM recording dir (not `now()`).
+        recording_open_unix: u64,
     },
     McpSessionOpened {
         request_id: u64,
@@ -3431,7 +3509,7 @@ pub enum Message {
         credential_blob: Vec<u8>,
         /// Diagnostic SessionToken (MAC) — verified before claiming FD.
         session_token: Vec<u8>,
-        /// `SHA256:<base64>` SPKI pin → HTTPS-on-FD (RDP parity). `None` = lab HTTP.
+        /// `SHA256:<base64>` SPKI pin, required (ADR 010). `None` is refused.
         upstream_tls_spki_pin: Option<String>,
     },
 
@@ -3440,7 +3518,9 @@ pub enum Message {
         request_id: u64,
         session_id: String,
         success: bool,
-        /// JSON array of upstream tool objects (`[{name, description, inputSchema?}, …]`).
+        /// Upstream `tools/list` JSON-RPC response (`result.tools`), plus the
+        /// upstream `initialize` instructions under the reserved top-level
+        /// key `mcp_tool_fingerprint::INSTRUCTIONS_KEY` when present.
         tools_json: Option<String>,
         error: Option<String>,
     },
@@ -3553,6 +3633,28 @@ pub enum Message {
     /// Supervisor -> web: SPKI pin the hop-1 response publishes (`SHA256:<b64>`).
     McpTunnelIdentityFingerprint {
         spki_sha256: String,
+    },
+
+    /// Proxy → Web: hop-2 RAM is empty after a supervised boot. Web
+    /// terminates leftover MCP `active`/`suspended`/`connecting` rows
+    /// (`mcp_proxy_restart`). Do not resurrect `vbw_`. Appended at END.
+    McpProxyReady,
+
+    /// Proxy → Web: a live upstream definition no longer matches the
+    /// approved catalogue fingerprint (CIS MCP 4.1.1). The proxy already
+    /// quarantined it for this visit; web sets the catalogue entry back to
+    /// `pending` and notifies approvers and the session owner. `tool` is
+    /// `shared::mcp_tool_fingerprint::INSTRUCTIONS_KEY` for upstream
+    /// `initialize.instructions`. `live_definition_json` is the upstream
+    /// tool object (or `{"instructions": …}`), capped by the proxy.
+    /// Appended at END.
+    McpToolDefinitionDrift {
+        session_id: String,
+        asset_id: String,
+        tool: String,
+        approved_fp: String,
+        live_fp: String,
+        live_definition_json: String,
     },
 }
 
@@ -3782,6 +3884,7 @@ mod tests {
             recording_ack_dropped: 0,
             recording_try_send_full: 0,
             recording_ack_wait_ms_max: 0,
+            audit_events_dropped: 0,
         };
         let pong = ControlMessage::Pong { seq: 42, stats };
 
@@ -3828,6 +3931,50 @@ mod tests {
         assert_eq!(stats.recording_ack_dropped, 0);
         assert_eq!(stats.recording_try_send_full, 0);
         assert_eq!(stats.recording_ack_wait_ms_max, 0);
+        assert_eq!(stats.audit_events_dropped, 0);
+    }
+
+    /// A Pong minted before `audit_events_dropped` existed still decodes.
+    #[test]
+    fn test_old_service_stats_without_audit_events_dropped_is_zero() {
+        let src = include_str!("messages.rs");
+        assert!(
+            src.contains("#[serde(default)]\npub struct ServiceStats"),
+            "ServiceStats must default missing fields so an old Pong decodes"
+        );
+        let raw = r#"{
+            "uptime_secs": 3,
+            "requests_processed": 1,
+            "requests_failed": 0,
+            "active_connections": 0,
+            "pending_requests": 0,
+            "recording_ack_timeouts": 0,
+            "recording_ack_dropped": 0,
+            "recording_try_send_full": 0,
+            "recording_ack_wait_ms_max": 0
+        }"#;
+        let stats: ServiceStats = serde_json::from_str(raw).unwrap();
+        assert_eq!(stats.uptime_secs, 3);
+        assert_eq!(stats.requests_processed, 1);
+        assert_eq!(stats.audit_events_dropped, 0);
+
+        let mut wire = serialize(&ServiceStats {
+            uptime_secs: 3,
+            requests_processed: 1,
+            requests_failed: 0,
+            active_connections: 0,
+            pending_requests: 0,
+            recording_ack_timeouts: 0,
+            recording_ack_dropped: 0,
+            recording_try_send_full: 0,
+            recording_ack_wait_ms_max: 0,
+            audit_events_dropped: 9,
+        });
+        wire.pop();
+        let old: ServiceStats = deserialize(&wire);
+        assert_eq!(old.uptime_secs, 3);
+        assert_eq!(old.requests_processed, 1);
+        assert_eq!(old.audit_events_dropped, 0);
     }
 
     #[test]
@@ -3842,6 +3989,7 @@ mod tests {
             recording_ack_dropped: 0,
             recording_try_send_full: 0,
             recording_ack_wait_ms_max: 0,
+            audit_events_dropped: 0,
         };
         let serialized = serialize(&stats);
         let deserialized: ServiceStats = deserialize(&serialized);
@@ -3950,7 +4098,7 @@ mod tests {
         // and ALL together when appending a variant (never reorder existing
         // ones -- bincode encodes the index).
         assert_eq!(AuditEventType::ALL.len(), AuditEventType::COUNT);
-        assert_eq!(AuditEventType::COUNT, 79);
+        assert_eq!(AuditEventType::COUNT, 81);
     }
 
     #[test]
@@ -4706,6 +4854,32 @@ mod tests {
     }
 
     #[test]
+    fn test_mcp_tool_definition_drift_roundtrip() {
+        let msg = Message::McpToolDefinitionDrift {
+            session_id: "s".into(),
+            asset_id: "a".into(),
+            tool: "update_task".into(),
+            approved_fp: "f1".into(),
+            live_fp: "f2".into(),
+            live_definition_json: r#"{"name":"update_task"}"#.into(),
+        };
+        assert_eq!(msg.request_id(), None);
+        let decoded: Message = deserialize(&serialize(&msg));
+        assert!(matches!(
+            decoded,
+            Message::McpToolDefinitionDrift { ref tool, .. } if tool == "update_task"
+        ));
+    }
+
+    #[test]
+    fn test_mcp_proxy_ready_roundtrip() {
+        let msg = Message::McpProxyReady;
+        assert_eq!(msg.request_id(), None);
+        let decoded: Message = deserialize(&serialize(&msg));
+        assert!(matches!(decoded, Message::McpProxyReady));
+    }
+
+    #[test]
     fn test_mcp_mandate_pdp_access_ipc_roundtrip() {
         let reqs = [
             AccessRequest::SealMcpMandate {
@@ -4862,6 +5036,7 @@ mod tests {
             justification: "unit test mcp open hop".into(),
             max_body_bytes: 1_048_576,
             session_token: vec![1, 2, 3],
+            recording_open_unix: 1_700_000_000,
             transport: "direct".into(),
             require_seal: true,
         };

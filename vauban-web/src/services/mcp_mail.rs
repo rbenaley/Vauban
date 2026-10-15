@@ -14,7 +14,8 @@ use crate::models::access_contestation::AccessContestation;
 use crate::schema::{assets, proxy_sessions, users};
 use crate::services::mailer::{
     EmailEvent, EmailRecipient, McpContestationOpenedEvent, McpContestationResolvedEvent,
-    McpHitlDecidedEvent, McpHitlPendingEvent, McpMandateDriftEvent, deterministic_event_id,
+    McpHitlDecidedEvent, McpHitlPendingEvent, McpMandateDriftEvent, McpToolDefinitionDriftEvent,
+    deterministic_event_id,
 };
 use crate::services::user_status::{load_approver_contacts, requester_may_receive_mail};
 use shared::mcp_drift_iam::McpDriftIam;
@@ -376,6 +377,84 @@ pub async fn queue_mandate_drift(
     }
     crate::services::mailer::log_emails_queued(
         "mcp.mandate_drift",
+        &recipients,
+        queued,
+        duplicates,
+        &errors,
+    );
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+/// Approvers (minus the session owner who triggered the detection) learn
+/// that `tool` on `asset_uuid` went back to pending.
+pub async fn queue_tool_definition_drift(
+    state: &AppState,
+    asset_uuid: Uuid,
+    asset_name: &str,
+    tool_label: &str,
+    changed_fields: &str,
+    live_fp: &str,
+    owner_user_id: Option<&str>,
+) -> Result<(), String> {
+    if !state.mailer.is_enabled() {
+        return Ok(());
+    }
+
+    let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
+    let (owner_username, owner_email) = match owner_user_id {
+        Some(u) => lookup_user_by_uuid(&mut conn, u).await,
+        None => (String::new(), String::new()),
+    };
+    let approvers = load_approver_contacts(&mut conn)
+        .await
+        .map_err(|e| format!("approver lookup: {e}"))?;
+    drop(conn);
+
+    let approvers = exclude_author(
+        approvers,
+        Some(owner_username.as_str()).filter(|s| !s.is_empty()),
+        Some(owner_email.as_str()).filter(|s| !s.is_empty()),
+    );
+    if approvers.is_empty() {
+        return Ok(());
+    }
+
+    let asset_url = format!(
+        "{}/assets/manage/{asset_uuid}/edit",
+        state.config.mailer.base_url
+    );
+    let business_key = format!("tool_definition_drift:{asset_uuid}:{tool_label}:{live_fp}");
+    let mut queued = 0usize;
+    let mut duplicates = 0usize;
+    let mut errors: Vec<String> = Vec::new();
+    let mut recipients: Vec<EmailRecipient> = Vec::new();
+    for (email, username) in approvers {
+        let recipient = EmailRecipient::new(email.clone(), username);
+        recipients.push(recipient.clone());
+        let event_id = deterministic_event_id("mcp.tool_definition_drift", &business_key, &email);
+        let event = EmailEvent::McpToolDefinitionDrift(McpToolDefinitionDriftEvent {
+            event_id,
+            recipient,
+            asset_name: asset_name.to_string(),
+            tool: tool_label.to_string(),
+            changed_fields: changed_fields.to_string(),
+            asset_url: asset_url.clone(),
+            base_url: state.config.mailer.base_url.clone(),
+            from_brand: state.config.mailer.from_name.clone(),
+        });
+        let mut conn = state.db_pool.get().await.map_err(|e| e.to_string())?;
+        match state.mailer.queue(&mut conn, &event).await {
+            Ok(()) => queued += 1,
+            Err(crate::services::mailer::MailerError::Duplicate) => duplicates += 1,
+            Err(e) => errors.push(format!("{email}: {e}")),
+        }
+    }
+    crate::services::mailer::log_emails_queued(
+        "mcp.tool_definition_drift",
         &recipients,
         queued,
         duplicates,

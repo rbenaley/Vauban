@@ -419,19 +419,20 @@ fn gwt_mcp_zone_nest_and_require_plan_policy() {
     assert!(
         session.contains("resolve_rule_require_plan_tools")
             && session.contains("mcp_require_plan_tools")
-            && session.contains("mcp_rule_callable_tools")
-            && !session.contains("fn mcp_rule_callable_tools"),
-        "session open must read require_plan and call the shared callable set"
+            && session.contains("compute_mcp_effective_tools")
+            && !session.contains("effective_callable_tools"),
+        "session open must read require_plan and ask access for the callable set"
     );
     assert!(
         policy.contains("pub fn mcp_rule_callable_tools")
+            && policy.contains("pub fn effective_callable_tools")
             && policy.contains("pub fn flatten_pg_text_array"),
         "callable set must live in one shared copy"
     );
     let access = include_str!("../../../vauban-access/src/handlers.rs");
     assert!(
-        access.contains("mcp_rule_callable_tools")
-            && !access.contains("fn mcp_rule_callable_tools("),
+        access.contains("effective_callable_tools(rows, catalog)")
+            && !access.contains("fn effective_callable_tools("),
         "access mint must use the shared callable set, not a local copy"
     );
     let mcp_access = include_str!("../../src/handlers/web/mcp_access.rs");
@@ -439,19 +440,27 @@ fn gwt_mcp_zone_nest_and_require_plan_policy() {
         mcp_access.contains("fn columns_from_modes")
             && mcp_access.contains("columns_from_modes(&form.mcp_tool_modes)")
             && mcp_access.contains("fn keep_approved_names")
-            && mcp_access.contains("fn keep_approved_or_existing")
             && mcp_access.contains("fn with_unposted_modes")
             && mcp_access.contains("fn sections_from_group_catalog")
-            && mcp_access.contains("fn sections_from_group_catalog_filtered")
             && mcp_access.contains("fn tools_summary_from_columns"),
         "MCP Save must derive SQL columns from one mode per tool"
     );
-    let discover_web = include_str!("../../src/handlers/web/mcp_discover.rs");
     assert!(
-        discover_web.contains("pub async fn load_mcp_live_tool_names"),
-        "group live tool names must exclude tombstoned MCP assets"
+        !mcp_access.contains("keep_approved_or_existing")
+            && !mcp_access.contains("not in the approved catalogue")
+            && !mcp_access.contains("load_mcp_live_tool_names"),
+        "the rule screen shows and saves approved tools only: no orphan section, no saved-name carry-over"
     );
-    let matrix_form = include_str!("../../templates/mcp/access_form_fields.html");
+    let form_fields = include_str!("../../templates/mcp/access_form_fields.html");
+    assert!(
+        form_fields.contains("include \"mcp/access_matrix.html\""),
+        "the rule form must render the shared tool matrix partial"
+    );
+    let matrix_form = [
+        form_fields,
+        include_str!("../../templates/mcp/access_matrix.html"),
+    ]
+    .concat();
     assert!(
         matrix_form.contains("name=\"mcp_tool_mode[{{ tool.name }}]\"")
             && matrix_form.contains("value=\"require_plan\"")
@@ -810,17 +819,15 @@ fn gwt_api_mcp_open_honours_appliance_ttl() {
 
 #[test]
 fn gwt_empty_asset_groups_is_not_a_catalogue_grant() {
-    let src = include_str!("../../src/services/mcp_session.rs");
+    let src = include_str!("../../../vauban-access/src/handlers.rs");
     let start = src
-        .find("pub async fn resolve_effective_allowed_tools")
-        .expect("resolve_effective_allowed_tools");
+        .find("pub(crate) async fn compute_mcp_effective_tools")
+        .expect("compute_mcp_effective_tools");
     let body = &src[start..];
-    let end = body
-        .find("\npub async fn resolve_rule_hitl_tools")
-        .unwrap_or(body.len());
+    let end = body.find("\n}\n").unwrap_or(body.len());
     let fn_src = &body[..end];
     assert!(
-        fn_src.contains("asset_group_ids.is_empty()") && fn_src.contains("Ok(Some(Vec::new()))"),
+        fn_src.contains("asset_group_ids.is_empty()") && fn_src.contains("return Ok(Vec::new())"),
         "no asset group must deny (empty whitelist), not return the catalogue"
     );
     assert!(
@@ -873,6 +880,60 @@ fn gwt_hitl_story_fields_are_redacted() {
     assert!(
         src.contains("sanitize_story_field") && src.contains("redact_sensitive_json"),
         "HITL Story strings must run through json_redact (JWT-looking values)"
+    );
+}
+
+#[test]
+fn gwt_mcp_audit_fixes_connected_at_groups_and_proxy_ready() {
+    let api = include_str!("../../src/handlers/api/mcp_sessions.rs");
+    assert!(
+        api.contains("connected_at: Some(connected_at)"),
+        "MCP hop 1 INSERT must set connected_at (YYYY/MM recording anchor)"
+    );
+    let mcp = include_str!("../../src/handlers/web/mcp.rs");
+    assert!(
+        mcp.contains("connected_at: Some(connected_at)"),
+        "Connect UI hop 1 INSERT must set connected_at"
+    );
+    let ipc = include_str!("../../src/ipc/proxy_mcp.rs");
+    assert!(
+        ipc.contains("McpProxyReady") && ipc.contains("terminate_live_mcp_on_proxy_restart"),
+        "web must reap live MCP rows on McpProxyReady"
+    );
+    let rec = include_str!("../../src/services/mcp_recheck.rs");
+    assert!(
+        rec.contains("connected_at.unwrap_or(now)")
+            && rec.contains("terminate_live_mcp_on_proxy_restart"),
+        "terminate recording_path must use connected_at; proxy restart reap must exist"
+    );
+    let ad = include_str!("../../src/services/access_decision.rs");
+    assert!(
+        ad.contains("fn stamp_live_mcp_source_groups") && ad.contains("decision_source_group_ids"),
+        "drift stamp must persist the full group id list"
+    );
+    let contest = include_str!("../../src/services/access_contestation.rs");
+    assert!(
+        contest.contains("resolve_restore_groups_for_session")
+            && contest.contains("add_group_member(*gid"),
+        "overturn must AddGroupMember for every stamped group"
+    );
+}
+
+/// Without this pump, McpSessionOpened never resolves and hop 1 times out (408).
+#[test]
+fn gwt_web_spawns_mcp_ipc_pump() {
+    let main = include_str!("../../src/main.rs");
+    let start = main
+        .find("if let Some(ref client) = app_state.proxy_mcp")
+        .expect("proxy_mcp IPC block in vauban-web main");
+    let block = &main[start..start + 1200.min(main.len() - start)];
+    assert!(
+        block.contains("set_runtime(") && block.contains("process_incoming()"),
+        "vauban-web must set the MCP runtime and spawn process_incoming"
+    );
+    assert!(
+        block.contains("spawn_ipc_pump"),
+        "MCP pump must go through spawn_ipc_pump (restart on IPC loss)"
     );
 }
 

@@ -57,9 +57,8 @@
 //! 2. Any tampering with any field invalidates the MAC (BLAKE3 keyed
 //!    hash, constant-time comparison via [`subtle`]).
 //! 3. Replay of a valid token is detected by the verifier's anti-replay
-//!    cache (lives outside this module: see
-//!    `vauban-supervisor/src/replay_cache.rs` and the per-proxy
-//!    equivalents).
+//!    cache ([`replay_cache`], one per verifier process), which keeps
+//!    each `(session_id, nonce)` until that token's own `expires_at`.
 //!
 //! Security properties this module does NOT cover:
 //!

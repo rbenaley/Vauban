@@ -85,6 +85,23 @@ environment variable, then `[database].url` from `vauban.conf`.
 2. `service vauban start`.
 3. Optional sanity check: `vauban-supervisor migrate --check`.
 
+## Before `migrate` on 0.9.47
+
+`20261005120000_contestation_once_per_decision` adds
+`uq_contestation_per_decision`. The migration fails if two contestation
+rows already share one access decision. Check first, and collapse the
+duplicates before `migrate`:
+
+```sql
+SELECT decision_id, count(*)
+FROM access_contestations
+GROUP BY decision_id
+HAVING count(*) > 1;
+```
+
+An empty result is the expected state. A row here means `migrate` will
+stop on that unique index.
+
 ## Failure recovery
 
 - **`migrate` failed mid-chain.** The error banner contains the failing

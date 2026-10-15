@@ -20,7 +20,7 @@ use crate::models::session::{ProxySession, SessionType};
 use crate::schema::{
     access_rules, api_keys, asset_asset_groups, asset_groups, proxy_sessions, user_groups, users,
 };
-use crate::services::access_decision::{ACTOR_MANDATE_DRIFT, stamp_live_mcp_source_group};
+use crate::services::access_decision::{ACTOR_MANDATE_DRIFT, stamp_live_mcp_source_groups};
 use crate::services::api_key_lifecycle::{ApiKeyLifecycleAction, after_api_key_invalidated};
 use crate::services::mcp_recheck::terminate_mcp_with_actor;
 use crate::services::role_invariants::{
@@ -68,8 +68,8 @@ pub async fn apply_mandate_drift(
 
     let (group_ids, iam) = resolve_drift_iam(state, &session, tool).await;
     if iam == McpDriftIam::SuspendGroup {
+        stamp_live_mcp_source_groups(state, session.user_id, &group_ids).await;
         for gid in &group_ids {
-            stamp_live_mcp_source_group(state, session.user_id, *gid).await;
             if let Err(e) = state
                 .access_client
                 .remove_group_member(*gid, session.user_id)
@@ -438,7 +438,7 @@ mod tests {
         assert!(prod.contains("McpDriftIam::Terminate"));
         assert!(prod.contains("McpDriftIam::SuspendGroup"));
         assert!(prod.contains("remove_group_member"));
-        assert!(prod.contains("stamp_live_mcp_source_group"));
+        assert!(prod.contains("stamp_live_mcp_source_groups"));
         assert!(prod.contains("McpDriftIam::RevokeOpenerKey"));
         assert!(prod.contains("after_api_key_invalidated"));
         assert!(prod.contains("McpDriftIam::SoftDeleteUser"));

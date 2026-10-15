@@ -22,6 +22,7 @@ const JS: &str = include_str!("../../static/js/vauban-components.js");
 const API_SESSIONS_RS: &str = include_str!("../../src/handlers/api/sessions.rs");
 const WEB_SESSIONS_RS: &str = include_str!("../../src/handlers/web/sessions.rs");
 const WEB_USERS_RS: &str = include_str!("../../src/handlers/web/users.rs");
+const WEB_MANAGE_ASSETS_RS: &str = include_str!("../../src/handlers/web/manage_assets.rs");
 const SESSION_ACTIVITY_RS: &str = include_str!("../../src/services/session_activity.rs");
 const ASSET_LIST_HTML: &str = include_str!("../../templates/assets/asset_list.html");
 const MY_REQUESTS_HTML: &str = include_str!("../../templates/sessions/my_requests.html");
@@ -191,6 +192,11 @@ fn all_terminate_callers_use_the_shared_core() {
             "{name} must terminate through services::session_termination"
         );
     }
+    assert!(
+        WEB_MANAGE_ASSETS_RS.contains("session_termination::terminate_open_sessions_on_asset"),
+        "handlers/web/manage_assets.rs (asset delete) must terminate through \
+         services::session_termination"
+    );
 }
 
 /// No caller may re-implement the DB flip inline: the string
@@ -202,6 +208,7 @@ fn no_caller_reimplements_the_terminated_update() {
         ("handlers/api/sessions.rs", API_SESSIONS_RS),
         ("handlers/web/users.rs", WEB_USERS_RS),
         ("handlers/web/sessions.rs", WEB_SESSIONS_RS),
+        ("handlers/web/manage_assets.rs", WEB_MANAGE_ASSETS_RS),
     ] {
         assert!(
             !src.contains(r#"status.eq("terminated")"#),
@@ -211,18 +218,19 @@ fn no_caller_reimplements_the_terminated_update() {
     }
 }
 
-/// The revocation cascade must cover ALL live statuses -- including
-/// the IACS ones (`waiting_client`, `ews_connected`, `tunnel_active`)
-/// whose omission was the historical deactivate_user gap.
+/// The revocation cascade must cover ALL open statuses -- the IACS ones
+/// (`waiting_client`, `ews_connected`, `tunnel_active`), whose omission
+/// was the historical deactivate_user gap, and a suspended MCP session.
 #[test]
 fn cascade_covers_iacs_live_statuses() {
     // Whitespace-collapsed so rustfmt line-splitting of the array
     // literal cannot break the pin.
     let collapsed: String = WEB_SESSIONS_RS.split_whitespace().collect();
     assert!(
-        collapsed.contains("SessionStatus::LIVE_AS_STR"),
-        "revocation cascade must terminate via SessionStatus::LIVE_AS_STR \
-         (includes IACS open lifecycle statuses)"
+        collapsed.contains("SessionStatus::OPEN_AS_STR")
+            && !collapsed.contains("SessionStatus::LIVE_AS_STR"),
+        "revocation cascade must terminate via SessionStatus::OPEN_AS_STR \
+         (IACS open lifecycle statuses and suspended MCP sessions)"
     );
 }
 

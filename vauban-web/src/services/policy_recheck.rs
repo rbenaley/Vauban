@@ -44,7 +44,7 @@ pub const RECHECK_INTERVAL: Duration = Duration::from_secs(30);
 pub const ACCESS_FAILURE_CUTOFF: u32 = 3;
 
 #[derive(Debug, Default)]
-pub(crate) struct FailureTracker {
+pub struct FailureTracker {
     /// session uuid → consecutive Access IPC failures
     by_session: HashMap<Uuid, u32>,
 }
@@ -115,14 +115,26 @@ pub fn spawn_policy_recheck(state: AppState) -> tokio::task::JoinHandle<()> {
         let mut failures = FailureTracker::default();
         loop {
             tick.tick().await;
-            let mut flags = shared_policy_flags().lock().await;
-            let (cut, filled) = run_once(&state, &mut failures, &mut flags).await;
-            drop(flags);
-            if cut > 0 || filled > 0 {
-                tracing::info!(cut, filled, "policy_recheck: tick complete");
-            }
+            recheck_tick(&state, &mut failures).await;
         }
     })
+}
+
+/// One pass of the background loop: re-evaluate open sessions, then resend
+/// the proxy-side close for sessions whose first terminate may have been
+/// lost. Returns `(cut, filled, resent)`.
+pub async fn recheck_tick(
+    state: &AppState,
+    failures: &mut FailureTracker,
+) -> (usize, usize, usize) {
+    let mut flags = shared_policy_flags().lock().await;
+    let (cut, filled) = run_once(state, failures, &mut flags).await;
+    drop(flags);
+    let resent = crate::services::session_termination::resend_lost_terminates(state).await;
+    if cut > 0 || filled > 0 || resent > 0 {
+        tracing::info!(cut, filled, resent, "policy_recheck: tick complete");
+    }
+    (cut, filled, resent)
 }
 
 /// Instant pass after an access-rule mutation (shares MFA/approval baseline

@@ -210,6 +210,7 @@ pub fn format_label(format: &str) -> &'static str {
         "fmp4-dash" => "fragmented MP4 (DASH)",
         "fmp4-flat" => "MP4 (legacy)",
         "pcap-bundle" => "PCAP bundle",
+        "mcp-jsonl-v1" => "MCP JSONL",
         _ => "unknown",
     }
 }
@@ -344,6 +345,7 @@ mod tests {
         assert_eq!(format_label("asciicast-v2"), "asciicast v2");
         assert_eq!(format_label("fmp4-dash"), "fragmented MP4 (DASH)");
         assert_eq!(format_label("fmp4-flat"), "MP4 (legacy)");
+        assert_eq!(format_label("mcp-jsonl-v1"), "MCP JSONL");
         assert_eq!(format_label("nope"), "unknown");
     }
 

@@ -54,12 +54,30 @@ impl AccessContestation {
     }
 
     pub fn status_label(&self) -> &'static str {
-        match self.status.as_str() {
-            STATUS_OPEN => "Open",
-            STATUS_UNDER_REVIEW => "Under review",
-            STATUS_UPHELD => "Upheld",
-            STATUS_OVERTURNED => "Overturned",
-            _ => "Unknown",
-        }
+        status_label(&self.status)
+    }
+}
+
+pub fn status_label(status: &str) -> &'static str {
+    match status {
+        STATUS_OPEN => "Open",
+        STATUS_UNDER_REVIEW => "Under review",
+        STATUS_UPHELD => "Upheld",
+        STATUS_OVERTURNED => "Overturned",
+        _ => "Unknown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_status_has_a_label_and_a_stray_value_is_unknown() {
+        assert_eq!(status_label(STATUS_OPEN), "Open");
+        assert_eq!(status_label(STATUS_UNDER_REVIEW), "Under review");
+        assert_eq!(status_label(STATUS_UPHELD), "Upheld");
+        assert_eq!(status_label(STATUS_OVERTURNED), "Overturned");
+        assert_eq!(status_label("archived"), "Unknown");
     }
 }

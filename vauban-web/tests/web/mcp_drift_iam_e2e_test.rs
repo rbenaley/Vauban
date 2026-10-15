@@ -64,6 +64,7 @@ async fn seed_rule(
             status: "online".into(),
             description: None,
             connection_config: serde_json::json!({
+                "allowed_tools": ["purge_tasks"],
                 "mcp_tool_catalog": [{
                     "name": "purge_tasks",
                     "description": "lab",
@@ -377,6 +378,26 @@ async fn apply_revoke_opener_key_deactivates_hop1_key_only() {
         "Connect UI hop (no api_key_id) must not revoke a phantom key"
     );
     assert!(member_of(&mut conn, fx.subject.user.id, fx.ug_id).await);
+    test_db::cleanup(&mut conn).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn hop1_api_key_auth_exposes_opener_key_uuid() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let user = create_test_user(&mut conn, &app.auth_service, &unique_name("hop1_key")).await;
+    let (key_uuid, raw) =
+        create_real_api_key(&mut conn, user.user.id, &[ApiKeyScope::Write], None).await;
+    let (auth_user, key_auth) =
+        vauban_web::middleware::api_key::authenticate_api_key(&app.app_state, &raw, None)
+            .await
+            .expect("valid key authenticates");
+    assert_eq!(auth_user.uuid, user.user.uuid.to_string());
+    assert_eq!(
+        key_auth.key_uuid, key_uuid,
+        "hop 1 must stamp the authenticating key for revoke_opener_key"
+    );
     test_db::cleanup(&mut conn).await;
 }
 

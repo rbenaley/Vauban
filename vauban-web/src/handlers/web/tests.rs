@@ -1702,3 +1702,31 @@ fn test_submit_access_request_no_longer_hardcodes_mfa_for_privileged_users() {
          Always derive these flags from `services::access::can_access_asset`."
     );
 }
+
+// ==================== apply_mcp_tls_spki Tests ====================
+
+#[test]
+fn test_apply_mcp_tls_spki_blank_keeps_existing() {
+    let mut cfg = serde_json::json!({"mcp_upstream_tls_spki": "SHA256:old"});
+    for input in [None, Some(""), Some("   ")] {
+        apply_mcp_tls_spki(&mut cfg, input).unwrap();
+        assert_eq!(cfg["mcp_upstream_tls_spki"], "SHA256:old");
+    }
+}
+
+#[test]
+fn test_apply_mcp_tls_spki_validates_and_stores() {
+    let pin = format!("SHA256:{}", "A".repeat(43) + "=");
+    let mut cfg = serde_json::json!({"auth_type": "none"});
+    apply_mcp_tls_spki(&mut cfg, Some(&format!("  {pin} "))).unwrap();
+    assert_eq!(cfg["mcp_upstream_tls_spki"], pin.as_str());
+    assert_eq!(cfg["auth_type"], "none");
+    for bad in ["md5:abc", "SHA256:not base64!", "SHA256:AAAA"] {
+        let err = apply_mcp_tls_spki(&mut cfg, Some(bad)).unwrap_err();
+        assert!(err.contains("SHA256:<base64>"), "{bad}: {err}");
+    }
+    assert_eq!(cfg["mcp_upstream_tls_spki"], pin.as_str());
+    let mut not_object = serde_json::Value::Null;
+    apply_mcp_tls_spki(&mut not_object, Some(&pin)).unwrap();
+    assert!(not_object.is_null());
+}

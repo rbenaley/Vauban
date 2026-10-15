@@ -53,8 +53,17 @@ pub async fn mcp_hitl_list(
         };
 
     let user = Some(user_context_from_auth(&auth_user));
+    let flash_messages: Vec<crate::templates::base::FlashMessage> = incoming_flash
+        .messages()
+        .iter()
+        .map(|m| crate::templates::base::FlashMessage {
+            level: m.level.clone(),
+            message: m.message.clone(),
+        })
+        .collect();
     let base = BaseTemplate::new("MCP tool approvals".into(), user.clone(), browser_tz.0)
-        .with_current_path("/sessions/mcp");
+        .with_current_path("/sessions/mcp")
+        .with_messages(flash_messages);
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -265,13 +274,15 @@ async fn decide_web(
         return flash_redirect(flash.error("vauban-proxy-mcp unavailable"), list_url);
     };
 
-    let Some(pending) = proxy.get_hitl_pending(&pending_id) else {
+    let Some(pending) = proxy.claim_hitl_pending(&pending_id) else {
         return flash_redirect(flash.error("HITL pending not found"), list_url);
     };
     if pending.session_id != session_id {
+        proxy.restore_hitl_pending(pending);
         return flash_redirect(flash.error("HITL pending not found"), list_url);
     }
     if pending.requester_user_id == auth_user.uuid {
+        proxy.restore_hitl_pending(pending);
         return flash_redirect(
             flash.error("Separation of duties: you cannot decide your own pending"),
             list_url,
@@ -285,6 +296,7 @@ async fn decide_web(
         decision,
         &auth_user.uuid,
     ) {
+        proxy.restore_hitl_pending(pending);
         return flash_redirect(flash.error(format!("HITL decision failed: {e}")), list_url);
     }
 

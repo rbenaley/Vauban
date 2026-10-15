@@ -1,41 +1,27 @@
-//! Shared MCP session-open logic (Lot 1a, `docs/specs/vauban-mcp`).
+//! Shared MCP session-open logic.
 //!
 //! Used by both the human web connect handler
-//! ([`crate::handlers::web::mcp::connect_mcp`]) and the agent-facing
-//! `POST /api/v1/sessions` MCP branch
-//! ([`crate::handlers::api::sessions::create_session`]) so the two
-//! surfaces mint the bearer, freeze the whitelist, and push the
-//! authorization envelope to `vauban-proxy-mcp` through exactly one
-//! code path.
+//! ([`crate::handlers::web::mcp::connect_mcp`]) and the agent-facing hop-1
+//! API ([`crate::handlers::api::mcp_sessions`]) so the two surfaces mint the
+//! bearer, freeze the whitelist, and push the authorization envelope to
+//! `vauban-proxy-mcp` through exactly one code path.
 //!
-//! Two proxy-registration strategies are supported, mirroring how
-//! every other proxy family (SSH/RDP/IACS) is wired:
-//!
-//! - **Supervisor / IPC** (`state.proxy_mcp` is `Some`): the
-//!   production path. A `SessionToken` is minted via vauban-access
-//!   and a `McpSessionOpen` IPC pushes the frozen envelope to
-//!   `vauban-proxy-mcp`. Fail-closed: without this client, MCP
-//!   sessions cannot open.
-//! - **Dev HTTP fallback** (`state.proxy_mcp` is `None`): used only
-//!   when vauban-web runs outside the supervisor (`local-tools`
-//!   demo / `cargo run` without Capsicum sandboxing). Calls the
-//!   plaintext `POST /session/register` bridge on
-//!   `vauban-proxy-mcp`'s dev HTTP gateway. This path is NOT
-//!   fail-closed against a compromised web and MUST NOT be reachable
-//!   in production (the supervisor always wires `proxy_mcp`).
+//! vauban-access mints the `SessionToken` and computes the effective tool
+//! whitelist; a `McpSessionOpen` IPC pushes the frozen envelope to
+//! `vauban-proxy-mcp`. Without the `proxy_mcp` IPC client no MCP session
+//! opens (fail-closed).
 
 use crate::AppState;
 use crate::error::{AppError, AppResult};
 use crate::ipc::McpSessionOpenRequest;
-use crate::models::asset::Asset;
+use crate::models::asset::{Asset, AssetType};
 use crate::schema::{access_rules, asset_asset_groups, asset_groups, user_groups};
-use crate::services::mcp_discover::{catalog_from_asset, tool_constraints_json_for_session_extra};
+use crate::services::mcp_discover::{catalog_from_asset, tool_constraints_json_for_asset};
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use diesel::OptionalExtension;
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
-use shared::mcp_policy::mcp_rule_callable_tools;
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
@@ -132,126 +118,17 @@ pub fn resolve_asset_catalog(asset: &Asset) -> Option<Vec<String>> {
         .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
 }
 
-/// Legacy alias — prefer [`resolve_effective_allowed_tools`].
-pub fn resolve_allowed_tools(asset: &Asset) -> Option<Vec<String>> {
-    resolve_asset_catalog(asset)
-}
-
-/// Effective session whitelist = ∩(applicable access rules) ∩ asset catalog
-/// (contract §7).
-///
-/// - Rule `mcp_allowed_tools IS NULL` and no HITL/plan → that rule does not shrink
-/// - HITL / require_plan names join the callable set (else `-32001` before the gate)
-/// - Rule `mcp_allowed_tools = {}` and no gates → deny-all
-/// - Multiple rules → intersection of their lists (NULL rules skipped)
-/// - Then intersect with the asset catalog when present
-pub async fn resolve_effective_allowed_tools(
-    conn: &mut crate::db::DbConnection,
-    user_id: i32,
+/// Effective tool whitelist for `user_uuid` on `asset`, computed by
+/// vauban-access (the PDP). Empty means no tool is granted.
+pub async fn effective_tools_from_access(
+    state: &AppState,
+    user_uuid: &str,
     asset: &Asset,
-) -> AppResult<Option<Vec<String>>> {
-    let catalog = resolve_asset_catalog(asset);
-
-    let group_ids: Vec<i32> = user_groups::table
-        .filter(user_groups::user_id.eq(user_id))
-        .select(user_groups::group_id)
-        .load::<i32>(conn)
-        .await?;
-
-    if group_ids.is_empty() {
-        // No group → no applicable rule (V-3 deny).
-        return Ok(Some(Vec::new()));
-    }
-
-    let virtual_uuid = Uuid::parse_str(VIRTUAL_ALL_ASSETS_UUID)
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("virtual all-assets uuid: {e}")))?;
-    let virtual_all_id: Option<i32> = asset_groups::table
-        .filter(asset_groups::uuid.eq(virtual_uuid))
-        .select(asset_groups::id)
-        .first::<i32>(conn)
+) -> AppResult<Vec<String>> {
+    state
+        .access_client
+        .compute_mcp_effective_tools(user_uuid, &asset.uuid.to_string())
         .await
-        .optional()?;
-
-    let direct_group_ids: Vec<i32> = asset_asset_groups::table
-        .filter(asset_asset_groups::asset_id.eq(asset.id))
-        .select(asset_asset_groups::asset_group_id)
-        .load::<i32>(conn)
-        .await?;
-
-    let mut asset_group_ids = direct_group_ids;
-    if let Some(vid) = virtual_all_id
-        && !asset_group_ids.contains(&vid)
-    {
-        asset_group_ids.push(vid);
-    }
-
-    if asset_group_ids.is_empty() {
-        // V-3: no asset group → no applicable rule. Catalogue is not a grant.
-        return Ok(Some(Vec::new()));
-    }
-
-    let now = Utc::now();
-    type McpRuleColumns = (
-        Option<Vec<Option<String>>>,
-        Option<Vec<Option<String>>>,
-        Option<Vec<Option<String>>>,
-    );
-    let rows: Vec<McpRuleColumns> = access_rules::table
-        .filter(access_rules::user_group_id.eq_any(&group_ids))
-        .filter(access_rules::asset_group_id.eq_any(&asset_group_ids))
-        .filter(access_rules::is_active.eq(true))
-        .filter(
-            access_rules::valid_from
-                .is_null()
-                .or(access_rules::valid_from.le(now)),
-        )
-        .filter(
-            access_rules::valid_until
-                .is_null()
-                .or(access_rules::valid_until.ge(now)),
-        )
-        // protocol mcp present (postgres array contains)
-        .filter(access_rules::allowed_protocols.contains(vec![Some("mcp".to_string())]))
-        .select((
-            access_rules::mcp_allowed_tools,
-            access_rules::mcp_hitl_tools,
-            access_rules::mcp_require_plan_tools,
-        ))
-        .load(conn)
-        .await?;
-
-    // V-3: zero applicable MCP rules → empty whitelist (caller denies).
-    // Never fall back to the bare asset catalogue.
-    if rows.is_empty() {
-        return Ok(Some(Vec::new()));
-    }
-
-    let mut effective: Option<BTreeSet<String>> = None;
-    for (allow, hitl, plan) in rows {
-        let Some(set) = mcp_rule_callable_tools(allow, hitl, plan) else {
-            continue;
-        };
-        effective = Some(match effective {
-            None => set,
-            Some(prev) => prev.intersection(&set).cloned().collect(),
-        });
-    }
-
-    let merged = match (effective, catalog) {
-        // All rules NULL → catalogue only (approved set). No catalogue → deny.
-        (None, cat) => cat
-            .map(|c| c.into_iter().collect::<Vec<_>>())
-            .unwrap_or_default(),
-        (Some(rule_set), None) => rule_set.into_iter().collect(),
-        (Some(rule_set), Some(cat)) => {
-            let cat_set: BTreeSet<_> = cat.into_iter().collect();
-            rule_set.intersection(&cat_set).cloned().collect::<Vec<_>>()
-        }
-    };
-
-    let mut v = merged;
-    v.sort();
-    Ok(Some(v))
 }
 
 /// Union of `mcp_hitl_tools` across applicable MCP access rules (09 §5.1).
@@ -404,6 +281,77 @@ pub async fn resolve_rule_require_plan_tools(
     Ok(out)
 }
 
+/// SPKI pin of the MCP upstream (`connection_config.mcp_upstream_tls_spki`,
+/// legacy `tls_spki_pin`). Required: the upstream is always HTTPS (ADR 010).
+pub fn mcp_upstream_tls_pin(cfg: &serde_json::Value) -> AppResult<String> {
+    let pin = cfg
+        .get("mcp_upstream_tls_spki")
+        .or_else(|| cfg.get("tls_spki_pin"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            AppError::Validation(
+                "MCP upstream requires HTTPS: set connection_config.mcp_upstream_tls_spki \
+                 (SHA256:<base64> of the server SPKI)"
+                    .into(),
+            )
+        })?;
+    if !pin.starts_with("SHA256:") {
+        return Err(AppError::Validation(
+            "MCP TLS pin must be SHA256:<base64> (same format as RDP rdp_server_cert_fingerprint)"
+                .into(),
+        ));
+    }
+    Ok(pin.to_string())
+}
+
+/// What a live MCP visit froze at open about its upstream: host, port,
+/// transport and TLS pin. The proxy never re-reads the asset, so when any
+/// of these changes the open visits are still talking to the old server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpUpstreamIdentity {
+    host: String,
+    port: i32,
+    transport: String,
+    pin: Option<String>,
+}
+
+impl McpUpstreamIdentity {
+    pub fn of(hostname: &str, port: i32, cfg: &serde_json::Value) -> Self {
+        let transport = match cfg.get("transport").and_then(|v| v.as_str()).map(str::trim) {
+            Some("tunnel") => "tunnel",
+            _ => "direct",
+        };
+        Self {
+            host: hostname.trim().to_ascii_lowercase(),
+            port,
+            transport: transport.to_string(),
+            pin: mcp_upstream_tls_pin(cfg).ok(),
+        }
+    }
+}
+
+/// Whether an edit of `existing` moves the upstream its open MCP visits
+/// froze at open (host, port, transport, pin), or stops it being MCP.
+pub fn mcp_upstream_moved(
+    existing: &Asset,
+    new_type: AssetType,
+    new_hostname: &str,
+    new_port: i32,
+    new_cfg: &serde_json::Value,
+) -> bool {
+    if existing.asset_type != AssetType::Mcp {
+        return false;
+    }
+    new_type != AssetType::Mcp
+        || McpUpstreamIdentity::of(
+            &existing.hostname,
+            existing.port,
+            &existing.connection_config,
+        ) != McpUpstreamIdentity::of(new_hostname, new_port, new_cfg)
+}
+
 /// Push a freshly-minted MCP session to `vauban-proxy-mcp`.
 ///
 /// Returns the normative data-plane bearer (`vbw_` + base64url(token)).
@@ -419,7 +367,7 @@ pub async fn open_on_proxy(
     session_uuid: Uuid,
     expires_at: DateTime<Utc>,
     justification: &str,
-    allowed_tools: Option<Vec<String>>,
+    connected_at: DateTime<Utc>,
 ) -> AppResult<String> {
     if let Some(ref proxy) = state.proxy_mcp {
         open_via_ipc(
@@ -431,7 +379,7 @@ pub async fn open_on_proxy(
             session_uuid,
             expires_at,
             justification,
-            allowed_tools,
+            connected_at,
         )
         .await
     } else {
@@ -451,9 +399,8 @@ async fn open_via_ipc(
     session_uuid: Uuid,
     expires_at: DateTime<Utc>,
     justification: &str,
-    allowed_tools: Option<Vec<String>>,
+    connected_at: DateTime<Utc>,
 ) -> AppResult<String> {
-    let _ = allowed_tools; // Access mint supplies the authoritative list below.
     let token_params = shared::session_token::SessionTokenParams {
         session_id: session_uuid.to_string(),
         user_uuid: user_uuid.to_string(),
@@ -470,7 +417,7 @@ async fn open_via_ipc(
         .await
         .map_err(|e| AppError::Authorization(format!("session token mint failed: {e}")))?;
 
-    // Lot M2: Access is the source of truth for the tool ∩ whitelist.
+    // Access is the source of truth for the tool whitelist.
     let allowed_tools = match issued.effective_tools {
         Some(tools) if !tools.is_empty() => Some(tools),
         Some(_) => {
@@ -488,8 +435,11 @@ async fn open_via_ipc(
     let bearer = bearer_from_session_token(&session_token);
     let vbw_hash: [u8; 32] = *blake3::hash(bearer.as_bytes()).as_bytes();
 
-    // Contexte / 04 §4: supervisor brokers upstream TCP → SCM_RIGHTS to
-    // proxy BEFORE McpSessionOpen (same order as SSH/RDP).
+    // ADR 010: refuse before brokering an FD that could only carry plaintext.
+    let upstream_tls_spki_pin = Some(mcp_upstream_tls_pin(&asset.connection_config)?);
+
+    // The supervisor brokers the upstream TCP FD to the proxy before
+    // McpSessionOpen (same order as SSH/RDP).
     if let Some(ref supervisor) = state.supervisor {
         match supervisor
             .request_tcp_connect(
@@ -538,23 +488,6 @@ async fn open_via_ipc(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let upstream_tls_spki_pin = asset
-        .connection_config
-        .get("mcp_upstream_tls_spki")
-        .or_else(|| asset.connection_config.get("tls_spki_pin"))
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    // RDP parity: pin format `SHA256:<standard-base64>` of SPKI DER.
-    if let Some(ref pin) = upstream_tls_spki_pin
-        && !pin.starts_with("SHA256:")
-    {
-        return Err(AppError::Validation(
-            "MCP TLS pin must be SHA256:<base64> (same format as RDP rdp_server_cert_fingerprint)"
-                .into(),
-        ));
-    }
     if asset
         .hostname
         .trim()
@@ -567,8 +500,7 @@ async fn open_via_ipc(
             .starts_with("http://")
     {
         return Err(AppError::Validation(
-            "MCP asset hostname must be bare (no URL scheme); pin selects HTTPS vs HTTP on FD"
-                .into(),
+            "MCP asset hostname must be bare (no URL scheme); the upstream is always HTTPS".into(),
         ));
     }
 
@@ -596,7 +528,7 @@ async fn open_via_ipc(
                 }
             }
         }
-        tool_constraints_json_for_session_extra(&catalog_from_asset(asset), &rule_hitl, &rule_plan)
+        tool_constraints_json_for_asset(&asset.connection_config, &rule_hitl, &rule_plan)
     };
 
     let envelope_on_exceed = asset
@@ -628,6 +560,7 @@ async fn open_via_ipc(
         justification: justification.to_string(),
         max_body_bytes: MAX_BODY_BYTES,
         session_token,
+        recording_open_unix: connected_at.timestamp().max(0) as u64,
         transport: mcp_transport(asset),
         require_seal: state.config.mcp.require_seal,
     };
@@ -670,6 +603,138 @@ pub(crate) fn credential_ciphertext_from_password(password: Option<&str>) -> App
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_tls_pin_is_mandatory() {
+        use serde_json::json;
+        for cfg in [json!({}), json!({"mcp_upstream_tls_spki": "  "})] {
+            let err = mcp_upstream_tls_pin(&cfg).unwrap_err();
+            assert!(err.to_string().contains("requires HTTPS"), "{err}");
+        }
+        let err = mcp_upstream_tls_pin(&json!({"tls_spki_pin": "md5:x"})).unwrap_err();
+        assert!(err.to_string().contains("SHA256:<base64>"), "{err}");
+        let pin = mcp_upstream_tls_pin(
+            &json!({"mcp_upstream_tls_spki": " SHA256:abc= ", "tls_spki_pin": "SHA256:old"}),
+        )
+        .unwrap();
+        assert_eq!(pin, "SHA256:abc=");
+        assert_eq!(
+            mcp_upstream_tls_pin(&json!({"tls_spki_pin": "SHA256:old"})).unwrap(),
+            "SHA256:old"
+        );
+    }
+
+    #[test]
+    fn test_mcp_transport_defaults_to_direct() {
+        use serde_json::json;
+        let mut asset = Asset {
+            id: 1,
+            uuid: uuid::Uuid::new_v4(),
+            name: "mcp".into(),
+            hostname: "mcp.example".into(),
+            port: 443,
+            asset_type: crate::models::asset::AssetType::Mcp,
+            status: "online".into(),
+            description: None,
+            connection_config: json!({}),
+            created_by_id: None,
+            updated_by_id: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            is_deleted: false,
+            deleted_at: None,
+            connection_username: String::new(),
+        };
+        for (cfg, want) in [
+            (json!({}), "direct"),
+            (json!({"transport": " tunnel "}), "tunnel"),
+            (json!({"transport": "direct"}), "direct"),
+            (json!({"transport": "TUNNEL"}), "direct"),
+            (json!({"transport": 1}), "direct"),
+        ] {
+            asset.connection_config = cfg;
+            assert_eq!(mcp_transport(&asset), want, "{}", asset.connection_config);
+        }
+    }
+
+    fn mcp_asset(hostname: &str, port: i32, cfg: serde_json::Value) -> Asset {
+        Asset {
+            id: 1,
+            uuid: uuid::Uuid::new_v4(),
+            name: "mcp".into(),
+            hostname: hostname.into(),
+            port,
+            asset_type: AssetType::Mcp,
+            status: "online".into(),
+            description: None,
+            connection_config: cfg,
+            created_by_id: None,
+            updated_by_id: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            is_deleted: false,
+            deleted_at: None,
+            connection_username: String::new(),
+        }
+    }
+
+    #[test]
+    fn test_mcp_upstream_moved_only_on_what_a_visit_froze() {
+        use serde_json::json;
+        let pin = "SHA256:old=";
+        let cfg = json!({"mcp_upstream_tls_spki": pin, "transport": "direct", "note": "a"});
+        let asset = mcp_asset("MCP.example", 443, cfg.clone());
+        let moved = |ty, host: &str, port, c: serde_json::Value| {
+            mcp_upstream_moved(&asset, ty, host, port, &c)
+        };
+
+        assert!(!moved(AssetType::Mcp, "MCP.example", 443, cfg.clone()));
+        assert!(!moved(AssetType::Mcp, " mcp.example ", 443, cfg.clone()));
+        assert!(!moved(
+            AssetType::Mcp,
+            "mcp.example",
+            443,
+            json!({"tls_spki_pin": pin, "note": "b"})
+        ));
+
+        assert!(moved(AssetType::Mcp, "other.example", 443, cfg.clone()));
+        assert!(moved(AssetType::Mcp, "mcp.example", 8443, cfg.clone()));
+        assert!(moved(
+            AssetType::Mcp,
+            "mcp.example",
+            443,
+            json!({"mcp_upstream_tls_spki": "SHA256:new="})
+        ));
+        assert!(moved(
+            AssetType::Mcp,
+            "mcp.example",
+            443,
+            json!({"mcp_upstream_tls_spki": pin, "transport": "tunnel"})
+        ));
+        assert!(moved(AssetType::Mcp, "mcp.example", 443, json!({})));
+        assert!(moved(AssetType::Ssh, "mcp.example", 443, cfg));
+    }
+
+    #[test]
+    fn test_mcp_upstream_moved_ignores_non_mcp_assets() {
+        use serde_json::json;
+        let mut asset = mcp_asset("h", 22, json!({}));
+        asset.asset_type = AssetType::Ssh;
+        assert!(!mcp_upstream_moved(
+            &asset,
+            AssetType::Ssh,
+            "other",
+            2222,
+            &json!({})
+        ));
+        assert!(!mcp_upstream_moved(
+            &asset,
+            AssetType::Mcp,
+            "other",
+            443,
+            &json!({})
+        ));
+    }
 
     #[test]
     fn test_bearer_from_session_token_shape() {

@@ -79,7 +79,7 @@ pub async fn open_session(
         }))
         .send()
         .await
-        .map_err(|e| format!("hop 1: {e}"))?;
+        .map_err(|e| format!("hop 1: {}", crate::error_chain(&e)))?;
     let status = response.status();
     let text = response
         .text()

@@ -75,6 +75,8 @@ pub struct McpSessionOpenRequest {
     /// vauban-access, verified by vauban-proxy-mcp BEFORE trusting
     /// the rest of this payload -- same invariant as SSH/RDP/IACS.
     pub session_token: Vec<u8>,
+    /// Frozen hop-1 unix seconds for YYYY/MM recording dir.
+    pub recording_open_unix: u64,
     /// `direct` or `tunnel`. Frozen for the visit.
     pub transport: String,
     /// When true the leaf refuses a `tools/call` outside a sealed mandate.
@@ -240,6 +242,7 @@ impl ProxyMcpClient {
             justification: request.justification,
             max_body_bytes: request.max_body_bytes,
             session_token: request.session_token,
+            recording_open_unix: request.recording_open_unix,
             transport: request.transport,
             require_seal: request.require_seal,
         };
@@ -313,6 +316,10 @@ impl ProxyMcpClient {
     /// watchdog, or Access-down x3). Fire-and-forget: the proxy stops
     /// accepting `tools/call` on this `vbw_` and finalizes recording.
     pub fn terminate_session(&self, session_id: &str, reason: &str) -> AppResult<()> {
+        // A cut visit's HITL calls die with it, even if the IPC below is
+        // lost: staff must not be able to approve them afterwards.
+        let _ =
+            (self.hitl_pendings.lock()).map(|mut g| g.retain(|_, e| e.session_id != session_id));
         let request_id = self.core.alloc_id();
         let msg = Message::McpSessionTerminate {
             request_id,
@@ -399,6 +406,22 @@ impl ProxyMcpClient {
                 .filter(|e| hitl_unexpired(&e.expires_at))
                 .cloned()
         })
+    }
+
+    /// Takes the pending out of the queue so only one decider can act on
+    /// it. Callers that do not forward a decision must `restore_hitl_pending`.
+    pub fn claim_hitl_pending(&self, pending_id: &str) -> Option<McpHitlPendingEntry> {
+        let mut g = self.hitl_pendings.lock().ok()?;
+        match g.remove(pending_id) {
+            Some(e) if hitl_unexpired(&e.expires_at) => Some(e),
+            _ => None,
+        }
+    }
+
+    pub fn restore_hitl_pending(&self, entry: McpHitlPendingEntry) {
+        if let Ok(mut g) = self.hitl_pendings.lock() {
+            g.entry(entry.pending_id.clone()).or_insert(entry);
+        }
     }
 
     /// Drain incoming messages from the proxy. Run forever in a
@@ -627,6 +650,62 @@ impl ProxyMcpClient {
                     );
                 }
             }
+            Message::McpToolDefinitionDrift {
+                session_id,
+                asset_id,
+                tool,
+                approved_fp,
+                live_fp,
+                live_definition_json,
+            } => {
+                debug!(
+                    session_id = %session_id,
+                    asset_id = %asset_id,
+                    tool = %tool,
+                    "MCP tool definition drift"
+                );
+                let runtime = self.runtime.lock().ok().and_then(|g| g.clone());
+                if let Some(state) = runtime {
+                    tokio::spawn(async move {
+                        let report = crate::services::mcp_tool_drift::DriftReport {
+                            session_id,
+                            asset_id,
+                            tool,
+                            approved_fp,
+                            live_fp,
+                            live_definition_json,
+                        };
+                        let (sid, tool) = (report.session_id.clone(), report.tool.clone());
+                        if let Err(e) =
+                            crate::services::mcp_tool_drift::handle_drift(&state, report).await
+                        {
+                            warn!(
+                                session_id = %sid,
+                                tool = %tool,
+                                error = %e,
+                                "failed to apply MCP tool definition drift"
+                            );
+                        }
+                    });
+                } else {
+                    warn!(
+                        session_id = %session_id,
+                        "MCP tool drift dropped: runtime AppState not bound yet"
+                    );
+                }
+            }
+            Message::McpProxyReady => {
+                debug!("MCP proxy ready — reaping leftover live MCP rows");
+                let runtime = self.runtime.lock().ok().and_then(|g| g.clone());
+                if let Some(state) = runtime {
+                    tokio::spawn(async move {
+                        crate::services::mcp_recheck::terminate_live_mcp_on_proxy_restart(&state)
+                            .await;
+                    });
+                } else {
+                    warn!("McpProxyReady dropped: runtime AppState not bound yet");
+                }
+            }
             other => {
                 warn!(?other, "Ignoring unexpected message from proxy-mcp");
             }
@@ -673,6 +752,7 @@ mod tests {
             justification: "demo".to_string(),
             max_body_bytes: 1_048_576,
             session_token: vec![1, 2, 3],
+            recording_open_unix: 1_700_000_000,
             transport: "direct".to_string(),
             require_seal: false,
         };

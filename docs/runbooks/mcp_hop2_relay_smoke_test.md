@@ -1,12 +1,12 @@
 # Runbook -- MCP hop 2 on the bastion HTTPS listener
 
 > Manual validation after shipping **hop 2 on vauban-web :443**
-> (crates **0.9.45**, hardened in **0.9.46**): the MCP leaf has no
+> (crates **0.9.45**, hardened in **0.9.46**, fail-closed audit in **0.9.47**): the MCP leaf has no
 > listening socket; `POST /mcp` is relayed on a dedicated data pipe,
 > and the tunnel mode terminates TLS inside the leaf.
 >
 > Audience: release / staging operators.
-> Severity: **BLOCKING** for **0.9.46**. Do not ship without A–C.
+> Severity: **BLOCKING** for **0.9.47**. Do not ship without A–E.
 
 Related:
 
@@ -32,7 +32,7 @@ Known limit: `leaf_identity_boot_e2e_test` boots the real leaf binary, but on a 
 
 ## Lab prerequisites
 
-- Binaries **0.9.46** coordinated (shared wire, supervisor, web, proxy-mcp, `vauban-mcp` shim).
+- Binaries **0.9.47** coordinated (shared wire, supervisor, web, proxy-mcp, `vauban-mcp` shim).
 - `[mcp].enabled = true` and `[mcp].require_seal = true` in production config.
 - No `[mcp].bind_addr` key. Boot must refuse a file that still has it.
 - One MCP asset, one `vbn_` key, and a second human who can approve HITL.
@@ -75,3 +75,10 @@ Pass: the new visit relays, the identity is installed before the gateway is read
 3. The supervisor log contains `proxy_mcp: Exited with code 0` and does not contain `proxy_mcp: Still running after timeout`.
 
 Pass: the leaf exits 0 on the IPC shutdown, in the same breath as the other children. A `proxy_mcp: Still running, sending SIGKILL` line is a fail.
+
+## E -- Pin and audit pipe (0.9.47)
+
+1. Open a visit whose asset has no SPKI pin (or clear the pin on a throw-away asset). Hop 1 must refuse. A pin of the wrong key must refuse before any MCP byte reaches that upstream.
+2. Stop `vauban-audit` so the leaf's audit pipe closes, then `tools/call` on a visit that was already open. The call must fail (`recording_sync_failed`). The upstream must show no new request for that call.
+
+Pass: an upstream without a pin is refused, and a closed audit pipe does not let the visit succeed. A successful `tools/call` while the audit pipe is down is a fail. `just test-full-stack mcp` is this staging check. It is not a substitute for `just test-mcp-pyramid`, and `vauban-e2e` stays outside the workspace.

@@ -958,6 +958,7 @@ pub fn build_test_router(state: AppState) -> Router {
                         .post(handlers::web::create_mcp_access_rule_web),
                 )
                 .route("/access/new", get(handlers::web::mcp_access_create_form))
+                .route("/access/matrix", get(handlers::web::mcp_access_matrix))
                 .route("/access/{uuid}", get(handlers::web::mcp_access_detail))
                 .route(
                     "/access/{uuid}/edit",
@@ -996,6 +997,14 @@ pub fn build_test_router(state: AppState) -> Router {
                 .route_layer(axum::middleware::from_fn(
                     middleware::require_permission::require_mcp_zone,
                 )),
+        )
+        .route(
+            "/sessions/mcp-hitl/{session_id}/{pending_id}/approve",
+            post(handlers::web::mcp_hitl_approve_web),
+        )
+        .route(
+            "/sessions/mcp-hitl/{session_id}/{pending_id}/deny",
+            post(handlers::web::mcp_hitl_deny_web),
         )
         .route("/sessions/approvals", get(handlers::web::approval_list))
         .route(
@@ -1113,6 +1122,14 @@ pub fn build_test_router(state: AppState) -> Router {
                 .route(
                     "/{uuid}/test-key-auth",
                     post(handlers::web::test_ssh_key_auth),
+                )
+                .route(
+                    "/{uuid}/discover-mcp-tools",
+                    post(handlers::web::discover_mcp_tools_web),
+                )
+                .route(
+                    "/{uuid}/approve-mcp-tools",
+                    post(handlers::web::approve_mcp_tools_web),
                 )
                 .route_layer(axum::middleware::from_fn(
                     middleware::require_assets_manage::require_assets_manage,
@@ -1530,6 +1547,14 @@ pub mod test_db {
     /// Clean up test data (run before/after tests).
     pub async fn cleanup(conn: &mut AsyncPgConnection) {
         // Delete in reverse order of foreign key dependencies
+        diesel::sql_query("DELETE FROM access_contestations")
+            .execute(conn)
+            .await
+            .ok();
+        diesel::sql_query("DELETE FROM mcp_mandates")
+            .execute(conn)
+            .await
+            .ok();
         diesel::sql_query("DELETE FROM session_recordings")
             .execute(conn)
             .await

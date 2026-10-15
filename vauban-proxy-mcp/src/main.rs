@@ -17,7 +17,15 @@
 //! (Ping/Pong/Drain/Shutdown) on a background task.
 
 #[cfg(test)]
+mod mcp_attack_e2e_tests;
+#[cfg(test)]
+mod mcp_fix_e2e_tests;
+#[cfg(test)]
 mod mcp_pyramid_tests;
+#[cfg(test)]
+mod mcp_wire_tests;
+#[cfg(test)]
+mod test_upstream;
 
 mod agent_view;
 mod async_ipc;
@@ -27,8 +35,10 @@ mod fd_passing;
 mod mandate;
 mod mcp_recording;
 mod phase_c;
+mod rpc_codes;
 mod tls_pin;
 mod tool_constraints;
+mod tool_drift;
 mod tunnel;
 mod upstream_http;
 mod upstream_rebroker;
@@ -60,18 +70,19 @@ use shared::ipc::IpcChannel;
 use shared::messages::{ControlMessage, Message, ServiceStats};
 use shared::sandbox as capsicum;
 use shared::session_token::proxy_gate as session_token_gate;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::os::unix::io::RawFd;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{Mutex as AsyncMutex, broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc};
 use tool_constraints::{
     ToolConstraint, merge_constraints_tighten, parse_constraints_json, validate_tool_args,
 };
 use tracing::{debug, error, info, warn};
-use upstream_rebroker::{McpUpstreamRebroker, is_dead_upstream_io};
+use upstream_http::UpstreamError;
+use upstream_rebroker::McpUpstreamRebroker;
 use vault::{VaultDecryptClient, materialise_upstream_bearer};
 
 /// Lightweight AccessGuard metrics for the MCP proxy (Droits / M4).
@@ -144,7 +155,7 @@ struct Session {
     /// `None` when the asset has no secret. Hop 1 materialises it via Vault.
     upstream_bearer: Option<String>,
     /// Brokered upstream (SCM_RIGHTS): plaintext HTTP or TLS+SPKI.
-    upstream_stream: Option<Arc<AsyncMutex<upstream_http::UpstreamIo>>>,
+    upstream_stream: Option<Arc<upstream_http::Upstream>>,
     /// Hop-1 SessionToken bytes — re-presented on IACS-style re-broker.
     session_token: Vec<u8>,
     upstream_host: String,
@@ -162,10 +173,26 @@ struct Session {
     /// Active Mission Seal mandate (post-Approve). Display / lab fallback.
     /// Supervised CheckStep SoT is vauban-access.
     mandate: Option<mandate::MandateState>,
+    /// Approved tools whose live definition drifted this visit:
+    /// hidden from `tools/list`, `tools/call` → `-32002`.
+    quarantined: HashSet<String>,
+    /// Approved upstream-instructions fingerprint frozen at open.
+    approved_instructions_fp: Option<String>,
+    /// Instructions drift already reported to web for this visit.
+    instructions_drift_notified: bool,
     /// `direct` or `tunnel`. Frozen at `McpSessionOpen`.
     transport: String,
     /// Production visits treat every unsealed `tools/call` as Require plan.
     require_seal: bool,
+}
+
+impl Session {
+    /// The row stays (old bearer → -32003/-32004); the brokered upstream FD must not.
+    fn mark_terminated(&mut self) {
+        self.terminated = true;
+        self.upstream_stream = None;
+        self.hitl_pendings.clear();
+    }
 }
 
 #[derive(Clone)]
@@ -178,6 +205,7 @@ struct GatewayState {
     access_guard: Option<Arc<AccessGuard>>,
     /// Mid-visit TcpConnect (same token). Set after FD socket is ready.
     rebroker: Arc<OnceLock<Arc<McpUpstreamRebroker>>>,
+    upstream_timeouts: upstream_http::Timeouts,
     /// `VAUBAN_MCP_REQUIRE_SEAL` as read at boot. Web can only add a seal.
     require_seal_policy: bool,
 }
@@ -212,7 +240,15 @@ impl GatewayState {
             web_notify_tx,
             access_guard: None,
             rebroker: Arc::new(OnceLock::new()),
+            upstream_timeouts: upstream_http::Timeouts::default(),
             require_seal_policy: false,
+        }
+    }
+
+    fn drop_session(&self, session_id: &str) {
+        let mut g = self.lock_inner();
+        if let Some(sess) = g.sessions.remove(session_id) {
+            g.by_hash.remove(&sess.vbw_hash);
         }
     }
 
@@ -243,7 +279,7 @@ impl GatewayState {
             .unwrap_or("");
         if !auth.starts_with("Bearer ") {
             return Err(session_error(
-                -32003,
+                rpc_codes::SESSION_UNKNOWN,
                 "session_expired_or_unknown",
                 StatusCode::UNAUTHORIZED,
             ));
@@ -251,7 +287,7 @@ impl GatewayState {
         let token = auth.strip_prefix("Bearer ").unwrap_or("").trim();
         if !token.starts_with("vbw_") {
             return Err(session_error(
-                -32003,
+                rpc_codes::SESSION_UNKNOWN,
                 "session_expired_or_unknown",
                 StatusCode::UNAUTHORIZED,
             ));
@@ -260,14 +296,14 @@ impl GatewayState {
         let mut guard = self.lock_inner();
         let sid = guard.by_hash.get(&digest).cloned().ok_or_else(|| {
             session_error(
-                -32003,
+                rpc_codes::SESSION_UNKNOWN,
                 "session_expired_or_unknown",
                 StatusCode::UNAUTHORIZED,
             )
         })?;
         let sess = guard.sessions.get_mut(&sid).ok_or_else(|| {
             session_error(
-                -32003,
+                rpc_codes::SESSION_UNKNOWN,
                 "session_expired_or_unknown",
                 StatusCode::UNAUTHORIZED,
             )
@@ -276,28 +312,28 @@ impl GatewayState {
         if let Some(hdr_sid) = headers.get("Mcp-Session-Id").and_then(|v| v.to_str().ok())
             && hdr_sid != sess.session_id
         {
-            sess.terminated = true;
+            sess.mark_terminated();
             return Err(session_error(
-                -32004,
+                rpc_codes::SESSION_TERMINATED,
                 "session_terminated",
                 StatusCode::UNAUTHORIZED,
             ));
         }
         if sess.terminated {
             return Err(session_error(
-                -32004,
+                rpc_codes::SESSION_TERMINATED,
                 "session_terminated",
                 StatusCode::UNAUTHORIZED,
             ));
         }
         let now = unix_now();
         if now > sess.expires_at {
-            sess.terminated = true;
+            sess.mark_terminated();
             let sid = sess.session_id.clone();
             drop(guard);
             self.spawn_clear_mcp_mandate(&sid);
             return Err(session_error(
-                -32003,
+                rpc_codes::SESSION_UNKNOWN,
                 "session_expired_or_unknown",
                 StatusCode::UNAUTHORIZED,
             ));
@@ -330,6 +366,9 @@ impl GatewayState {
             clientinfo_pin: sess.clientinfo_pin,
             hitl_pendings: sess.hitl_pendings.clone(),
             mandate: sess.mandate.clone(),
+            quarantined: sess.quarantined.clone(),
+            approved_instructions_fp: sess.approved_instructions_fp.clone(),
+            instructions_drift_notified: sess.instructions_drift_notified,
             transport: sess.transport.clone(),
             require_seal: sess.require_seal,
         })
@@ -348,11 +387,12 @@ impl GatewayState {
     fn terminate_session(&self, session_id: &str, reason: &str) {
         let user_id = {
             let mut guard = self.lock_inner();
-            if let Some(sess) = guard.sessions.get_mut(session_id) {
-                sess.terminated = true;
-                sess.user_id.clone()
-            } else {
-                return;
+            match guard.sessions.get_mut(session_id) {
+                Some(sess) if !sess.terminated => {
+                    sess.mark_terminated();
+                    sess.user_id.clone()
+                }
+                _ => return,
             }
         };
         self.spawn_clear_mcp_mandate(session_id);
@@ -391,7 +431,12 @@ impl GatewayState {
     }
 
     /// Enter `suspended` if not already terminated. Returns true when newly suspended.
-    fn suspend_session(&self, session_id: &str, reason: &str, actor_user_id: Option<&str>) -> bool {
+    async fn suspend_session(
+        &self,
+        session_id: &str,
+        reason: &str,
+        actor_user_id: Option<&str>,
+    ) -> bool {
         let user_id = {
             let mut guard = self.lock_inner();
             let Some(sess) = guard.sessions.get_mut(session_id) else {
@@ -403,9 +448,19 @@ impl GatewayState {
             sess.suspended = true;
             sess.user_id.clone()
         };
+        if let Err(e) = self
+            .audit
+            .record_session_suspended(session_id, user_id.as_deref(), reason, actor_user_id)
+            .await
+        {
+            error!(session_id, error = %e, "MCP suspend refused: audit pipe did not accept the event");
+            let mut guard = self.lock_inner();
+            if let Some(sess) = guard.sessions.get_mut(session_id) {
+                sess.suspended = false;
+            }
+            return false;
+        }
         info!(session_id, reason, "MCP session suspended");
-        self.audit
-            .record_session_suspended(session_id, user_id.as_deref(), reason, actor_user_id);
         self.notify_web(Message::McpSessionStateNotify {
             session_id: session_id.to_string(),
             status: "suspended".to_string(),
@@ -415,7 +470,7 @@ impl GatewayState {
     }
 
     /// Leave `suspended`, reset envelope counter. Returns true when resumed.
-    fn resume_session(&self, session_id: &str, actor_user_id: &str) -> bool {
+    async fn resume_session(&self, session_id: &str, actor_user_id: &str) -> bool {
         let user_id = {
             let mut guard = self.lock_inner();
             let Some(sess) = guard.sessions.get_mut(session_id) else {
@@ -428,9 +483,19 @@ impl GatewayState {
             sess.call_times.clear();
             sess.user_id.clone()
         };
+        if let Err(e) = self
+            .audit
+            .record_session_resumed(session_id, user_id.as_deref(), actor_user_id)
+            .await
+        {
+            error!(session_id, error = %e, "MCP resume refused: audit pipe did not accept the event");
+            let mut guard = self.lock_inner();
+            if let Some(sess) = guard.sessions.get_mut(session_id) {
+                sess.suspended = true;
+            }
+            return false;
+        }
         info!(session_id, actor_user_id, "MCP session resumed");
-        self.audit
-            .record_session_resumed(session_id, user_id.as_deref(), actor_user_id);
         self.notify_web(Message::McpSessionStateNotify {
             session_id: session_id.to_string(),
             status: "active".to_string(),
@@ -445,12 +510,18 @@ impl GatewayState {
         self.web_notify_tx.is_some()
     }
 
-    fn insert_session(&self, sess: Session) {
+    /// Insert unless a session with the same id exists (live, suspended or
+    /// terminated): one lock for the check and the insert.
+    fn insert_new_session(&self, sess: Session) -> bool {
         let mut guard = self.lock_inner();
+        if guard.sessions.contains_key(&sess.session_id) {
+            return false;
+        }
         guard
             .by_hash
             .insert(sess.vbw_hash.clone(), sess.session_id.clone());
         guard.sessions.insert(sess.session_id.clone(), sess);
+        true
     }
 
     fn update_call_times(&self, session_id: &str, times: VecDeque<f64>) {
@@ -494,6 +565,18 @@ fn unix_now() -> f64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0)
+}
+
+/// Fail-closed PEP: JSONL append failure is `-32010`, never a silent deny.
+fn jsonl_sync_failed(req_id: Value, err: std::io::Error) -> Response {
+    error!(error = %err, "audit JSONL sync failed");
+    Json(jsonrpc_err(
+        req_id,
+        rpc_codes::UPSTREAM_OR_RECORDING,
+        "recording_sync_failed",
+        Some(json!({ "detail": err.to_string() })),
+    ))
+    .into_response()
 }
 
 fn patch_jsonrpc_id(mut body: Value, id: &Value) -> Value {
@@ -598,6 +681,19 @@ fn jsonrpc_err(id: Value, code: i32, message: &str, data: Option<Value>) -> Valu
     json!({ "jsonrpc": "2.0", "id": id, "error": err })
 }
 
+/// `sess` is a snapshot taken when the request arrived; the PDP wait may
+/// have outlived a suspend or terminate. Re-read the live state under the
+/// lock right before the relay.
+fn live_relay_refusal(state: &GatewayState, session_id: &str) -> Option<(i32, &'static str)> {
+    let g = state.lock_inner();
+    match g.sessions.get(session_id) {
+        None => Some((rpc_codes::SESSION_UNKNOWN, "session_unknown")),
+        Some(s) if s.terminated => Some((rpc_codes::SESSION_TERMINATED, "session_terminated")),
+        Some(s) if s.suspended => Some((rpc_codes::SESSION_SUSPENDED, "session_suspended")),
+        Some(_) => None,
+    }
+}
+
 fn tool_allowed(sess: &Session, name: &str) -> bool {
     // Fail-closed (M4 / Droits): missing whitelist never means allow-all.
     match &sess.allowed_tools {
@@ -606,7 +702,7 @@ fn tool_allowed(sess: &Session, name: &str) -> bool {
     }
 }
 
-fn check_envelope(state: &GatewayState, sess: &mut Session) -> Option<Value> {
+async fn check_envelope(state: &GatewayState, sess: &mut Session) -> Option<Value> {
     let now = unix_now();
     while let Some(front) = sess.call_times.front().copied() {
         if now - front > sess.envelope_window as f64 {
@@ -629,24 +725,139 @@ fn check_envelope(state: &GatewayState, sess: &mut Session) -> Option<Value> {
                 count = sess.call_times.len(),
                 "MCP envelope threshold (alert mode)"
             );
-            state.audit.record_envelope_threshold(
-                &sess.session_id,
-                sess.user_id.as_deref(),
-                sess.call_times.len(),
-                sess.envelope_max,
-                sess.envelope_window,
-            );
+            if let Err(e) = state
+                .audit
+                .record_envelope_threshold(
+                    &sess.session_id,
+                    sess.user_id.as_deref(),
+                    sess.call_times.len(),
+                    sess.envelope_max,
+                    sess.envelope_window,
+                )
+                .await
+            {
+                warn!(session_id = %sess.session_id, error = %e, "MCP envelope alert was not accepted by the audit pipe");
+            }
         }
         state.update_call_times(&sess.session_id, sess.call_times.clone());
         return None;
     }
     if sess.on_exceed == "suspend" {
         state.update_call_times(&sess.session_id, sess.call_times.clone());
-        state.suspend_session(&sess.session_id, "envelope", None);
+        if !state
+            .suspend_session(&sess.session_id, "envelope", None)
+            .await
+        {
+            return Some(jsonrpc_err(
+                Value::Null,
+                rpc_codes::UPSTREAM_OR_RECORDING,
+                "recording_sync_failed",
+                None,
+            ));
+        }
         sess.suspended = true;
-        return Some(jsonrpc_err(Value::Null, -32031, "session_suspended", None));
+        return Some(jsonrpc_err(
+            Value::Null,
+            rpc_codes::SESSION_SUSPENDED,
+            "session_suspended",
+            None,
+        ));
     }
-    Some(jsonrpc_err(Value::Null, -32029, "rate_limited", None))
+    Some(jsonrpc_err(
+        Value::Null,
+        rpc_codes::RATE_LIMITED,
+        "rate_limited",
+        None,
+    ))
+}
+
+/// Quarantine approved tools whose live definition drifted, for
+/// the rest of the visit. New drifts are recorded and reported to web once.
+/// Returns every tool quarantined in this visit.
+async fn quarantine_drifted_tools(
+    state: &GatewayState,
+    sess: &Session,
+    result: &Value,
+) -> HashSet<String> {
+    let drifts = tool_drift::detect(result, &sess.tool_constraints);
+    let mut fresh = Vec::new();
+    let quarantined = {
+        let mut g = state.lock_inner();
+        let Some(live) = g.sessions.get_mut(&sess.session_id) else {
+            return sess.quarantined.clone();
+        };
+        for d in drifts {
+            if live.quarantined.insert(d.tool.clone()) {
+                fresh.push(d);
+            }
+        }
+        live.quarantined.clone()
+    };
+    for d in fresh {
+        warn!(
+            session_id = %sess.session_id,
+            tool = %d.tool,
+            "upstream tool definition drifted since approval; quarantined"
+        );
+        report_definition_drift(state, sess, d).await;
+    }
+    quarantined
+}
+
+/// Unapproved or changed upstream instructions were omitted: report it
+/// once per visit so web sets them back to pending.
+async fn report_instructions_drift(
+    state: &GatewayState,
+    sess: &Session,
+    live_fp: String,
+    text: &str,
+) {
+    {
+        let mut g = state.lock_inner();
+        match g.sessions.get_mut(&sess.session_id) {
+            Some(live) if !live.instructions_drift_notified => {
+                live.instructions_drift_notified = true;
+            }
+            _ => return,
+        }
+    }
+    warn!(session_id = %sess.session_id, "upstream instructions not approved; omitted");
+    report_definition_drift(
+        state,
+        sess,
+        tool_drift::ToolDrift {
+            tool: shared::mcp_tool_fingerprint::INSTRUCTIONS_KEY.to_string(),
+            approved_fp: sess.approved_instructions_fp.clone().unwrap_or_default(),
+            live_fp,
+            live_definition_json: tool_drift::capped_json(&json!({ "instructions": text })),
+        },
+    )
+    .await;
+}
+
+async fn report_definition_drift(state: &GatewayState, sess: &Session, d: tool_drift::ToolDrift) {
+    if let Err(e) = state
+        .audit
+        .record_tool_definition_drift(
+            &sess.session_id,
+            sess.user_id.as_deref(),
+            &d.tool,
+            &d.approved_fp,
+            &d.live_fp,
+        )
+        .await
+    {
+        warn!(session_id = %sess.session_id, error = %e, "MCP tool-definition drift was not accepted by the audit pipe");
+        return;
+    }
+    state.notify_web(Message::McpToolDefinitionDrift {
+        session_id: sess.session_id.clone(),
+        asset_id: sess.asset_id.clone().unwrap_or_default(),
+        tool: d.tool,
+        approved_fp: d.approved_fp,
+        live_fp: d.live_fp,
+        live_definition_json: d.live_definition_json,
+    });
 }
 
 fn filter_tools_list(sess: &Session, result: Value) -> Value {
@@ -685,7 +896,18 @@ fn sync_local_mandate_after_pdp_allow(
     let Some(m) = live.mandate.as_mut() else {
         return;
     };
-    let _ = mandate::check_step(m, name, args);
+    // Access decided; the local copy only follows. A disagreement means
+    // the mirror drifted from the PDP and must be visible to operators.
+    if let shared::mcp_mandate::CheckStepOutcome::Deny { reason } =
+        mandate::check_step(m, name, args)
+    {
+        warn!(
+            session_id = %session_id,
+            tool = %name,
+            reason,
+            "local mandate mirror disagrees with the access PDP Allow"
+        );
+    }
 }
 
 /// Supervised PDP: CheckStep lives in vauban-access (same class as
@@ -763,15 +985,21 @@ async fn pdp_check_via_access(
                 "Mission Seal CheckStep replay (access PDP)"
             );
             let body = patch_jsonrpc_id(cached, req_id);
-            let _ = state.audit.record_tool_call(
-                &sess.session_id,
-                sess.user_id.as_deref(),
-                name,
-                "mandate_replay",
-                "ok",
-                args,
-                Some(&body),
-            );
+            if let Err(e) = state
+                .audit
+                .record_tool_call(
+                    &sess.session_id,
+                    sess.user_id.as_deref(),
+                    name,
+                    "mandate_replay",
+                    "ok",
+                    args,
+                    Some(&body),
+                )
+                .await
+            {
+                return PdpGate::Stop(jsonl_sync_failed(req_id.clone(), e));
+            }
             PdpGate::Stop(Json(body).into_response())
         }
         mandate::CheckStepOutcome::Deny { reason } => {
@@ -780,7 +1008,7 @@ async fn pdp_check_via_access(
             if reason == "no_mandate" {
                 let deny = jsonrpc_err(
                     req_id.clone(),
-                    -32010,
+                    rpc_codes::UPSTREAM_OR_RECORDING,
                     "upstream_or_recording_sync",
                     Some(json!({
                         "tool": name,
@@ -789,21 +1017,29 @@ async fn pdp_check_via_access(
                         "sealed_digest": sealed_digest,
                     })),
                 );
-                let _ = state.audit.record_tool_call(
-                    &sess.session_id,
-                    sess.user_id.as_deref(),
-                    name,
-                    "deny",
-                    "pdp_unavailable",
-                    args,
-                    None,
-                );
+                if let Err(e) = state
+                    .audit
+                    .record_tool_call(
+                        &sess.session_id,
+                        sess.user_id.as_deref(),
+                        name,
+                        "deny",
+                        "pdp_unavailable",
+                        args,
+                        None,
+                    )
+                    .await
+                {
+                    return PdpGate::Stop(jsonl_sync_failed(req_id.clone(), e));
+                }
                 return PdpGate::Stop(Json(deny).into_response());
             }
             if reason == "mission_expired" {
-                let mut g = state.lock_inner();
-                if let Some(live) = g.sessions.get_mut(&sess.session_id) {
-                    live.mandate = None;
+                {
+                    let mut g = state.lock_inner();
+                    if let Some(live) = g.sessions.get_mut(&sess.session_id) {
+                        live.mandate = None;
+                    }
                 }
                 let deny = jsonrpc_err(
                     req_id.clone(),
@@ -811,19 +1047,28 @@ async fn pdp_check_via_access(
                     "mission_expired",
                     Some(json!({ "tool": name, "reason": "mission_expired" })),
                 );
-                let _ = state.audit.record_tool_call(
-                    &sess.session_id,
-                    sess.user_id.as_deref(),
-                    name,
-                    "deny",
-                    "mission_expired",
-                    args,
-                    None,
-                );
+                if let Err(e) = state
+                    .audit
+                    .record_tool_call(
+                        &sess.session_id,
+                        sess.user_id.as_deref(),
+                        name,
+                        "deny",
+                        "mission_expired",
+                        args,
+                        None,
+                    )
+                    .await
+                {
+                    return PdpGate::Stop(jsonl_sync_failed(req_id.clone(), e));
+                }
                 return PdpGate::Stop(Json(deny).into_response());
             }
             let (code, message) = if reason == "step_inflight" || reason == "pdp_unavailable" {
-                (-32010, "upstream_or_recording_sync")
+                (
+                    rpc_codes::UPSTREAM_OR_RECORDING,
+                    "upstream_or_recording_sync",
+                )
             } else {
                 (mandate::ERR_MANDATE_STEP_DENIED, "mandate_step_denied")
             };
@@ -838,15 +1083,21 @@ async fn pdp_check_via_access(
                     "sealed_digest": sealed_digest,
                 })),
             );
-            let _ = state.audit.record_tool_call(
-                &sess.session_id,
-                sess.user_id.as_deref(),
-                name,
-                "deny",
-                reason,
-                args,
-                None,
-            );
+            if let Err(e) = state
+                .audit
+                .record_tool_call(
+                    &sess.session_id,
+                    sess.user_id.as_deref(),
+                    name,
+                    "deny",
+                    reason,
+                    args,
+                    None,
+                )
+                .await
+            {
+                return PdpGate::Stop(jsonl_sync_failed(req_id.clone(), e));
+            }
             if mandate::is_perimeter_drift(reason) {
                 state.emit_mandate_perimeter_drift(
                     &sess.session_id,
@@ -896,6 +1147,19 @@ async fn handle_hitl_tools_call(
     let mut mandate_allow = false;
     let mut mandate_drift: Option<(String, String, String, String, String, String)> = None;
     let mut clear_access_mandate = false;
+    enum MandateAudit {
+        None,
+        Expired,
+        Replay(Value),
+        Deny {
+            code: i32,
+            message: &'static str,
+            reason: String,
+            mandate_id: String,
+            sealed_digest: String,
+        },
+    }
+    let mut mandate_audit = MandateAudit::None;
     {
         let mut guard = state.lock_inner();
         if let Some(live) = guard.sessions.get_mut(&sess.session_id) {
@@ -910,25 +1174,7 @@ async fn handle_hitl_tools_call(
                 );
                 live.mandate = None;
                 clear_access_mandate = true;
-                let deny = jsonrpc_err(
-                    req_id.clone(),
-                    mandate::ERR_MISSION_EXPIRED,
-                    "mission_expired",
-                    Some(json!({
-                        "tool": name,
-                        "reason": "mission_expired",
-                    })),
-                );
-                let _ = state.audit.record_tool_call(
-                    &sess.session_id,
-                    sess.user_id.as_deref(),
-                    name,
-                    "deny",
-                    "mission_expired",
-                    args,
-                    None,
-                );
-                mandate_early = Some(Json(deny).into_response());
+                mandate_audit = MandateAudit::Expired;
             } else {
                 match mandate::plan_mandate_pdp(live.mandate.as_ref(), require_plan, params) {
                     mandate::MandatePdpPlan::Replace => {
@@ -962,44 +1208,17 @@ async fn handle_hitl_tools_call(
                                 tool = %name,
                                 "Mission Seal CheckStep replay (cached; no upstream)"
                             );
-                            let body = patch_jsonrpc_id(cached, req_id);
-                            let _ = state.audit.record_tool_call(
-                                &sess.session_id,
-                                sess.user_id.as_deref(),
-                                name,
-                                "mandate_replay",
-                                "ok",
-                                args,
-                                Some(&body),
-                            );
-                            mandate_early = Some(Json(body).into_response());
+                            mandate_audit = MandateAudit::Replay(patch_jsonrpc_id(cached, req_id));
                         }
                         mandate::CheckStepOutcome::Deny { reason } => {
                             let (code, message) = if reason == "step_inflight" {
-                                (-32010, "upstream_or_recording_sync")
+                                (
+                                    rpc_codes::UPSTREAM_OR_RECORDING,
+                                    "upstream_or_recording_sync",
+                                )
                             } else {
                                 (mandate::ERR_MANDATE_STEP_DENIED, "mandate_step_denied")
                             };
-                            let deny = jsonrpc_err(
-                                req_id.clone(),
-                                code,
-                                message,
-                                Some(json!({
-                                    "tool": name,
-                                    "reason": reason,
-                                    "mandate_id": mandate.mandate_id,
-                                    "sealed_digest": mandate.sealed_digest,
-                                })),
-                            );
-                            let _ = state.audit.record_tool_call(
-                                &sess.session_id,
-                                sess.user_id.as_deref(),
-                                name,
-                                "deny",
-                                reason,
-                                args,
-                                None,
-                            );
                             if mandate::is_perimeter_drift(reason) {
                                 mandate_drift = Some((
                                     sess.session_id.clone(),
@@ -1010,11 +1229,106 @@ async fn handle_hitl_tools_call(
                                     sess.user_id.clone().unwrap_or_default(),
                                 ));
                             }
-                            mandate_early = Some(Json(deny).into_response());
+                            mandate_audit = MandateAudit::Deny {
+                                code,
+                                message,
+                                reason: reason.to_string(),
+                                mandate_id: mandate.mandate_id.clone(),
+                                sealed_digest: mandate.sealed_digest.clone(),
+                            };
                         }
                     }
                 }
             }
+        }
+    }
+    match mandate_audit {
+        MandateAudit::None => {}
+        MandateAudit::Expired => {
+            let deny = jsonrpc_err(
+                req_id.clone(),
+                mandate::ERR_MISSION_EXPIRED,
+                "mission_expired",
+                Some(json!({
+                    "tool": name,
+                    "reason": "mission_expired",
+                })),
+            );
+            mandate_early = Some(
+                match state
+                    .audit
+                    .record_tool_call(
+                        &sess.session_id,
+                        sess.user_id.as_deref(),
+                        name,
+                        "deny",
+                        "mission_expired",
+                        args,
+                        None,
+                    )
+                    .await
+                {
+                    Err(e) => jsonl_sync_failed(req_id.clone(), e),
+                    Ok(()) => Json(deny).into_response(),
+                },
+            );
+        }
+        MandateAudit::Replay(body) => {
+            mandate_early = Some(
+                match state
+                    .audit
+                    .record_tool_call(
+                        &sess.session_id,
+                        sess.user_id.as_deref(),
+                        name,
+                        "mandate_replay",
+                        "ok",
+                        args,
+                        Some(&body),
+                    )
+                    .await
+                {
+                    Err(e) => jsonl_sync_failed(req_id.clone(), e),
+                    Ok(()) => Json(body).into_response(),
+                },
+            );
+        }
+        MandateAudit::Deny {
+            code,
+            message,
+            reason,
+            mandate_id,
+            sealed_digest,
+        } => {
+            let deny = jsonrpc_err(
+                req_id.clone(),
+                code,
+                message,
+                Some(json!({
+                    "tool": name,
+                    "reason": reason,
+                    "mandate_id": mandate_id,
+                    "sealed_digest": sealed_digest,
+                })),
+            );
+            mandate_early = Some(
+                match state
+                    .audit
+                    .record_tool_call(
+                        &sess.session_id,
+                        sess.user_id.as_deref(),
+                        name,
+                        "deny",
+                        &reason,
+                        args,
+                        None,
+                    )
+                    .await
+                {
+                    Err(e) => jsonl_sync_failed(req_id.clone(), e),
+                    Ok(()) => Json(deny).into_response(),
+                },
+            );
         }
     }
     if clear_access_mandate {
@@ -1051,7 +1365,7 @@ async fn handle_hitl_tools_call(
             return Some(
                 Json(jsonrpc_err(
                     req_id.clone(),
-                    -32003,
+                    rpc_codes::SESSION_UNKNOWN,
                     "session_expired_or_unknown",
                     None,
                 ))
@@ -1060,15 +1374,15 @@ async fn handle_hitl_tools_call(
         };
         let expired = purge_expired_hitl(&mut live.hitl_pendings, now);
 
+        // A retry without pending_id reuses the matching pending (Approved
+        // first, else still Pending) so agent retries do not flood approvers.
         let resolved_pid = pending_id.map(str::to_string).or_else(|| {
-            live.hitl_pendings
-                .values()
-                .find(|p| {
-                    p.status == HitlStatus::Approved
-                        && p.tool == name
-                        && p.args_blake3 == digest
-                        && p.expires_at >= now
-                })
+            let same =
+                |p: &&HitlPending| p.tool == name && p.args_blake3 == digest && p.expires_at >= now;
+            let values = || live.hitl_pendings.values().filter(same);
+            values()
+                .find(|p| p.status == HitlStatus::Approved)
+                .or_else(|| values().find(|p| p.status == HitlStatus::Pending))
                 .map(|p| p.pending_id.clone())
         });
 
@@ -1211,50 +1525,71 @@ async fn handle_hitl_tools_call(
     };
 
     for p in &expired {
-        state.audit.record_hitl_expired(
-            &sess.session_id,
-            sess.user_id.as_deref(),
-            &p.pending_id,
-            &p.tool,
-        );
+        if let Err(e) = state
+            .audit
+            .record_hitl_expired(
+                &sess.session_id,
+                sess.user_id.as_deref(),
+                &p.pending_id,
+                &p.tool,
+            )
+            .await
+        {
+            warn!(session_id = %sess.session_id, error = %e, "MCP HITL expiry was not accepted by the audit pipe");
+        }
     }
 
     match outcome {
         HitlCallOutcome::AllowUpstream => None,
         HitlCallOutcome::ReplayCached(cached) => {
             let body = patch_jsonrpc_id(cached, req_id);
-            let _ = state.audit.record_tool_call(
-                &sess.session_id,
-                sess.user_id.as_deref(),
-                name,
-                "mandate_replay",
-                "ok",
-                args,
-                Some(&body),
-            );
+            if let Err(e) = state
+                .audit
+                .record_tool_call(
+                    &sess.session_id,
+                    sess.user_id.as_deref(),
+                    name,
+                    "mandate_replay",
+                    "ok",
+                    args,
+                    Some(&body),
+                )
+                .await
+            {
+                return Some(jsonl_sync_failed(req_id.clone(), e));
+            }
             Some(Json(body).into_response())
         }
         HitlCallOutcome::ArgsMismatch => {
             let deny = jsonrpc_err(
                 req_id.clone(),
-                -32602,
+                rpc_codes::INVALID_PARAMS,
                 "invalid_params",
                 Some(json!({ "tool": name, "reason": "hitl_args_mismatch" })),
             );
-            let _ = state.audit.record_tool_call(
-                &sess.session_id,
-                sess.user_id.as_deref(),
-                name,
-                "deny",
-                "hitl_args_mismatch",
-                args,
-                None,
-            );
+            if let Err(e) = state
+                .audit
+                .record_tool_call(
+                    &sess.session_id,
+                    sess.user_id.as_deref(),
+                    name,
+                    "deny",
+                    "hitl_args_mismatch",
+                    args,
+                    None,
+                )
+                .await
+            {
+                return Some(jsonl_sync_failed(req_id.clone(), e));
+            }
             Some(Json(deny).into_response())
         }
         HitlCallOutcome::MandateDeny(reason) => {
             let (code, message) = if reason == "step_inflight" {
-                (-32010, "upstream_or_recording_sync")
+                (
+                    rpc_codes::UPSTREAM_OR_RECORDING,
+                    "upstream_or_recording_sync",
+                )
             } else {
                 (mandate::ERR_MANDATE_STEP_DENIED, "mandate_step_denied")
             };
@@ -1264,15 +1599,21 @@ async fn handle_hitl_tools_call(
                 message,
                 Some(json!({ "tool": name, "reason": reason })),
             );
-            let _ = state.audit.record_tool_call(
-                &sess.session_id,
-                sess.user_id.as_deref(),
-                name,
-                "deny",
-                &reason,
-                args,
-                None,
-            );
+            if let Err(e) = state
+                .audit
+                .record_tool_call(
+                    &sess.session_id,
+                    sess.user_id.as_deref(),
+                    name,
+                    "deny",
+                    &reason,
+                    args,
+                    None,
+                )
+                .await
+            {
+                return Some(jsonl_sync_failed(req_id.clone(), e));
+            }
             if mandate::is_perimeter_drift(&reason) {
                 state.emit_mandate_perimeter_drift(
                     &sess.session_id,
@@ -1288,7 +1629,7 @@ async fn handle_hitl_tools_call(
         HitlCallOutcome::MissingContract => {
             let deny = jsonrpc_err(
                 req_id.clone(),
-                -32602,
+                rpc_codes::INVALID_PARAMS,
                 "invalid_params",
                 Some(json!({
                     "tool": name,
@@ -1300,7 +1641,7 @@ async fn handle_hitl_tools_call(
         HitlCallOutcome::MissingStory => {
             let deny = jsonrpc_err(
                 req_id.clone(),
-                -32602,
+                rpc_codes::INVALID_PARAMS,
                 "invalid_params",
                 Some(json!({
                     "tool": name,
@@ -1313,23 +1654,34 @@ async fn handle_hitl_tools_call(
         HitlCallOutcome::BadStory(reason) | HitlCallOutcome::BadContract(reason) => {
             let deny = jsonrpc_err(
                 req_id.clone(),
-                -32602,
+                rpc_codes::INVALID_PARAMS,
                 "invalid_params",
                 Some(json!({ "tool": name, "reason": reason })),
             );
             Some(Json(deny).into_response())
         }
         HitlCallOutcome::DeniedExhausted | HitlCallOutcome::QuotaExceeded => {
-            let deny = jsonrpc_err(req_id.clone(), -32032, "hitl_denied_or_exhausted", None);
-            let _ = state.audit.record_tool_call(
-                &sess.session_id,
-                sess.user_id.as_deref(),
-                name,
-                "hitl_deny",
+            let deny = jsonrpc_err(
+                req_id.clone(),
+                rpc_codes::HITL_DENIED,
                 "hitl_denied_or_exhausted",
-                args,
                 None,
             );
+            if let Err(e) = state
+                .audit
+                .record_tool_call(
+                    &sess.session_id,
+                    sess.user_id.as_deref(),
+                    name,
+                    "hitl_deny",
+                    "hitl_denied_or_exhausted",
+                    args,
+                    None,
+                )
+                .await
+            {
+                return Some(jsonl_sync_failed(req_id.clone(), e));
+            }
             Some(Json(deny).into_response())
         }
         HitlCallOutcome::StillPending(p) | HitlCallOutcome::Created(p) => {
@@ -1344,14 +1696,20 @@ async fn handle_hitl_tools_call(
                 data["sealed_digest"] = json!(p.sealed_digest);
             }
             if created {
-                state.audit.record_hitl_pending(
-                    &sess.session_id,
-                    sess.user_id.as_deref(),
-                    &p.pending_id,
-                    &p.tool,
-                    &p.args_blake3,
-                    &rfc3339_from_secs(p.expires_at),
-                );
+                if let Err(e) = state
+                    .audit
+                    .record_hitl_pending(
+                        &sess.session_id,
+                        sess.user_id.as_deref(),
+                        &p.pending_id,
+                        &p.tool,
+                        &p.args_blake3,
+                        &rfc3339_from_secs(p.expires_at),
+                    )
+                    .await
+                {
+                    return Some(jsonl_sync_failed(req_id.clone(), e));
+                }
                 state.notify_web(Message::McpHitlPendingNotify {
                     session_id: sess.session_id.clone(),
                     pending_id: p.pending_id.clone(),
@@ -1366,16 +1724,27 @@ async fn handle_hitl_tools_call(
                     sealed_digest: p.sealed_digest.clone(),
                 });
             }
-            let err = jsonrpc_err(req_id.clone(), -32030, "tool_approval_required", Some(data));
-            let _ = state.audit.record_tool_call(
-                &sess.session_id,
-                sess.user_id.as_deref(),
-                name,
-                "hitl_pending",
+            let err = jsonrpc_err(
+                req_id.clone(),
+                rpc_codes::APPROVAL_REQUIRED,
                 "tool_approval_required",
-                args,
-                None,
+                Some(data),
             );
+            if let Err(e) = state
+                .audit
+                .record_tool_call(
+                    &sess.session_id,
+                    sess.user_id.as_deref(),
+                    name,
+                    "hitl_pending",
+                    "tool_approval_required",
+                    args,
+                    None,
+                )
+                .await
+            {
+                return Some(jsonl_sync_failed(req_id.clone(), e));
+            }
             Some(Json(err).into_response())
         }
     }
@@ -1388,7 +1757,13 @@ async fn handle_mcp(
     Json(body): Json<Value>,
 ) -> Response {
     let Some(Extension(ingress)) = ingress else {
-        return Json(jsonrpc_err(Value::Null, -32010, "ingress_required", None)).into_response();
+        return Json(jsonrpc_err(
+            Value::Null,
+            rpc_codes::UPSTREAM_OR_RECORDING,
+            "ingress_required",
+            None,
+        ))
+        .into_response();
     };
     let mut sess = match state.resolve_session(&headers) {
         Ok(s) => s,
@@ -1399,7 +1774,7 @@ async fn handle_mcp(
             StatusCode::UNAUTHORIZED,
             Json(jsonrpc_err(
                 body.get("id").cloned().unwrap_or(Value::Null),
-                -32003,
+                rpc_codes::SESSION_UNKNOWN,
                 "tunnel_required",
                 None,
             )),
@@ -1418,7 +1793,7 @@ async fn handle_mcp(
     if !SUPPORTED_METHODS.contains(&method.as_str()) {
         return Json(jsonrpc_err(
             req_id,
-            -32601,
+            rpc_codes::METHOD_NOT_FOUND,
             "method_not_found",
             Some(json!({ "method": method })),
         ))
@@ -1437,7 +1812,7 @@ async fn handle_mcp(
                 StatusCode::BAD_REQUEST,
                 Json(jsonrpc_err(
                     req_id,
-                    -32600,
+                    rpc_codes::INVALID_REQUEST,
                     "unsupported_protocol_version",
                     None,
                 )),
@@ -1450,37 +1825,66 @@ async fn handle_mcp(
                     state.terminate_session(&sess.session_id, "missing_client_info");
                     return (
                         StatusCode::BAD_REQUEST,
-                        Json(jsonrpc_err(req_id, -32600, "missing_client_info", None)),
+                        Json(jsonrpc_err(
+                            req_id,
+                            rpc_codes::INVALID_REQUEST,
+                            "missing_client_info",
+                            None,
+                        )),
                     )
                         .into_response();
                 }
                 Some(info) => {
-                    let mut guard = state.lock_inner();
-                    if let Some(live) = guard.sessions.get_mut(&sess.session_id) {
-                        match &live.client_info {
-                            None => {
-                                live.client_info = Some(info.clone());
-                                sess.client_info = Some(info);
+                    let drift = {
+                        let mut guard = state.lock_inner();
+                        if let Some(live) = guard.sessions.get_mut(&sess.session_id) {
+                            match &live.client_info {
+                                None => {
+                                    live.client_info = Some(info.clone());
+                                    sess.client_info = Some(info);
+                                    None
+                                }
+                                Some(pinned) if pinned == &info => None,
+                                Some(pinned) => Some((pinned.label(), info.label())),
                             }
-                            Some(pinned) if pinned == &info => {}
-                            Some(pinned) => {
-                                let pinned_l = pinned.label();
-                                let got_l = info.label();
-                                drop(guard);
-                                state.audit.record_clientinfo_drift(
-                                    &sess.session_id,
-                                    sess.user_id.as_deref(),
-                                    &pinned_l,
-                                    &got_l,
-                                );
-                                state.terminate_session(&sess.session_id, "clientinfo_drift");
-                                return (
-                                    StatusCode::BAD_REQUEST,
-                                    Json(jsonrpc_err(req_id, -32600, "clientinfo_drift", None)),
-                                )
-                                    .into_response();
-                            }
+                        } else {
+                            None
                         }
+                    };
+                    if let Some((pinned_l, got_l)) = drift {
+                        if let Err(e) = state
+                            .audit
+                            .record_clientinfo_drift(
+                                &sess.session_id,
+                                sess.user_id.as_deref(),
+                                &pinned_l,
+                                &got_l,
+                            )
+                            .await
+                        {
+                            warn!(session_id = %sess.session_id, error = %e, "MCP clientinfo drift was not accepted by the audit pipe");
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(jsonrpc_err(
+                                    req_id,
+                                    rpc_codes::UPSTREAM_OR_RECORDING,
+                                    "recording_sync_failed",
+                                    None,
+                                )),
+                            )
+                                .into_response();
+                        }
+                        state.terminate_session(&sess.session_id, "clientinfo_drift");
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(jsonrpc_err(
+                                req_id,
+                                rpc_codes::INVALID_REQUEST,
+                                "clientinfo_drift",
+                                None,
+                            )),
+                        )
+                            .into_response();
                     }
                 }
             }
@@ -1497,24 +1901,37 @@ async fn handle_mcp(
             .map(|a| mandate::strip_vauban_args(&a));
 
         if sess.suspended {
-            let deny = jsonrpc_err(req_id.clone(), -32031, "session_suspended", None);
-            let _ = state.audit.record_tool_call(
-                &sess.session_id,
-                sess.user_id.as_deref(),
-                name,
-                "suspended",
+            let deny = jsonrpc_err(
+                req_id.clone(),
+                rpc_codes::SESSION_SUSPENDED,
                 "session_suspended",
-                args.as_ref(),
                 None,
             );
+            if let Err(e) = state
+                .audit
+                .record_tool_call(
+                    &sess.session_id,
+                    sess.user_id.as_deref(),
+                    name,
+                    "suspended",
+                    "session_suspended",
+                    args.as_ref(),
+                    None,
+                )
+                .await
+            {
+                return jsonl_sync_failed(req_id.clone(), e);
+            }
             return Json(deny).into_response();
         }
 
-        if let Some(mut err) = check_envelope(&state, &mut sess) {
+        if let Some(mut err) = check_envelope(&state, &mut sess).await {
             if let Some(obj) = err.as_object_mut() {
                 obj.insert("id".into(), req_id.clone());
             }
-            let decision = if err.pointer("/error/code").and_then(Value::as_i64) == Some(-32031) {
+            let suspended = i64::from(rpc_codes::SESSION_SUSPENDED);
+            let decision = if err.pointer("/error/code").and_then(Value::as_i64) == Some(suspended)
+            {
                 "suspended"
             } else {
                 "throttle"
@@ -1525,16 +1942,51 @@ async fn handle_mcp(
                 "rate_limited"
             };
             warn!(session_id = %sess.session_id, tool = %name, decision, "tools/call envelope");
-            let _ = state.audit.record_tool_call(
-                &sess.session_id,
-                sess.user_id.as_deref(),
-                name,
-                decision,
-                reason,
-                args.as_ref(),
-                None,
-            );
+            if let Err(e) = state
+                .audit
+                .record_tool_call(
+                    &sess.session_id,
+                    sess.user_id.as_deref(),
+                    name,
+                    decision,
+                    reason,
+                    args.as_ref(),
+                    None,
+                )
+                .await
+            {
+                return jsonl_sync_failed(req_id.clone(), e);
+            }
             return Json(err).into_response();
+        }
+        if sess.quarantined.contains(name) {
+            warn!(session_id = %sess.session_id, tool = %name, "tools/call on quarantined tool");
+            let deny = jsonrpc_err(
+                req_id.clone(),
+                rpc_codes::TOOL_PENDING_OR_DRIFT,
+                "tool_pending_or_drift",
+                Some(json!({
+                    "tool": name,
+                    "status": "quarantined",
+                    "message": tool_drift::DRIFT_MESSAGE,
+                })),
+            );
+            if let Err(e) = state
+                .audit
+                .record_tool_call(
+                    &sess.session_id,
+                    sess.user_id.as_deref(),
+                    name,
+                    "deny",
+                    "tool_definition_drift",
+                    args.as_ref(),
+                    None,
+                )
+                .await
+            {
+                return jsonl_sync_failed(req_id.clone(), e);
+            }
+            return Json(deny).into_response();
         }
         if !tool_allowed(&sess, name) {
             let tofu_status = sess
@@ -1542,8 +1994,10 @@ async fn handle_mcp(
                 .get(name)
                 .and_then(|c| c.status.as_deref());
             let (code, reason) = match tofu_status {
-                Some("pending") | Some("tombstone") => (-32002, "tool_pending_or_drift"),
-                _ => (-32001, "tool_not_allowed"),
+                Some("pending") | Some("tombstone") => {
+                    (rpc_codes::TOOL_PENDING_OR_DRIFT, "tool_pending_or_drift")
+                }
+                _ => (rpc_codes::TOOL_NOT_ALLOWED, "tool_not_allowed"),
             };
             warn!(
                 session_id = %sess.session_id,
@@ -1562,18 +2016,24 @@ async fn handle_mcp(
                         .tool_constraints
                         .get(name)
                         .and_then(|c| c.schema_fingerprint.as_ref()),
+                    "message": (code == rpc_codes::TOOL_PENDING_OR_DRIFT)
+                        .then(|| tool_drift::status_message(tofu_status)),
                 })),
             );
-            if let Err(e) = state.audit.record_tool_call(
-                &sess.session_id,
-                sess.user_id.as_deref(),
-                name,
-                "deny",
-                reason,
-                args.as_ref(),
-                None,
-            ) {
-                error!(error = %e, "audit JSONL sync failed on deny");
+            if let Err(e) = state
+                .audit
+                .record_tool_call(
+                    &sess.session_id,
+                    sess.user_id.as_deref(),
+                    name,
+                    "deny",
+                    reason,
+                    args.as_ref(),
+                    None,
+                )
+                .await
+            {
+                return jsonl_sync_failed(req_id.clone(), e);
             }
             return Json(deny).into_response();
         }
@@ -1588,20 +2048,24 @@ async fn handle_mcp(
             );
             let deny = jsonrpc_err(
                 req_id.clone(),
-                -32602,
+                rpc_codes::INVALID_PARAMS,
                 "invalid_params",
                 Some(json!({ "tool": name, "reason": reason })),
             );
-            if let Err(e) = state.audit.record_tool_call(
-                &sess.session_id,
-                sess.user_id.as_deref(),
-                name,
-                "deny",
-                "invalid_params",
-                args.as_ref(),
-                None,
-            ) {
-                error!(error = %e, "audit JSONL sync failed on args deny");
+            if let Err(e) = state
+                .audit
+                .record_tool_call(
+                    &sess.session_id,
+                    sess.user_id.as_deref(),
+                    name,
+                    "deny",
+                    "invalid_params",
+                    args.as_ref(),
+                    None,
+                )
+                .await
+            {
+                return jsonl_sync_failed(req_id.clone(), e);
             }
             return Json(deny).into_response();
         }
@@ -1651,34 +2115,105 @@ async fn handle_mcp(
     }
 
     let mut upstream_body = body;
-    if method == "tools/call" {
-        mandate::strip_vauban_from_rpc_body(&mut upstream_body);
+    mandate::strip_vauban_from_rpc_body(&mut upstream_body);
+
+    let call_tool_name = params
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if method == "tools/call"
+        && let Some((code, reason)) = live_relay_refusal(&state, &sess.session_id)
+    {
+        warn!(session_id = %sess.session_id, tool = %call_tool_name, reason, "tools/call stopped before relay");
+        if hitl_oneshot {
+            finalize_mandate_upstream(&state, &sess.session_id, &Value::Null, false).await;
+        }
+        let args = params
+            .get("arguments")
+            .cloned()
+            .map(|a| mandate::strip_vauban_args(&a));
+        if let Err(e) = state
+            .audit
+            .record_tool_call(
+                &sess.session_id,
+                sess.user_id.as_deref(),
+                &call_tool_name,
+                "deny",
+                reason,
+                args.as_ref(),
+                None,
+            )
+            .await
+        {
+            return jsonl_sync_failed(req_id, e);
+        }
+        return Json(jsonrpc_err(req_id, code, reason, None)).into_response();
+    }
+    if method == "tools/call" && sess.upstream_stream.is_some() {
+        let args = params
+            .get("arguments")
+            .cloned()
+            .map(|a| mandate::strip_vauban_args(&a));
+        let decision = if hitl_oneshot { "hitl_allow" } else { "allow" };
+        if let Err(e) = state
+            .audit
+            .record_tool_call_intent(
+                &sess.session_id,
+                sess.user_id.as_deref(),
+                &call_tool_name,
+                decision,
+                args.as_ref(),
+            )
+            .await
+        {
+            error!(error = %e, "audit JSONL intent sync failed; tools/call not sent");
+            finalize_mandate_upstream(&state, &sess.session_id, &Value::Null, false).await;
+            return Json(jsonrpc_err(
+                req_id,
+                rpc_codes::UPSTREAM_OR_RECORDING,
+                "recording_sync_failed",
+                Some(json!({ "detail": e.to_string() })),
+            ))
+            .into_response();
+        }
     }
 
     let (status, payload) = if sess.upstream_stream.is_some() {
-        let host = sess
-            .upstream_url
-            .as_deref()
-            .and_then(|u| {
-                u.strip_prefix("https://")
-                    .or_else(|| u.strip_prefix("http://"))
-            })
-            .and_then(|u| u.split('/').next())
-            .unwrap_or("127.0.0.1");
-        match post_json_on_brokered_fd(&state, &sess, host, &upstream_body).await {
+        match post_json_on_brokered_fd(&state, &sess, &method, &upstream_body).await {
             Ok(v) => v,
             Err(e) => {
-                warn!(session_id = %sess.session_id, error = %e, "upstream on brokered FD failed");
+                let detail = e.to_string();
+                warn!(session_id = %sess.session_id, error = %detail, "upstream on brokered FD failed");
                 if method == "tools/call" {
+                    let outcome = if matches!(e, UpstreamError::Timeout(_)) {
+                        audit::ToolCallOutcome::Timeout
+                    } else {
+                        audit::ToolCallOutcome::UpstreamError
+                    };
+                    if let Err(w) = state
+                        .audit
+                        .record_tool_call_result(
+                            &sess.session_id,
+                            sess.user_id.as_deref(),
+                            &call_tool_name,
+                            outcome,
+                            e.reason_code(),
+                            Some(&json!({ "detail": detail })),
+                        )
+                        .await
+                    {
+                        error!(error = %w, "audit JSONL result sync failed after upstream error");
+                    }
                     finalize_mandate_upstream(&state, &sess.session_id, &Value::Null, false).await;
                 }
                 return (
                     StatusCode::BAD_GATEWAY,
                     Json(jsonrpc_err(
                         req_id,
-                        -32010,
-                        "upstream_unavailable",
-                        Some(json!({ "detail": e.to_string() })),
+                        rpc_codes::UPSTREAM_OR_RECORDING,
+                        e.reason_code(),
+                        Some(json!({ "detail": detail })),
                     )),
                 )
                     .into_response();
@@ -1697,7 +2232,7 @@ async fn handle_mcp(
             StatusCode::BAD_GATEWAY,
             Json(jsonrpc_err(
                 req_id,
-                -32010,
+                rpc_codes::UPSTREAM_OR_RECORDING,
                 "upstream_fd_required",
                 Some(json!({
                     "detail": "no brokered upstream FD"
@@ -1712,51 +2247,63 @@ async fn handle_mcp(
         if let Some(result) = out.get("result").cloned()
             && let Value::Object(ref mut map) = out
         {
+            let quarantined = quarantine_drifted_tools(&state, &sess, &result).await;
+            let result = tool_drift::remove_quarantined(result, &quarantined);
             map.insert("result".to_string(), filter_tools_list(&sess, result));
         }
-        let _ = state.audit.record_method(
+        if let Err(e) = state.audit.record_method(
             &sess.session_id,
             "tools/list",
             json!({ "decision": "allow" }),
-        );
+        ) {
+            return jsonl_sync_failed(req_id, e);
+        }
     }
 
     if method == "initialize" {
         if let Some(result) = out.get_mut("result") {
-            agent_view::attach_visit_instructions(
+            let verdict = agent_view::attach_visit_instructions(
                 result,
                 sess.allowed_tools.as_deref(),
                 &sess.tool_constraints,
+                sess.approved_instructions_fp.as_deref(),
             );
+            if let agent_view::UpstreamInstructions::Omitted { live_fp, text } = verdict {
+                report_instructions_drift(&state, &sess, live_fp, &text).await;
+            }
         }
-        let _ = state.audit.record_method(
+        if let Err(e) = state.audit.record_method(
             &sess.session_id,
             "initialize",
             json!({ "decision": "allow" }),
-        );
+        ) {
+            return jsonl_sync_failed(req_id, e);
+        }
     }
 
     if method == "tools/call" {
-        let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-        let args = params
-            .get("arguments")
-            .cloned()
-            .map(|a| mandate::strip_vauban_args(&a));
-        let decision = if hitl_oneshot { "hitl_allow" } else { "allow" };
-        if let Err(e) = state.audit.record_tool_call(
-            &sess.session_id,
-            sess.user_id.as_deref(),
-            name,
-            decision,
-            "ok",
-            args.as_ref(),
-            Some(&out),
-        ) {
+        let (outcome, reason_code) = if status >= 400 {
+            (audit::ToolCallOutcome::UpstreamError, "upstream_http_error")
+        } else {
+            (audit::ToolCallOutcome::Ok, "ok")
+        };
+        if let Err(e) = state
+            .audit
+            .record_tool_call_result(
+                &sess.session_id,
+                sess.user_id.as_deref(),
+                &call_tool_name,
+                outcome,
+                reason_code,
+                Some(&out),
+            )
+            .await
+        {
             error!(error = %e, "audit JSONL sync failed after tools/call");
             finalize_mandate_upstream(&state, &sess.session_id, &out, false).await;
             return Json(jsonrpc_err(
                 req_id,
-                -32010,
+                rpc_codes::UPSTREAM_OR_RECORDING,
                 "recording_sync_failed",
                 Some(json!({ "detail": e.to_string() })),
             ))
@@ -1766,9 +2313,13 @@ async fn handle_mcp(
     }
 
     if method == "notifications/initialized" {
-        let _ = state
-            .audit
-            .record_method(&sess.session_id, "notifications/initialized", json!({}));
+        if let Err(e) =
+            state
+                .audit
+                .record_method(&sess.session_id, "notifications/initialized", json!({}))
+        {
+            return jsonl_sync_failed(req_id, e);
+        }
         return StatusCode::NO_CONTENT.into_response();
     }
 
@@ -1825,14 +2376,26 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> Option<i64> {
     Some(era * 146_097 + doe - 719_468)
 }
 
-/// Lab HTTP on the brokered FD is allowed only for loopback hosts.
-/// Production RFC1918 / public names require a TLS SPKI pin.
-fn is_loopback_upstream_host(host: &str) -> bool {
-    let h = host
-        .trim()
-        .trim_matches(|c| c == '[' || c == ']')
-        .to_ascii_lowercase();
-    matches!(h.as_str(), "127.0.0.1" | "::1" | "localhost")
+const TLS_PIN_REQUIRED: &str =
+    "TLS pin required for MCP upstream (connection_config.mcp_upstream_tls_spki)";
+
+/// Brokered FD → pinned TLS → HTTP/1.1 client. No plaintext path, loopback
+/// included (ADR 010).
+async fn upstream_over_tls(
+    tcp: tokio::net::TcpStream,
+    host: &str,
+    port: u16,
+    pin: Option<&str>,
+) -> Result<upstream_http::Upstream, String> {
+    let pin = pin
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or(TLS_PIN_REQUIRED)?;
+    let tls = tls_pin::connect_pinned(tcp, host.trim(), pin).await?;
+    let authority = upstream_http::upstream_authority(host, port);
+    upstream_http::Upstream::handshake(tls, &authority)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 fn build_router(state: GatewayState) -> Router {
@@ -1858,7 +2421,7 @@ fn apply_session_update(
     let mut widened = false;
     if let Some(new_tools) = allowed_tools {
         widened = match &sess.allowed_tools {
-            None => false,
+            None => !new_tools.is_empty(),
             Some(current) => new_tools.iter().any(|t| !current.contains(t)),
         };
         if widened {
@@ -1883,9 +2446,21 @@ fn apply_session_update(
     if let Some(raw) = tool_constraints_json {
         let trimmed = raw.trim();
         if !trimmed.is_empty() && trimmed != "{}" {
-            let incoming = parse_constraints_json(trimmed);
-            if !incoming.is_empty() {
-                merge_constraints_tighten(&mut sess.tool_constraints, incoming);
+            match parse_constraints_json(trimmed) {
+                Ok(incoming) if !incoming.is_empty() => {
+                    merge_constraints_tighten(&mut sess.tool_constraints, incoming);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    // A tightening we cannot read must not leave the old,
+                    // looser constraints in force.
+                    error!(
+                        session_id = %sess.session_id,
+                        error = %e,
+                        "McpSessionUpdate: unreadable tool constraints, no tool callable"
+                    );
+                    sess.allowed_tools = Some(Vec::new());
+                }
             }
         }
     }
@@ -1939,6 +2514,8 @@ fn handle_control(ctrl: ControlMessage, st: &mut ControlLoopState) -> Option<Mes
                 stats: ServiceStats {
                     uptime_secs: st.start_time.elapsed().as_secs(),
                     requests_processed: st.requests_processed,
+                    audit_events_dropped: audit::worm_dropped_total(),
+                    recording_try_send_full: audit::jsonl_append_failed_total(),
                     ..ServiceStats::default()
                 },
             }))
@@ -1954,55 +2531,47 @@ fn handle_control(ctrl: ControlMessage, st: &mut ControlLoopState) -> Option<Mes
     }
 }
 
-/// POST on the hop-1 FD; on EPIPE / unexpected EOF, IACS-style re-broker once.
+/// Re-broker once (IACS-style) when the hop-1 FD is dead. A `tools/call`
+/// already written to the wire is never replayed (no double execution).
+fn should_rebroker(method: &str, err: &UpstreamError) -> bool {
+    err.retry_safe() || (err.is_dead() && method != "tools/call")
+}
+
+/// POST on the hop-1 FD with the per-method deadline.
 async fn post_json_on_brokered_fd(
     state: &GatewayState,
     sess: &Session,
-    host: &str,
+    method: &str,
     body: &Value,
-) -> anyhow::Result<(u16, Value)> {
+) -> Result<(u16, Value), UpstreamError> {
     let stream = sess
         .upstream_stream
         .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("no brokered upstream stream"))?;
-    let first = {
-        let mut guard = stream.lock().await;
-        upstream_http::post_json(
-            &mut *guard,
-            host,
-            "/mcp",
-            sess.upstream_bearer.as_deref(),
-            body,
-        )
-        .await
-    };
-    match first {
-        Ok(v) => Ok(v),
-        Err(e) if is_dead_upstream_io(&e) => {
+        .ok_or_else(|| UpstreamError::Unavailable("no brokered upstream stream".into()))?;
+    let bearer = sess.upstream_bearer.as_deref();
+    let timeout = state.upstream_timeouts.for_method(method);
+    match stream.post(bearer, body, timeout).await {
+        Err(e) if should_rebroker(method, &e) => {
+            let detail = e.to_string();
             info!(
                 session_id = %sess.session_id,
-                error = %e,
+                error = %detail,
                 "mcp rebroker: hop-1 FD dead — supervisor TcpConnect retry"
             );
-            let io = replace_brokered_upstream(state, sess).await?;
-            let mut guard = io.lock().await;
-            upstream_http::post_json(
-                &mut *guard,
-                host,
-                "/mcp",
-                sess.upstream_bearer.as_deref(),
-                body,
-            )
-            .await
+            let io = replace_brokered_upstream(state, sess, stream.session_id())
+                .await
+                .map_err(|e| UpstreamError::Unavailable(format!("{e:#}")))?;
+            io.post(bearer, body, timeout).await
         }
-        Err(e) => Err(e),
+        other => other,
     }
 }
 
 async fn replace_brokered_upstream(
     state: &GatewayState,
     sess: &Session,
-) -> anyhow::Result<Arc<AsyncMutex<upstream_http::UpstreamIo>>> {
+    mcp_session_id: Option<hyper::header::HeaderValue>,
+) -> anyhow::Result<Arc<upstream_http::Upstream>> {
     let rb = state
         .rebroker
         .get()
@@ -2016,21 +2585,16 @@ async fn replace_brokered_upstream(
         )
         .await
         .map_err(|e| anyhow::anyhow!("rebroker open: {e}"))?;
-    let io = match sess
-        .upstream_tls_spki_pin
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        Some(pin) => {
-            let tls = tls_pin::connect_pinned(tcp, sess.upstream_host.trim(), pin)
-                .await
-                .map_err(anyhow::Error::msg)?;
-            upstream_http::UpstreamIo::Tls(Box::new(tls))
-        }
-        None => upstream_http::UpstreamIo::Plain(tcp),
-    };
-    let arc = Arc::new(AsyncMutex::new(io));
+    let io = upstream_over_tls(
+        tcp,
+        &sess.upstream_host,
+        sess.upstream_port,
+        sess.upstream_tls_spki_pin.as_deref(),
+    )
+    .await
+    .map_err(anyhow::Error::msg)?
+    .with_session_id(mcp_session_id);
+    let arc = Arc::new(io);
     {
         let mut g = state.lock_inner();
         if let Some(live) = g.sessions.get_mut(&sess.session_id) {
@@ -2077,6 +2641,7 @@ async fn handle_mcp_session_open(
         max_body_bytes,
         session_token,
         tool_constraints_json,
+        recording_open_unix,
         transport,
         require_seal: web_require_seal,
         ..
@@ -2252,52 +2817,33 @@ async fn handle_mcp_session_open(
         );
     }
 
-    // RDP-parity TLS: pin present → HTTPS-on-FD + SPKI enforce;
-    // absent → lab HTTP only on loopback. Off-loopback without pin
-    // is plaintext on the brokered FD — refuse.
-    let pin = upstream_tls_spki_pin
-        .as_ref()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty());
-    if pin.is_none() && !is_loopback_upstream_host(&upstream_host) {
-        warn!(
-            session_id = %session_id,
-            host = %upstream_host,
-            "McpSessionOpen refused: TLS pin required for non-loopback upstream"
-        );
-        return Some(Message::McpSessionOpened {
-            request_id,
-            session_id,
-            success: false,
-            error: Some("TLS pin required for non-loopback MCP upstream".into()),
-        });
-    }
-    let (upstream_io, upstream_url) = match pin {
-        Some(pin) => match tls_pin::connect_pinned(tcp, upstream_host.trim(), pin).await {
-            Ok(tls) => (
-                upstream_http::UpstreamIo::Tls(Box::new(tls)),
-                format!("https://{}:{}/mcp", upstream_host.trim(), upstream_port),
-            ),
-            Err(e) => {
-                warn!(
-                    session_id = %session_id,
-                    error = %e,
-                    "McpSessionOpen refused: TLS/SPKI failed"
-                );
-                return Some(Message::McpSessionOpened {
-                    request_id,
-                    session_id,
-                    success: false,
-                    error: Some(e),
-                });
-            }
-        },
-        None => (
-            upstream_http::UpstreamIo::Plain(tcp),
-            format!("http://{}:{}/mcp", upstream_host.trim(), upstream_port),
-        ),
+    let authority = upstream_http::upstream_authority(&upstream_host, upstream_port);
+    let upstream_io = match upstream_over_tls(
+        tcp,
+        &upstream_host,
+        upstream_port,
+        upstream_tls_spki_pin.as_deref(),
+    )
+    .await
+    {
+        Ok(io) => io,
+        Err(e) => {
+            warn!(
+                session_id = %session_id,
+                host = %upstream_host,
+                error = %e,
+                "McpSessionOpen refused: upstream TLS"
+            );
+            return Some(Message::McpSessionOpened {
+                request_id,
+                session_id,
+                success: false,
+                error: Some(e),
+            });
+        }
     };
-    let upstream_stream = Some(Arc::new(AsyncMutex::new(upstream_io)));
+    let upstream_url = format!("https://{authority}/mcp");
+    let upstream_stream = Some(Arc::new(upstream_io));
     let upstream_bearer = match materialise_upstream_bearer(vault.as_ref(), credential_blob).await {
         Ok(b) => b,
         Err(e) => {
@@ -2319,7 +2865,18 @@ async fn handle_mcp_session_open(
     } else {
         Some(api_key_id)
     };
-    let tool_constraints = parse_constraints_json(&tool_constraints_json);
+    let tool_constraints = match parse_constraints_json(&tool_constraints_json) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(session_id = %session_id, error = %e, "McpSessionOpen refused: tool constraints");
+            return Some(Message::McpSessionOpened {
+                request_id,
+                session_id,
+                success: false,
+                error: Some(e),
+            });
+        }
+    };
     if let Err(e) = validate_on_exceed(&envelope_on_exceed) {
         return Some(Message::McpSessionOpened {
             request_id,
@@ -2340,7 +2897,7 @@ async fn handle_mcp_session_open(
         });
     }
 
-    state.insert_session(Session {
+    let inserted = state.insert_new_session(Session {
         session_id: session_id.clone(),
         vbw_hash: hex::encode(vbw_hash),
         expires_at: expires_at_secs,
@@ -2367,6 +2924,11 @@ async fn handle_mcp_session_open(
         clientinfo_pin: clientinfo_pin_from_env(),
         hitl_pendings: HashMap::new(),
         mandate: None,
+        quarantined: HashSet::new(),
+        approved_instructions_fp: tool_constraints::approved_instructions_fp(
+            &tool_constraints_json,
+        ),
+        instructions_drift_notified: false,
         transport: if transport == "tunnel" {
             "tunnel".to_string()
         } else {
@@ -2374,8 +2936,20 @@ async fn handle_mcp_session_open(
         },
         require_seal,
     });
+    if !inserted {
+        warn!(
+            session_id = %session_id,
+            "McpSessionOpen refused: session id already in use"
+        );
+        return Some(Message::McpSessionOpened {
+            request_id,
+            session_id,
+            success: false,
+            error: Some("Session already open".to_string()),
+        });
+    }
 
-    state
+    if let Err(e) = state
         .audit
         .record_session_opened(
             &session_id,
@@ -2385,8 +2959,27 @@ async fn handle_mcp_session_open(
                 "upstream": upstream_url,
                 "api_key_id": api_key_id_opt,
             }),
+            if recording_open_unix > 0 {
+                recording_open_unix
+            } else {
+                unix_now() as u64
+            },
         )
-        .await;
+        .await
+    {
+        error!(
+            session_id = %session_id,
+            error = %e,
+            "McpSessionOpen refused: recording open failed"
+        );
+        state.drop_session(&session_id);
+        return Some(Message::McpSessionOpened {
+            request_id,
+            session_id,
+            success: false,
+            error: Some("recording_open_failed".to_string()),
+        });
+    }
 
     info!(
         session_id = %session_id,
@@ -2406,7 +2999,7 @@ async fn handle_mcp_session_open(
 /// TIGHTENS the copy already held -- an update that tries to add a
 /// tool name absent from the current whitelist has that addition
 /// dropped (the rest of the update still applies).
-fn handle_mcp_session_update(state: &GatewayState, msg: Message) {
+async fn handle_mcp_session_update(state: &GatewayState, msg: Message) {
     let Message::McpSessionUpdate {
         session_id,
         allowed_tools,
@@ -2441,12 +3034,17 @@ fn handle_mcp_session_update(state: &GatewayState, msg: Message) {
         );
         (widened, sess.user_id.clone(), attempted)
     };
-    if widened {
-        state.audit.record_privilege_escalation(
-            &session_id,
-            user_id.as_deref(),
-            json!({ "source": "ipc_update", "attempted_tools": attempted }),
-        );
+    if widened
+        && let Err(e) = state
+            .audit
+            .record_privilege_escalation(
+                &session_id,
+                user_id.as_deref(),
+                json!({ "source": "ipc_update", "attempted_tools": attempted }),
+            )
+            .await
+    {
+        error!(session_id = %session_id, error = %e, "MCP privilege-escalation audit was refused");
     }
     info!(session_id = %session_id, "MCP session envelope updated via supervisor IPC");
 }
@@ -2459,14 +3057,17 @@ fn handle_mcp_session_terminate(state: &GatewayState, msg: Message) {
     else {
         return;
     };
+    // Web resends the terminate for visits whose first IPC may have been
+    // lost, so a repeat must not finalize the recording a second time.
     let user_id = {
         let mut guard = state.lock_inner();
-        if let Some(sess) = guard.sessions.get_mut(&session_id) {
-            sess.terminated = true;
-            info!(session_id = %session_id, reason = %reason, "MCP session terminated via supervisor IPC");
-            sess.user_id.clone()
-        } else {
-            return;
+        match guard.sessions.get_mut(&session_id) {
+            Some(sess) if !sess.terminated => {
+                sess.mark_terminated();
+                info!(session_id = %session_id, reason = %reason, "MCP session terminated via supervisor IPC");
+                sess.user_id.clone()
+            }
+            _ => return,
         }
     };
     state.spawn_clear_mcp_mandate(&session_id);
@@ -2475,7 +3076,7 @@ fn handle_mcp_session_terminate(state: &GatewayState, msg: Message) {
         .finalize_recording(&session_id, user_id.as_deref(), &reason, false);
 }
 
-fn handle_mcp_session_suspend(state: &GatewayState, msg: Message) {
+async fn handle_mcp_session_suspend(state: &GatewayState, msg: Message) {
     let Message::McpSessionSuspend {
         session_id,
         reason,
@@ -2490,10 +3091,16 @@ fn handle_mcp_session_suspend(state: &GatewayState, msg: Message) {
     } else {
         Some(actor_user_id.as_str())
     };
-    let _ = state.suspend_session(&session_id, &reason, actor);
+    if !state.suspend_session(&session_id, &reason, actor).await {
+        warn!(
+            session_id = %session_id,
+            reason = %reason,
+            "McpSessionSuspend: no live, unsuspended visit with this id"
+        );
+    }
 }
 
-fn handle_mcp_session_resume(state: &GatewayState, msg: Message) {
+async fn handle_mcp_session_resume(state: &GatewayState, msg: Message) {
     let Message::McpSessionResume {
         session_id,
         actor_user_id,
@@ -2502,7 +3109,12 @@ fn handle_mcp_session_resume(state: &GatewayState, msg: Message) {
     else {
         return;
     };
-    let _ = state.resume_session(&session_id, &actor_user_id);
+    if !state.resume_session(&session_id, &actor_user_id).await {
+        warn!(
+            session_id = %session_id,
+            "McpSessionResume: no live, suspended visit with this id"
+        );
+    }
 }
 
 async fn handle_mcp_hitl_decision(state: &GatewayState, msg: Message) {
@@ -2623,21 +3235,51 @@ async fn handle_mcp_hitl_decision(state: &GatewayState, msg: Message) {
             })
             .unwrap_or_default()
     };
-    state.audit.record_hitl_decided(
-        &session_id,
-        user_id.as_deref(),
-        &pending_id,
-        &decision,
-        &actor_user_id,
-        &worm_mid,
-        &worm_digest,
-    );
+    if let Err(e) = state
+        .audit
+        .record_hitl_decided(
+            &session_id,
+            user_id.as_deref(),
+            &pending_id,
+            &decision,
+            &actor_user_id,
+            &worm_mid,
+            &worm_digest,
+        )
+        .await
+    {
+        error!(session_id = %session_id, error = %e, "MCP HITL decision audit was refused");
+    }
     info!(
         session_id = %session_id,
         pending_id = %pending_id,
         decision = %decision,
         "MCP HITL decision applied"
     );
+}
+
+type RecordingLeaseReply = tokio::sync::oneshot::Sender<Result<std::fs::File, String>>;
+
+/// In-flight recording FD leases keyed by IPC `request_id`, not session:
+/// a response whose requester already timed out must still consume its FD
+/// (and close it) rather than be handed to a newer lease for the same session.
+#[derive(Default)]
+struct RecordingLeases {
+    next_request_id: u64,
+    pending: HashMap<u64, RecordingLeaseReply>,
+}
+
+impl RecordingLeases {
+    fn register(&mut self, reply: RecordingLeaseReply) -> u64 {
+        self.pending.retain(|_, r| !r.is_closed());
+        self.next_request_id = self.next_request_id.wrapping_add(1);
+        self.pending.insert(self.next_request_id, reply);
+        self.next_request_id
+    }
+
+    fn take(&mut self, request_id: u64) -> Option<RecordingLeaseReply> {
+        self.pending.remove(&request_id)
+    }
 }
 
 /// Supervisor's own control channel (`VAUBAN_IPC_READ/WRITE`):
@@ -2649,7 +3291,6 @@ async fn supervisor_control_loop(
     mut lease_rx: tokio::sync::mpsc::Receiver<RecordingLeaseReq>,
     mut tcp_connect_rx: mpsc::UnboundedReceiver<Message>,
 ) {
-    use std::collections::HashMap;
     use std::fs::File;
 
     let mut st = ControlLoopState {
@@ -2657,9 +3298,7 @@ async fn supervisor_control_loop(
         requests_processed: 0,
         shutdown: false,
     };
-    let mut pending_recording: HashMap<String, tokio::sync::oneshot::Sender<Result<File, String>>> =
-        HashMap::new();
-    let mut recording_request_id: u64 = 0;
+    let mut leases = RecordingLeases::default();
 
     loop {
         while let Ok(msg) = tcp_connect_rx.try_recv() {
@@ -2674,22 +3313,18 @@ async fn supervisor_control_loop(
                 let _ = req.reply.send(Err("FD passing not configured".into()));
                 continue;
             }
-            if pending_recording.contains_key(&req.session_id) {
-                let _ = req
-                    .reply
-                    .send(Err("recording lease already pending".into()));
-                continue;
-            }
-            recording_request_id = recording_request_id.wrapping_add(1);
-            pending_recording.insert(req.session_id.clone(), req.reply);
+            let request_id = leases.register(req.reply);
             let msg = Message::RecordingFileRequest {
-                request_id: recording_request_id,
+                request_id,
                 session_id: req.session_id,
                 relative_path: req.relative_path,
                 read_only: req.read_only,
             };
             if let Err(e) = channel.send(&msg) {
                 warn!(error = %e, "failed to send RecordingFileRequest");
+                if let Some(reply) = leases.take(request_id) {
+                    let _ = reply.send(Err(format!("RecordingFileRequest send failed: {e}")));
+                }
             }
         }
 
@@ -2738,13 +3373,15 @@ async fn supervisor_control_loop(
                 }
             }
             Ok(Message::RecordingFileResponse {
+                request_id,
                 session_id,
                 success,
                 error,
-                ..
             }) => {
-                let reply = pending_recording.remove(&session_id);
+                let reply = leases.take(request_id);
                 if success {
+                    // Always consume the FD (even with no live requester) so it
+                    // cannot shift onto the next brokered TCP / recording FD.
                     let file_result = if let Some(ref fp) = fd_passing {
                         receive_fd_with_retry(fp.socket_fd, 10, 50)
                             .await
@@ -2758,7 +3395,8 @@ async fn supervisor_control_loop(
                     } else {
                         warn!(
                             session_id = %session_id,
-                            "RecordingFileResponse has no pending lease"
+                            request_id,
+                            "RecordingFileResponse has no pending lease (late reply); FD closed"
                         );
                     }
                 } else if let Some(reply) = reply {
@@ -2857,27 +3495,22 @@ async fn handle_mcp_discover(
         return fail("upstream_host must be a bare hostname (no URL scheme)".into());
     }
 
-    let pin = upstream_tls_spki_pin
-        .as_ref()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty());
-    if pin.is_none() && !is_loopback_upstream_host(&upstream_host) {
-        return fail("TLS pin required for non-loopback MCP upstream".into());
-    }
-    let mut stream = match pin {
-        Some(pin) => match tls_pin::connect_pinned(tcp, upstream_host.trim(), pin).await {
-            Ok(tls) => upstream_http::UpstreamIo::Tls(Box::new(tls)),
-            Err(e) => return fail(e),
-        },
-        None => upstream_http::UpstreamIo::Plain(tcp),
+    let stream = match upstream_over_tls(
+        tcp,
+        &upstream_host,
+        upstream_port,
+        upstream_tls_spki_pin.as_deref(),
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => return fail(e),
     };
 
     let bearer = match materialise_upstream_bearer(vault.as_ref(), credential_blob).await {
         Ok(b) => b,
         Err(e) => return fail(format!("credential decrypt: {e}")),
     };
-
-    let host_header = format!("{}:{}", upstream_host.trim(), upstream_port);
 
     let init_body = json!({
         "jsonrpc": "2.0",
@@ -2889,31 +3522,22 @@ async fn handle_mcp_discover(
             "clientInfo": { "name": "vauban-discover", "version": "0.9.33" }
         }
     });
-    if let Err(e) = upstream_http::post_json(
-        &mut stream,
-        &host_header,
-        "/mcp",
-        bearer.as_deref(),
-        &init_body,
-    )
-    .await
-    {
-        return fail(format!("initialize: {e}"));
-    }
+    let timeout = upstream_http::DEFAULT_TIMEOUT;
+    let instructions = match stream.post(bearer.as_deref(), &init_body, timeout).await {
+        Ok((_, init)) => init
+            .get("result")
+            .and_then(shared::mcp_tool_fingerprint::upstream_instructions)
+            .map(str::to_string),
+        Err(e) => return fail(format!("initialize: {e}")),
+    };
 
     // Best-effort notifications/initialized (ignore errors).
-    let _ = upstream_http::post_json(
-        &mut stream,
-        &host_header,
-        "/mcp",
-        bearer.as_deref(),
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "notifications/initialized",
-            "params": {}
-        }),
-    )
-    .await;
+    let initialized = json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized",
+        "params": {}
+    });
+    let _ = stream.post(bearer.as_deref(), &initialized, timeout).await;
 
     let list_body = json!({
         "jsonrpc": "2.0",
@@ -2921,15 +3545,7 @@ async fn handle_mcp_discover(
         "method": "tools/list",
         "params": {}
     });
-    let (_status, listed) = match upstream_http::post_json(
-        &mut stream,
-        &host_header,
-        "/mcp",
-        bearer.as_deref(),
-        &list_body,
-    )
-    .await
-    {
+    let (_status, listed) = match stream.post(bearer.as_deref(), &list_body, timeout).await {
         Ok(v) => v,
         Err(e) => return fail(format!("tools/list: {e}")),
     };
@@ -2942,6 +3558,13 @@ async fn handle_mcp_discover(
         return fail(format!("MCP upstream error: {msg}"));
     }
 
+    let mut listed = listed;
+    if let (Some(text), Value::Object(map)) = (instructions, &mut listed) {
+        map.insert(
+            shared::mcp_tool_fingerprint::INSTRUCTIONS_KEY.to_string(),
+            Value::String(text),
+        );
+    }
     let tools_json = match serde_json::to_string(&listed) {
         Ok(s) => s,
         Err(e) => return fail(format!("serialize tools: {e}")),
@@ -2976,6 +3599,11 @@ async fn web_ipc_loop(
     vault: Option<Arc<VaultDecryptClient>>,
     mut web_notify_rx: mpsc::UnboundedReceiver<Message>,
 ) {
+    if let Err(e) = channel.send(&Message::McpProxyReady) {
+        warn!(error = %e, "failed to send McpProxyReady");
+    } else {
+        info!("McpProxyReady notified web (reap leftover live MCP rows)");
+    }
     loop {
         if shutdown_rx.try_recv().is_ok() {
             break;
@@ -3009,16 +3637,16 @@ async fn web_ipc_loop(
                 }
             }
             Ok(msg @ Message::McpSessionUpdate { .. }) => {
-                handle_mcp_session_update(&state, msg);
+                handle_mcp_session_update(&state, msg).await;
             }
             Ok(msg @ Message::McpSessionTerminate { .. }) => {
                 handle_mcp_session_terminate(&state, msg);
             }
             Ok(msg @ Message::McpSessionSuspend { .. }) => {
-                handle_mcp_session_suspend(&state, msg);
+                handle_mcp_session_suspend(&state, msg).await;
             }
             Ok(msg @ Message::McpSessionResume { .. }) => {
-                handle_mcp_session_resume(&state, msg);
+                handle_mcp_session_resume(&state, msg).await;
             }
             Ok(msg @ Message::McpHitlDecision { .. }) => {
                 handle_mcp_hitl_decision(&state, msg).await;
@@ -3062,6 +3690,7 @@ fn wait_for_mcp_identity(channel: &IpcChannel) -> Result<(), String> {
                     recording_ack_dropped: 0,
                     recording_try_send_full: 0,
                     recording_ack_wait_ms_max: 0,
+                    audit_events_dropped: 0,
                 };
                 let _ = channel.send(&Message::Control(shared::messages::ControlMessage::Pong {
                     seq,
@@ -3529,7 +4158,85 @@ mod gwt_tests {
     }
 
     fn test_audit() -> McpAudit {
-        McpAudit::from_env(None)
+        McpAudit::from_env(None).attach_blackhole()
+    }
+
+    #[tokio::test]
+    async fn heartbeat_reports_worm_refusals() {
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        let audit = McpAudit::from_env(None).with_audit_tx(tx);
+        audit
+            .record_hitl_expired("s", None, "t", "p")
+            .await
+            .expect_err("closed audit pipe");
+        let mut st = ControlLoopState {
+            start_time: Instant::now(),
+            requests_processed: 0,
+            shutdown: false,
+        };
+        let Some(Message::Control(ControlMessage::Pong { seq, stats })) =
+            handle_control(ControlMessage::Ping { seq: 7 }, &mut st)
+        else {
+            panic!("expected Pong");
+        };
+        assert_eq!((seq, stats.requests_processed), (7, 1));
+        assert!(stats.audit_events_dropped >= audit.worm_dropped());
+        assert_eq!(audit.worm_dropped(), 1);
+    }
+
+    #[test]
+    fn recording_leases_late_reply_not_assigned_to_newer_same_session_lease() {
+        let mut leases = RecordingLeases::default();
+        let (old_tx, old_rx) = tokio::sync::oneshot::channel();
+        let old_id = leases.register(old_tx);
+        // Requester times out (open_write_file drops the receiver).
+        drop(old_rx);
+
+        let (new_tx, mut new_rx) = tokio::sync::oneshot::channel();
+        let new_id = leases.register(new_tx);
+        assert_ne!(old_id, new_id);
+        assert!(
+            !leases.pending.contains_key(&old_id),
+            "timed-out lease must be pruned"
+        );
+
+        // Late response for the timed-out request: no requester, FD gets closed.
+        assert!(leases.take(old_id).is_none());
+        assert!(
+            new_rx.try_recv().is_err(),
+            "newer lease must not receive the stale FD"
+        );
+        assert!(leases.take(new_id).is_some());
+    }
+
+    #[test]
+    fn recording_leases_allow_concurrent_requests_same_session() {
+        let mut leases = RecordingLeases::default();
+        let (a_tx, _a_rx) = tokio::sync::oneshot::channel();
+        let (b_tx, _b_rx) = tokio::sync::oneshot::channel();
+        let a = leases.register(a_tx);
+        let b = leases.register(b_tx);
+        assert_ne!(a, b);
+        assert!(leases.take(b).is_some());
+        assert!(leases.take(a).is_some());
+        assert!(leases.take(a).is_none());
+    }
+
+    async fn failing_lease_state() -> GatewayState {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<RecordingLeaseReq>(8);
+        tokio::spawn(async move {
+            while let Some(req) = rx.recv().await {
+                let _ = req.reply.send(Err("test lease refused".into()));
+            }
+        });
+        let dir = std::env::temp_dir().join(format!(
+            "mcp-gwt-lease-{}-{}",
+            std::process::id(),
+            unix_now() as u64
+        ));
+        let rec = crate::mcp_recording::McpRecording::with_storage_base_and_lease(dir, tx);
+        GatewayState::new(McpAudit::with_recording(rec), None)
     }
 
     fn test_state() -> GatewayState {
@@ -3564,6 +4271,9 @@ mod gwt_tests {
             clientinfo_pin: true,
             hitl_pendings: HashMap::new(),
             mandate: None,
+            quarantined: HashSet::new(),
+            approved_instructions_fp: None,
+            instructions_drift_notified: false,
             transport: "direct".into(),
             require_seal: false,
         }
@@ -3580,12 +4290,37 @@ mod gwt_tests {
     fn gwt_successful_tools_call_jsonl_strips_vauban_args() {
         let src = include_str!("main.rs");
         let start = src
-            .find("audit JSONL sync failed after tools/call")
-            .expect("success tools/call JSONL sync path");
-        let window = &src[start.saturating_sub(500)..start];
+            .find("audit JSONL intent sync failed; tools/call not sent")
+            .expect("tools/call intent JSONL sync path");
+        let window = &src[start.saturating_sub(700)..start];
         assert!(
-            window.contains("strip_vauban_args") && window.contains("args.as_ref()"),
-            "successful tools/call JSONL must record arguments after stripping arguments.vauban"
+            window.contains("strip_vauban_args")
+                && window.contains("args.as_ref()")
+                && window.contains("record_tool_call_intent"),
+            "tools/call intent JSONL must record arguments after stripping arguments.vauban"
+        );
+    }
+
+    /// Findings 1/8: the intent line is synced before the upstream POST, and
+    /// both upstream failure and success write a result line.
+    #[test]
+    fn gwt_tools_call_two_phase_order() {
+        let src = include_str!("main.rs");
+        let sig = "async fn handle_mcp(";
+        let rest = &src[src.find(sig).unwrap() + sig.len()..];
+        let body = &rest[..rest.find("\n}\n").unwrap()];
+        let intent = body.find("record_tool_call_intent(").expect("intent");
+        let post = body
+            .find("post_json_on_brokered_fd(&state, &sess, &method")
+            .expect("upstream post");
+        assert!(
+            intent < post,
+            "intent must be synced before the upstream POST"
+        );
+        assert_eq!(
+            body.matches("record_tool_call_result(").count(),
+            2,
+            "result line on both upstream error and upstream response"
         );
     }
 
@@ -3623,8 +4358,8 @@ mod gwt_tests {
     }
 
     /// B-5: envelope on_exceed=suspend → `-32031` and session.suspended.
-    #[test]
-    fn gwt_b5_envelope_suspend_returns_32031() {
+    #[tokio::test]
+    async fn gwt_b5_envelope_suspend_returns_32031() {
         let state = test_state();
         let mut sess = base_session("s-b5");
         sess.envelope_max = 2;
@@ -3640,7 +4375,9 @@ mod gwt_tests {
             let g = state.inner.lock().unwrap();
             g.sessions.get("s-b5").unwrap().clone_snapshot()
         };
-        let err = check_envelope(&state, &mut snap).expect("B-5: exceed+suspend must error");
+        let err = check_envelope(&state, &mut snap)
+            .await
+            .expect("B-5: exceed+suspend must error");
         assert_eq!(err["error"]["code"], -32031);
         assert_eq!(err["error"]["message"], "session_suspended");
         let g = state.inner.lock().unwrap();
@@ -3651,13 +4388,13 @@ mod gwt_tests {
     }
 
     /// B-5 suite: Resume clears suspended so tools/call can proceed past gate.
-    #[test]
-    fn gwt_b5_resume_clears_suspended() {
+    #[tokio::test]
+    async fn gwt_b5_resume_clears_suspended() {
         let state = test_state();
         let mut sess = base_session("s-b5r");
         sess.suspended = true;
         insert_session(&state, sess);
-        assert!(state.resume_session("s-b5r", "admin-1"));
+        assert!(state.resume_session("s-b5r", "admin-1").await);
         let g = state.inner.lock().unwrap();
         assert!(!g.sessions.get("s-b5r").unwrap().suspended);
     }
@@ -3754,9 +4491,65 @@ mod gwt_tests {
         );
     }
 
+    async fn assert_terminate_releases_upstream_fd(via_ipc: bool) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(); // allow-post-sandbox: test fake upstream
+        let addr = listener.local_addr().unwrap();
+        let client = tokio::net::TcpStream::connect(addr).await.unwrap(); // allow-post-sandbox: test fake upstream
+        let (mut server_side, _) = listener.accept().await.unwrap();
+
+        let state = test_state();
+        let mut sess = base_session("s-leak");
+        sess.upstream_stream = Some(wrap_plain(client).await);
+        insert_session(&state, sess);
+        if via_ipc {
+            handle_mcp_session_terminate(
+                &state,
+                Message::McpSessionTerminate {
+                    request_id: 1,
+                    session_id: "s-leak".into(),
+                    reason: "user_terminated".into(),
+                },
+            );
+        } else {
+            state.terminate_session("s-leak", "user_terminated");
+        }
+
+        {
+            let g = state.lock_inner();
+            let s = g.sessions.get("s-leak").unwrap();
+            assert!(s.terminated);
+            assert!(
+                s.upstream_stream.is_none(),
+                "terminate must drop the upstream FD"
+            );
+        }
+        let mut buf = [0u8; 1];
+        let n = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            tokio::io::AsyncReadExt::read(&mut server_side, &mut buf),
+        )
+        .await
+        .expect("upstream sees close")
+        .unwrap_or(0);
+        assert_eq!(
+            n, 0,
+            "upstream must observe EOF once the proxy drops its FD"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminate_releases_brokered_upstream_fd() {
+        assert_terminate_releases_upstream_fd(false).await;
+    }
+
+    #[tokio::test]
+    async fn ipc_terminate_releases_brokered_upstream_fd() {
+        assert_terminate_releases_upstream_fd(true).await;
+    }
+
     /// Helper: Session is not Clone; copy fields for HITL / envelope snapshots.
     impl Session {
-        fn clone_snapshot(&self) -> Session {
+        pub(crate) fn clone_snapshot(&self) -> Session {
             Session {
                 session_id: self.session_id.clone(),
                 vbw_hash: self.vbw_hash.clone(),
@@ -3784,6 +4577,9 @@ mod gwt_tests {
                 clientinfo_pin: self.clientinfo_pin,
                 hitl_pendings: self.hitl_pendings.clone(),
                 mandate: self.mandate.clone(),
+                quarantined: self.quarantined.clone(),
+                approved_instructions_fp: self.approved_instructions_fp.clone(),
+                instructions_drift_notified: self.instructions_drift_notified,
                 transport: self.transport.clone(),
                 require_seal: self.require_seal,
             }
@@ -3791,18 +4587,32 @@ mod gwt_tests {
     }
 
     #[test]
-    fn gwt_tls_pin_required_off_loopback() {
-        assert!(is_loopback_upstream_host("127.0.0.1"));
-        assert!(is_loopback_upstream_host("localhost"));
-        assert!(is_loopback_upstream_host("::1"));
-        assert!(is_loopback_upstream_host("[::1]"));
-        assert!(!is_loopback_upstream_host("10.0.0.8"));
-        assert!(!is_loopback_upstream_host("mcp.internal"));
+    fn gwt_tls_pin_required_everywhere() {
         let src = include_str!("main.rs");
+        let body_of = |sig: &str| {
+            let start = src.find(sig).unwrap();
+            let rest = &src[start + sig.len()..];
+            &rest[..rest.find("\nasync fn ").unwrap_or(rest.len())]
+        };
+        for sig in [
+            "async fn handle_mcp_session_open(",
+            "async fn handle_mcp_discover(",
+            "async fn replace_brokered_upstream(",
+        ] {
+            assert!(
+                body_of(sig).contains("upstream_over_tls("),
+                "{sig} must go through upstream_over_tls (ADR 010)"
+            );
+        }
         assert!(
-            src.contains("is_loopback_upstream_host")
-                && src.contains("TLS pin required for non-loopback MCP upstream"),
-            "plaintext HTTP on the brokered FD is lab-loopback only"
+            !src.contains(concat!("fn is_loopback", "_upstream_host")),
+            "HTTPS + SPKI pin on every upstream, loopback included (ADR 010)"
+        );
+        let http = include_str!("upstream_http.rs");
+        let http_prod = http.split("#[cfg(test)]").next().unwrap_or(http);
+        assert!(
+            !http_prod.contains("Plain("),
+            "no plaintext upstream transport"
         );
         assert!(
             src.contains("max_body_bytes") && src.contains("DefaultBodyLimit::max"),
@@ -3844,6 +4654,79 @@ mod gwt_tests {
             sess.on_exceed, "suspend",
             "empty envelope_on_exceed must not clobber suspend (recheck path)"
         );
+    }
+
+    #[test]
+    fn unreadable_constraint_update_leaves_no_tool_callable() {
+        let mut sess = base_session("s-bad-constraints");
+        sess.allowed_tools = Some(vec!["echo".into()]);
+        let widened = apply_session_update(
+            &mut sess,
+            None,
+            Some("not json"),
+            None,
+            None,
+            None,
+            None,
+            false,
+        );
+        assert!(!widened);
+        assert!(
+            !tool_allowed(&sess, "echo"),
+            "a tightening the proxy cannot read must not keep the old grants"
+        );
+
+        let mut sess = base_session("s-empty-constraints");
+        sess.allowed_tools = Some(vec!["echo".into()]);
+        apply_session_update(&mut sess, None, Some("{ }"), None, None, None, None, false);
+        assert!(
+            tool_allowed(&sess, "echo"),
+            "an empty constraints object tightens nothing"
+        );
+    }
+
+    #[test]
+    fn local_mandate_mirror_disagreeing_with_the_pdp_is_logged_not_enforced() {
+        let state = test_state();
+        let mut sess = base_session("s-mirror");
+        sess.allowed_tools = Some(vec!["read_demo_file".into(), "echo".into()]);
+        sess.mandate = Some(
+            mandate::seal_mandate(
+                "m-mirror",
+                "s-mirror",
+                "asset-1",
+                &one_step_read_contract(),
+                unix_now(),
+            )
+            .unwrap(),
+        );
+        insert_session(&state, sess);
+        sync_local_mandate_after_pdp_allow(&state, "s-mirror", "echo", None);
+        sync_local_mandate_after_pdp_allow(&state, "s-gone", "echo", None);
+        let g = state.lock_inner();
+        assert!(
+            g.sessions["s-mirror"].mandate.is_some(),
+            "access decides: a local Deny never ends the mandate"
+        );
+    }
+
+    #[test]
+    fn update_never_installs_tools_on_a_session_without_whitelist() {
+        let mut sess = base_session("s-no-list");
+        sess.allowed_tools = None;
+        let widened = apply_session_update(
+            &mut sess,
+            Some(vec!["echo".into()]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        );
+        assert!(widened);
+        assert_eq!(sess.allowed_tools, Some(Vec::new()));
+        assert!(!tool_allowed(&sess, "echo"));
     }
 
     #[test]
@@ -4003,7 +4886,7 @@ mod gwt_tests {
         assert!(
             src.contains("post_json_on_brokered_fd")
                 && src.contains("replace_brokered_upstream")
-                && src.contains("is_dead_upstream_io"),
+                && src.contains("fn should_rebroker"),
             "hop 2 MUST re-broker a dead FD instead of failing closed on first EPIPE"
         );
         let rb = include_str!("upstream_rebroker.rs");
@@ -4052,8 +4935,13 @@ mod gwt_tests {
         client
     }
 
-    fn wrap_plain(tcp: tokio::net::TcpStream) -> Arc<AsyncMutex<upstream_http::UpstreamIo>> {
-        Arc::new(AsyncMutex::new(upstream_http::UpstreamIo::Plain(tcp)))
+    /// Test-only plaintext transport: production always wraps the FD in TLS.
+    async fn wrap_plain(tcp: tokio::net::TcpStream) -> Arc<upstream_http::Upstream> {
+        Arc::new(
+            upstream_http::Upstream::handshake(tcp, "127.0.0.1:19001")
+                .await
+                .unwrap(),
+        )
     }
 
     fn wire_rebroker_that_injects(
@@ -4082,48 +4970,77 @@ mod gwt_tests {
         let tcp = http_peer(r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#).await;
         let state = test_state();
         let mut sess = base_session("s-rb-ok");
-        sess.upstream_stream = Some(wrap_plain(tcp));
+        sess.upstream_stream = Some(wrap_plain(tcp).await);
         insert_session(&state, sess.clone_snapshot());
-        let (status, v) = post_json_on_brokered_fd(&state, &sess, "127.0.0.1", &json!({}))
+        let (status, v) = post_json_on_brokered_fd(&state, &sess, "ping", &json!({}))
             .await
             .expect("live FD");
         assert_eq!(status, 200);
         assert_eq!(v["result"]["ok"], true);
     }
 
-    /// Dead hop-1 FD → supervisor TcpConnect → one POST retry → 200.
+    /// Dead hop-1 FD → supervisor TcpConnect → pinned TLS → one POST retry → 200,
+    /// with the upstream `Mcp-Session-Id` carried onto the new connection.
     #[tokio::test]
     async fn gwt_mcp_rebroker_e2e_retries_once() {
+        use crate::test_upstream::{FakeUpstream, Mode};
         use std::os::fd::OwnedFd;
+        let up = FakeUpstream::start(Mode::default()).await;
         let dead = dead_peer().await;
-        let live = http_peer(r#"{"jsonrpc":"2.0","id":2,"result":{"rebrokered":true}}"#).await;
-        let fd = OwnedFd::from(live.into_std().unwrap());
+        let fd = OwnedFd::from(up.tcp().await.into_std().unwrap());
 
         let state = test_state();
         let pending: PendingConnections = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         wire_rebroker_that_injects(&state, pending, "s-rb-retry", fd);
 
         let mut sess = base_session("s-rb-retry");
-        sess.upstream_stream = Some(wrap_plain(dead));
+        let old = wrap_plain(dead).await;
+        let old = Arc::new(
+            Arc::into_inner(old)
+                .unwrap()
+                .with_session_id(Some(hyper::header::HeaderValue::from_static("sid-1"))),
+        );
+        sess.upstream_stream = Some(old);
         sess.session_token = vec![7u8; 16];
-        sess.upstream_host = "127.0.0.1".into();
-        sess.upstream_port = 19001;
+        sess.upstream_host = "localhost".into();
+        sess.upstream_port = up.addr.port();
+        sess.upstream_tls_spki_pin = Some(up.spki_pin.clone());
         insert_session(&state, sess.clone_snapshot());
 
-        let (status, v) = post_json_on_brokered_fd(&state, &sess, "127.0.0.1", &json!({}))
+        let list = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"});
+        let (status, v) = post_json_on_brokered_fd(&state, &sess, "tools/list", &list)
             .await
             .expect("rebroker retry");
         assert_eq!(status, 200);
-        assert_eq!(v["result"]["rebrokered"], true);
+        assert!(v["result"]["tools"].is_array(), "{v}");
+        assert_eq!(
+            up.received()[0]
+                .headers
+                .get("mcp-session-id")
+                .map(String::as_str),
+            Some("sid-1")
+        );
         let g = state.inner.lock().unwrap();
+        let live = g.sessions.get("s-rb-retry").unwrap();
         assert!(
-            g.sessions
-                .get("s-rb-retry")
-                .unwrap()
-                .upstream_stream
-                .is_some(),
+            live.upstream_stream
+                .as_ref()
+                .is_some_and(|s| !Arc::ptr_eq(s, sess.upstream_stream.as_ref().unwrap())),
             "live session must keep the new FD"
         );
+    }
+
+    #[test]
+    fn rebroker_never_replays_a_sent_tools_call() {
+        let lost = UpstreamError::Lost("eof".into());
+        let not_sent = UpstreamError::NotSent("closed".into());
+        assert!(!should_rebroker("tools/call", &lost));
+        assert!(should_rebroker("tools/list", &lost));
+        assert!(should_rebroker("tools/call", &not_sent));
+        assert!(!should_rebroker(
+            "tools/list",
+            &UpstreamError::Timeout(Duration::ZERO)
+        ));
     }
 
     #[tokio::test]
@@ -4131,11 +5048,11 @@ mod gwt_tests {
         let dead = dead_peer().await;
         let state = test_state();
         let mut sess = base_session("s-rb-unwired");
-        sess.upstream_stream = Some(wrap_plain(dead));
+        sess.upstream_stream = Some(wrap_plain(dead).await);
         sess.session_token = vec![1u8; 8];
         sess.upstream_host = "127.0.0.1".into();
         sess.upstream_port = 19001;
-        let err = post_json_on_brokered_fd(&state, &sess, "127.0.0.1", &json!({}))
+        let err = post_json_on_brokered_fd(&state, &sess, "ping", &json!({}))
             .await
             .unwrap_err();
         assert!(err.to_string().contains("rebroker not wired"), "{err:#}");
@@ -4145,7 +5062,7 @@ mod gwt_tests {
     async fn gwt_mcp_rebroker_e2e_no_stream() {
         let state = test_state();
         let sess = base_session("s-rb-none");
-        let err = post_json_on_brokered_fd(&state, &sess, "127.0.0.1", &json!({}))
+        let err = post_json_on_brokered_fd(&state, &sess, "ping", &json!({}))
             .await
             .unwrap_err();
         assert!(err.to_string().contains("no brokered upstream stream"));
@@ -4156,11 +5073,14 @@ mod gwt_tests {
         let tcp = http_peer("not-json").await;
         let state = test_state();
         let mut sess = base_session("s-rb-json");
-        sess.upstream_stream = Some(wrap_plain(tcp));
-        let err = post_json_on_brokered_fd(&state, &sess, "127.0.0.1", &json!({}))
+        sess.upstream_stream = Some(wrap_plain(tcp).await);
+        let err = post_json_on_brokered_fd(&state, &sess, "ping", &json!({}))
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("upstream JSON body"), "{err:#}");
+        assert!(
+            matches!(err, UpstreamError::Protocol(ref m) if m.contains("upstream JSON body")),
+            "{err:#}"
+        );
         assert!(
             state.rebroker.get().is_none(),
             "must not wire / call rebroker"
@@ -4180,7 +5100,9 @@ mod gwt_tests {
         sess.upstream_host = "127.0.0.1".into();
         sess.upstream_port = 19001;
         sess.upstream_tls_spki_pin = Some("not-a-pin".into());
-        let err = replace_brokered_upstream(&state, &sess).await.unwrap_err();
+        let err = replace_brokered_upstream(&state, &sess, None)
+            .await
+            .unwrap_err();
         assert!(
             err.to_string().contains("SHA256") || err.to_string().contains("TLS"),
             "{err:#}"
@@ -4189,20 +5111,87 @@ mod gwt_tests {
 
     #[tokio::test]
     async fn gwt_mcp_rebroker_e2e_replace_without_session_row() {
+        use crate::test_upstream::{FakeUpstream, Mode};
         use std::os::fd::OwnedFd;
-        let live = http_peer("{}").await;
-        let fd = OwnedFd::from(live.into_std().unwrap());
+        let up = FakeUpstream::start(Mode::default()).await;
+        let fd = OwnedFd::from(up.tcp().await.into_std().unwrap());
         let state = test_state();
         let pending: PendingConnections = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         wire_rebroker_that_injects(&state, pending, "ghost", fd);
         let mut sess = base_session("ghost");
         sess.session_token = vec![3u8; 8];
-        sess.upstream_host = "127.0.0.1".into();
-        sess.upstream_port = 19001;
-        let io = replace_brokered_upstream(&state, &sess)
+        sess.upstream_host = "localhost".into();
+        sess.upstream_port = up.addr.port();
+        sess.upstream_tls_spki_pin = Some(up.spki_pin.clone());
+        let io = replace_brokered_upstream(&state, &sess, None)
             .await
             .expect("FD still returned when session map has no row");
-        let _ = io;
+        assert!(io.session_id().is_none());
+    }
+
+    #[tokio::test]
+    async fn attack_missing_tls_pin_is_rejected() {
+        use crate::test_upstream::{FakeUpstream, Mode};
+        let up = FakeUpstream::start(Mode::default()).await;
+        let port = up.addr.port();
+        for pin in [None, Some(""), Some("  ")] {
+            let err = upstream_over_tls(up.tcp().await, "localhost", port, pin)
+                .await
+                .unwrap_err();
+            assert_eq!(err, TLS_PIN_REQUIRED);
+        }
+    }
+
+    #[tokio::test]
+    async fn upstream_over_tls_requires_a_matching_pin() {
+        use crate::test_upstream::{FakeUpstream, Mode};
+        let up = FakeUpstream::start(Mode::default()).await;
+        let port = up.addr.port();
+        for pin in [None, Some("  ")] {
+            let err = upstream_over_tls(up.tcp().await, "localhost", port, pin)
+                .await
+                .unwrap_err();
+            assert_eq!(err, TLS_PIN_REQUIRED);
+        }
+        let wrong = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        assert!(
+            upstream_over_tls(up.tcp().await, "localhost", port, Some(wrong))
+                .await
+                .is_err()
+        );
+        let io = upstream_over_tls(up.tcp().await, "localhost", port, Some(&up.spki_pin))
+            .await
+            .unwrap();
+        let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+        let (status, _) = io
+            .post(None, &list, upstream_http::DEFAULT_TIMEOUT)
+            .await
+            .unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(
+            up.received()[0].headers.get("host").cloned(),
+            Some(format!("localhost:{port}"))
+        );
+    }
+
+    /// Re-broker never downgrades to plaintext when the session has no pin.
+    #[tokio::test]
+    async fn gwt_mcp_rebroker_e2e_no_pin_fail_closed() {
+        use std::os::fd::OwnedFd;
+        let live = http_peer("{}").await;
+        let fd = OwnedFd::from(live.into_std().unwrap());
+        let state = test_state();
+        let pending: PendingConnections = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        wire_rebroker_that_injects(&state, pending, "s-rb-nopin", fd);
+        let mut sess = base_session("s-rb-nopin");
+        sess.session_token = vec![4u8; 8];
+        sess.upstream_host = "127.0.0.1".into();
+        sess.upstream_port = 19001;
+        sess.upstream_tls_spki_pin = None;
+        let err = replace_brokered_upstream(&state, &sess, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("TLS pin required"), "{err:#}");
     }
 
     #[test]
@@ -5197,14 +6186,7 @@ mod gwt_tests {
 
     /// Process-wide session-token key; the gate accepts one key only.
     fn token_gate() -> &'static shared::session_token::TokenKey {
-        static KEY: std::sync::OnceLock<shared::session_token::TokenKey> =
-            std::sync::OnceLock::new();
-        KEY.get_or_init(|| {
-            let bytes = fresh_key_bytes();
-            session_token_gate::init_with_key(shared::session_token::TokenKey::from_bytes(bytes))
-                .unwrap();
-            shared::session_token::TokenKey::from_bytes(bytes)
-        })
+        crate::mcp_fix_e2e_tests::token_key()
     }
 
     fn fresh_key_bytes() -> [u8; 32] {
@@ -5325,57 +6307,9 @@ mod gwt_tests {
         wiring.guard
     }
 
-    /// Fake MCP upstream on loopback. The counter is the number of
-    /// non-empty reads it has served, so zero proves it was never reached.
-    async fn counting_upstream(
-        body: &'static str,
-    ) -> (tokio::net::TcpStream, Arc<std::sync::atomic::AtomicUsize>) {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let hits = Arc::new(AtomicUsize::new(0));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(); // allow-post-sandbox: test fake upstream
-        let addr = listener.local_addr().unwrap();
-        let seen = Arc::clone(&hits);
-        tokio::spawn(async move {
-            let Ok((mut s, _)) = listener.accept().await else {
-                return;
-            };
-            let mut buf = vec![0u8; 16 * 1024];
-            while let Ok(n) = s.read(&mut buf).await {
-                if n == 0 {
-                    return;
-                }
-                seen.fetch_add(1, Ordering::SeqCst);
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{body}",
-                    body.len()
-                );
-                if s.write_all(resp.as_bytes()).await.is_err() {
-                    return;
-                }
-            }
-        });
-        let client = tokio::net::TcpStream::connect(addr).await.unwrap(); // allow-post-sandbox: test fake upstream
-        (client, hits)
-    }
-
-    const UPSTREAM_ECHO: &str =
-        r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"upstream-hi"}]}}"#;
-
-    /// Brokered FD parked for `session_id`, as `TcpConnectResponse` does.
-    async fn pending_with_fake_upstream(
-        pending: &PendingConnections,
-        session_id: &str,
-    ) -> Arc<std::sync::atomic::AtomicUsize> {
-        let (stream, hits) = counting_upstream(UPSTREAM_ECHO).await;
-        let fd: std::os::fd::OwnedFd = stream.into_std().unwrap().into();
-        pending.lock().await.insert(session_id.to_string(), fd);
-        hits
-    }
-
     struct IpcOpen {
         token: String,
-        hits: Arc<std::sync::atomic::AtomicUsize>,
+        upstream: crate::test_upstream::FakeUpstream,
     }
 
     /// One `McpSessionOpen` through the production handler; it must succeed.
@@ -5385,9 +6319,13 @@ mod gwt_tests {
         session_id: &str,
         require_seal: bool,
     ) -> IpcOpen {
+        let upstream =
+            crate::test_upstream::FakeUpstream::start(crate::test_upstream::Mode::default()).await;
         let pending: PendingConnections =
             Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
-        let hits = pending_with_fake_upstream(&pending, session_id).await;
+        let fd: std::os::fd::OwnedFd = upstream.tcp().await.into_std().unwrap().into();
+        pending.lock().await.insert(session_id.to_string(), fd);
+        let port = upstream.addr.port();
         let token = format!("vbw_{session_id}");
         let (user, asset) = ("user-ipc", "asset-ipc");
         let msg = Message::McpSessionOpen {
@@ -5404,14 +6342,15 @@ mod gwt_tests {
             envelope_max_calls: 100,
             envelope_window_seconds: 60,
             envelope_on_exceed: "throttle".into(),
-            upstream_host: "127.0.0.1".into(),
-            upstream_port: 8080,
-            upstream_tls_spki_pin: None,
+            upstream_host: "localhost".into(),
+            upstream_port: port,
+            upstream_tls_spki_pin: Some(upstream.spki_pin.clone()),
             forward_identity_headers: false,
             credential_blob: Vec::new(),
             justification: "seal through the real open".into(),
             max_body_bytes: 1024 * 1024,
-            session_token: mint_open_token(session_id, user, asset, 8080),
+            session_token: mint_open_token(session_id, user, asset, port),
+            recording_open_unix: unix_now() as u64,
             transport: "tunnel".into(),
             require_seal,
         };
@@ -5425,7 +6364,7 @@ mod gwt_tests {
             }) => {}
             other => unreachable!("open must succeed: {other:?}"),
         }
-        IpcOpen { token, hits }
+        IpcOpen { token, upstream }
     }
 
     /// `tools/call echo` on hop 2 as the data pipe delivers it.
@@ -5472,7 +6411,6 @@ mod gwt_tests {
     /// reached.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn attack_web_disables_seal_is_rejected_through_session_open() {
-        use std::sync::atomic::Ordering;
         let mut state = test_state();
         state.require_seal_policy = true;
         let guard = granting_access_guard();
@@ -5481,7 +6419,7 @@ mod gwt_tests {
         let v = tunnel_echo(&state, &open.token).await;
         assert_seal_refusal(&v);
         assert_eq!(
-            open.hits.load(Ordering::SeqCst),
+            open.upstream.tool_calls(),
             0,
             "upstream must stay untouched"
         );
@@ -5489,20 +6427,24 @@ mod gwt_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn session_open_honours_web_flag_when_policy_is_off() {
-        use std::sync::atomic::Ordering;
         let state = test_state();
         assert!(!state.require_seal_policy);
         let guard = granting_access_guard();
         let open = open_via_ipc(&state, &guard, "s-ipc-seal-control", false).await;
         assert!(!stored_seal(&state, "s-ipc-seal-control"));
         let v = tunnel_echo(&state, &open.token).await;
-        assert_eq!(v["result"]["content"][0]["text"], "upstream-hi", "{v}");
-        assert!(open.hits.load(Ordering::SeqCst) >= 1);
+        assert!(
+            v["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("hi"),
+            "{v}"
+        );
+        assert!(open.upstream.tool_calls() >= 1);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn session_open_seal_table_is_policy_or_message() {
-        use std::sync::atomic::Ordering;
         let guard = granting_access_guard();
         for (i, (policy, message)) in [(false, false), (false, true), (true, false), (true, true)]
             .into_iter()
@@ -5521,16 +6463,21 @@ mod gwt_tests {
             let v = tunnel_echo(&state, &open.token).await;
             if sealed {
                 assert_seal_refusal(&v);
-                assert_eq!(open.hits.load(Ordering::SeqCst), 0);
+                assert_eq!(open.upstream.tool_calls(), 0);
             } else {
-                assert_eq!(v["result"]["content"][0]["text"], "upstream-hi", "{v}");
+                assert!(
+                    v["result"]["content"][0]["text"]
+                        .as_str()
+                        .unwrap_or("")
+                        .contains("hi"),
+                    "{v}"
+                );
             }
         }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn battle_sixteen_session_opens_mixed_flags_all_sealed() {
-        use std::sync::atomic::Ordering;
         let mut state = test_state();
         state.require_seal_policy = true;
         let guard = granting_access_guard();
@@ -5545,7 +6492,7 @@ mod gwt_tests {
                 let id = format!("s-ipc-seal-battle-{i}");
                 let open = open_via_ipc(&state, &guard, &id, i % 2 == 0).await;
                 let v = tunnel_echo(&state, &open.token).await;
-                (v, open.hits.load(Ordering::SeqCst))
+                (v, open.upstream.tool_calls())
             }));
         }
         for join in joins {
@@ -5575,7 +6522,7 @@ mod gwt_tests {
             "the wire flag must not be read after the policy is applied"
         );
         let insert = body
-            .find("state.insert_session(Session {")
+            .find("state.insert_new_session(Session {")
             .expect("session insert");
         let fields = &body[insert..];
         let fields = &fields[..fields.find("});").expect("insert end")];
@@ -5593,7 +6540,7 @@ mod gwt_tests {
         sess.allowed_tools = Some(vec!["echo".into()]);
         let peer =
             http_peer(r#"{"jsonrpc":"2.0","id":7,"result":{"tools":[{"name":"echo"}]}}"#).await;
-        sess.upstream_stream = Some(wrap_plain(peer));
+        sess.upstream_stream = Some(wrap_plain(peer).await);
         sess.upstream_url = Some("http://127.0.0.1/mcp".into());
         insert_session(&state, sess);
 
@@ -5616,5 +6563,170 @@ mod gwt_tests {
             !ok_body.contains("-32010"),
             "brokered FD must be used, got {ok_body}"
         );
+    }
+
+    #[test]
+    fn gwt_recording_open_failure_refuses_session() {
+        let src = include_str!("main.rs");
+        assert!(
+            src.contains("recording_open_failed")
+                && src.contains("drop_session")
+                && !src.contains("expect(\"gateway lock\")"),
+            "hop 1 must refuse when JSONL/cast cannot open; mutex poison must not panic"
+        );
+        assert!(
+            src.contains("jsonl_sync_failed") && src.contains("recording_sync_failed"),
+            "deny/HITL/throttle JSONL failure must surface -32010"
+        );
+        assert!(
+            src.contains("McpProxyReady"),
+            "proxy boot must notify web to reap leftover live MCP rows"
+        );
+    }
+
+    #[test]
+    fn gwt_gateway_lock_recovers_from_poison() {
+        let state = test_state();
+        let inner = Arc::clone(&state.inner);
+        let join = std::thread::spawn(move || {
+            let _g = inner.lock().unwrap();
+            panic!("intentional gateway poison");
+        });
+        assert!(join.join().is_err());
+        let mut g = state.lock_inner();
+        g.sessions
+            .insert("after-poison".into(), base_session("after-poison"));
+        assert!(g.sessions.contains_key("after-poison"));
+    }
+
+    #[tokio::test]
+    async fn gwt_deny_jsonl_fail_is_recording_sync_failed() {
+        let state = failing_lease_state().await;
+        let token = "vbw_f5deny";
+        let mut sess = session_with_token("s-f5-deny", token);
+        sess.allowed_tools = Some(vec!["echo".into()]);
+        insert_session(&state, sess);
+        let v = mcp_tools_call(&state, token, "delete_vm", json!({})).await;
+        assert_eq!(v["error"]["code"], -32010, "Deny without JSONL: {v}");
+        assert_eq!(v["error"]["message"], "recording_sync_failed");
+    }
+
+    #[tokio::test]
+    async fn gwt_suspend_jsonl_fail_is_recording_sync_failed() {
+        let state = failing_lease_state().await;
+        let token = "vbw_f5susp";
+        let mut sess = session_with_token("s-f5-susp", token);
+        sess.suspended = true;
+        insert_session(&state, sess);
+        let v = mcp_tools_call(&state, token, "echo", json!({"message": "x"})).await;
+        assert_eq!(v["error"]["code"], -32010, "Suspend without JSONL: {v}");
+        assert_eq!(v["error"]["message"], "recording_sync_failed");
+    }
+
+    #[tokio::test]
+    async fn gwt_throttle_jsonl_fail_is_recording_sync_failed() {
+        let state = failing_lease_state().await;
+        let token = "vbw_f5thr";
+        let mut sess = session_with_token("s-f5-thr", token);
+        sess.envelope_max = 1;
+        sess.envelope_window = 60;
+        sess.on_exceed = "throttle".into();
+        let now = unix_now();
+        sess.call_times.push_back(now);
+        insert_session(&state, sess);
+        let v = mcp_tools_call(&state, token, "echo", json!({"message": "x"})).await;
+        assert_eq!(v["error"]["code"], -32010, "Throttle without JSONL: {v}");
+        assert_eq!(v["error"]["message"], "recording_sync_failed");
+    }
+
+    #[tokio::test]
+    async fn gwt_list_and_initialize_jsonl_fail_is_recording_sync_failed() {
+        for (method, reply) in [
+            (
+                "tools/list",
+                r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"echo"}]}}"#,
+            ),
+            (
+                "initialize",
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"up","version":"1"}}}"#,
+            ),
+            ("notifications/initialized", r#"{}"#),
+        ] {
+            let state = failing_lease_state().await;
+            let token = "vbw_listinit";
+            let mut sess = session_with_token("s-list-init", token);
+            sess.allowed_tools = Some(vec!["echo".into()]);
+            sess.upstream_stream = Some(wrap_plain(http_peer(reply).await).await);
+            sess.upstream_url = Some("http://127.0.0.1/mcp".into());
+            insert_session(&state, sess);
+            let resp = handle_mcp(
+                State(state.clone()),
+                bearer_headers(token),
+                Some(direct_ingress()),
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": method,
+                    "params": { "capabilities": {},
+                                "clientInfo": { "name": "agent", "version": "1" } }
+                })),
+            )
+            .await;
+            let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+            let v: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(v["error"]["code"], -32010, "{method} without JSONL: {v}");
+            assert_eq!(v["error"]["message"], "recording_sync_failed", "{method}");
+        }
+    }
+
+    #[tokio::test]
+    async fn suspend_and_resume_of_an_unknown_visit_change_nothing() {
+        let state = test_state();
+        handle_mcp_session_suspend(
+            &state,
+            Message::McpSessionSuspend {
+                request_id: 1,
+                session_id: "s-ghost".into(),
+                reason: "policy".into(),
+                actor_user_id: String::new(),
+            },
+        )
+        .await;
+        handle_mcp_session_resume(
+            &state,
+            Message::McpSessionResume {
+                request_id: 2,
+                session_id: "s-ghost".into(),
+                actor_user_id: "staff".into(),
+            },
+        )
+        .await;
+        assert!(state.lock_inner().sessions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn gwt_hitl_jsonl_fail_is_recording_sync_failed() {
+        let state = failing_lease_state().await;
+        let token = "vbw_f5hitl";
+        let mut sess = session_with_token("s-f5-hitl", token);
+        sess.allowed_tools = Some(vec!["delete_vm".into()]);
+        sess.tool_constraints.insert(
+            "delete_vm".into(),
+            ToolConstraint {
+                input_schema: json!({"type": "object"}),
+                forbidden_keys: vec![],
+                hitl: true,
+                require_plan: false,
+                status: Some("approved".into()),
+                schema_fingerprint: None,
+            },
+        );
+        insert_session(&state, sess);
+        let v = mcp_tools_call(&state, token, "delete_vm", json!({"id": "vm-1"})).await;
+        assert_eq!(
+            v["error"]["code"], -32010,
+            "HITL pending without JSONL: {v}"
+        );
+        assert_eq!(v["error"]["message"], "recording_sync_failed");
     }
 }

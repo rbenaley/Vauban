@@ -383,19 +383,22 @@ pub(crate) async fn terminate_mcp_with_actor(
 
     let now = Utc::now();
     let decision_id = mint_decision_id();
-    let source_group_id: Option<i32> = proxy_sessions::table
-        .filter(proxy_sessions::id.eq(session_pk))
-        .select(proxy_sessions::decision_source_group_id)
-        .first::<Option<i32>>(conn)
-        .await
-        .ok()
-        .flatten();
+    let (source_group_id, connected_at): (Option<i32>, Option<chrono::DateTime<Utc>>) =
+        proxy_sessions::table
+            .filter(proxy_sessions::id.eq(session_pk))
+            .select((
+                proxy_sessions::decision_source_group_id,
+                proxy_sessions::connected_at,
+            ))
+            .first::<(Option<i32>, Option<chrono::DateTime<Utc>>)>(conn)
+            .await
+            .unwrap_or((None, None));
     let mcp_recording = state.config.recording.mcp_recording_enabled();
     let update = if mcp_recording {
         let rec_path = crate::services::recording_hydrator::recording_dir_for_session(
             &state.config.recording.storage_path,
             session_id,
-            now,
+            connected_at.unwrap_or(now),
         );
         diesel::update(proxy_sessions::table.filter(proxy_sessions::id.eq(session_pk)))
             .set((
@@ -448,8 +451,19 @@ pub(crate) async fn terminate_mcp_with_actor(
         ));
     }
 
-    if let Some(proxy) = proxy_mcp {
-        let _ = proxy.terminate_session(session_id, reason);
+    match proxy_mcp.map(|proxy| proxy.terminate_session(session_id, reason)) {
+        Some(Ok(())) => {}
+        Some(Err(e)) => tracing::warn!(
+            session_id = %session_id,
+            error = %e,
+            actor,
+            "mcp: terminate IPC failed after the DB cut"
+        ),
+        None => tracing::warn!(
+            session_id = %session_id,
+            actor,
+            "mcp: no proxy-mcp link to send the terminate"
+        ),
     }
 
     tracing::info!(
@@ -469,9 +483,72 @@ pub fn spawn_recheck(state: AppState) -> tokio::task::JoinHandle<()> {
         ticker.tick().await;
         loop {
             ticker.tick().await;
-            let _ = run_once(&state).await;
+            run_once(&state).await;
         }
     })
+}
+
+/// Hop-2 RAM is empty (`McpProxyReady` / web boot / IPC death). Terminate
+/// leftover MCP live rows. Do not resurrect `vbw_`.
+pub async fn terminate_live_mcp_on_proxy_restart(state: &AppState) {
+    use crate::schema::{proxy_sessions, users};
+
+    let mut conn = match state.db_pool.get().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "mcp proxy restart reap: DB pool unavailable");
+            return;
+        }
+    };
+    #[derive(Queryable)]
+    struct Live {
+        id: i32,
+        uuid: Uuid,
+        user_uuid: Uuid,
+    }
+    let rows: Vec<Live> = match proxy_sessions::table
+        .inner_join(users::table.on(users::id.eq(proxy_sessions::user_id)))
+        .filter(proxy_sessions::session_type.eq(SessionType::Mcp.as_str()))
+        .filter(proxy_sessions::status.eq_any(["connecting", "active", "suspended"]))
+        .select((proxy_sessions::id, proxy_sessions::uuid, users::uuid))
+        .load::<Live>(&mut conn)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "mcp proxy restart reap: list failed");
+            return;
+        }
+    };
+    if rows.is_empty() {
+        return;
+    }
+    let proxy_mcp = state.proxy_mcp.as_ref();
+    let mut n = 0usize;
+    for row in rows {
+        let sid = row.uuid.to_string();
+        if terminate_mcp_with_actor(
+            state,
+            &mut conn,
+            proxy_mcp,
+            row.id,
+            &sid,
+            Some(&row.user_uuid.to_string()),
+            "mcp_proxy_restart",
+            crate::services::access_decision::ACTOR_MCP_PROXY_RESTART,
+        )
+        .await
+        {
+            n += 1;
+        }
+    }
+    if n > 0 {
+        tracing::info!(
+            terminated = n,
+            "mcp proxy restart: leftover live MCP sessions terminated"
+        );
+        crate::services::session_termination::broadcast_session_list_updates(state).await;
+    }
 }
 
 #[cfg(test)]

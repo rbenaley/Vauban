@@ -184,8 +184,8 @@
                     <label for="mcp_transport" class="block text-sm font-medium text-gray-700 dark:text-gray-300">MCP transport</label>
                     <select name="mcp_transport" id="mcp_transport"
                             class="mt-1 block w-full max-w-md rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
-                        <option value="direct">Direct</option>
-                        <option value="tunnel">Tunnel</option>
+                        <option value="direct" {% if asset.mcp_transport == "direct" %}selected{% endif %}>Direct</option>
+                        <option value="tunnel" {% if asset.mcp_transport == "tunnel" %}selected{% endif %}>Tunnel</option>
                     </select>
                     <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Tunnel requires the vauban-mcp stdio shim. Direct accepts Authorization: Bearer.</p>
                 </div>
@@ -295,6 +295,26 @@
         </div>
         {% endif %}
 
+        {% if asset.asset_type == "mcp" %}
+        <div class="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
+            <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700">
+                <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Upstream TLS</h3>
+            </div>
+            <div class="px-4 py-5 sm:p-6">
+                {% if let Some(pin) = asset.mcp_tls_spki %}
+                <p class="text-sm text-gray-900 dark:text-white font-mono break-all" data-testid="mcp-tls-spki-current">{{ pin }}</p>
+                {% else %}
+                <p class="text-sm text-red-600 dark:text-red-400" data-testid="mcp-tls-spki-missing">No pin: sessions and tool discovery are refused.</p>
+                {% endif %}
+                <label for="mcp_tls_spki" class="mt-4 block text-sm font-medium text-gray-700 dark:text-gray-300">New server SPKI pin</label>
+                <input type="text" name="mcp_tls_spki" id="mcp_tls_spki" autocomplete="off" spellcheck="false"
+                       class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm font-mono"
+                       maxlength="64" placeholder="SHA256:base64-of-the-SPKI-digest">
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Leave blank to keep the current pin. The upstream is always HTTPS (ADR 010).</p>
+            </div>
+        </div>
+        {% endif %}
+
         <!-- SSH Host Key (read-only) -->
         {% if asset.asset_type == "ssh" %}
         {% if let Some(fp) = asset.ssh_host_key_fingerprint %}
@@ -361,6 +381,136 @@
             </button>
         </div>
     </form>
+
+    {% if asset.asset_type == "mcp" %}
+    {# TOFU catalogue (CIS MCP 4.1.1). Outside the edit form: its own
+       POST forms. A tool whose upstream definition changed since approval
+       is quarantined by proxy-mcp and shown here as pending with the
+       reason and a before/after view; Approve pins the new definition. #}
+    <div class="mt-6 bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden" data-testid="mcp-tools-card">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700 flex flex-wrap items-center justify-between gap-4">
+            <div>
+                <h3 class="text-lg font-medium leading-6 text-gray-900 dark:text-white">Discovered tools</h3>
+                <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                    TOFU catalogue from upstream <code>tools/list</code>. New or changed tools stay <em>pending</em> until approved.
+                    Access rules and sessions only use <strong>approved</strong> tools.
+                </p>
+            </div>
+            <div class="flex gap-2 shrink-0">
+                <form method="post" action="/assets/manage/{{ asset.uuid }}/discover-mcp-tools" x-data="csrf">
+                    <input type="hidden" name="csrf_token" x-model="token" />
+                    <button type="submit"
+                            class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500">
+                        Discover tools
+                    </button>
+                </form>
+                <form method="post" action="/assets/manage/{{ asset.uuid }}/approve-mcp-tools" x-data="csrf">
+                    <input type="hidden" name="csrf_token" x-model="token" />
+                    <button type="submit" data-testid="mcp-approve-pending"
+                            class="inline-flex items-center rounded-md bg-green-700 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-green-600">
+                        Approve pending
+                    </button>
+                </form>
+            </div>
+        </div>
+        <div class="px-4 py-5 sm:p-6">
+            {% if asset.mcp_tools.is_empty() %}
+            <p class="text-sm text-gray-500 dark:text-gray-400">No tools discovered yet. Start the upstream MCP server, then click <strong>Discover tools</strong>.</p>
+            {% else %}
+            <p class="mb-3 text-xs text-gray-500 dark:text-gray-400">HITL and Require plan are set on <a href="/sessions/mcp/access" class="text-vauban-600 dark:text-vauban-400 hover:underline">MCP → Access Rules</a> (catalogue HITL is display-only).</p>
+            <ul class="divide-y divide-gray-200 dark:divide-gray-700">
+                {% for tool in asset.mcp_tools %}
+                <li class="py-3" data-testid="mcp-tool-row" data-tool="{{ tool.name }}">
+                    <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+                        <div class="flex flex-col sm:flex-row sm:items-baseline sm:gap-3 min-w-0">
+                            <code class="text-sm font-mono text-gray-900 dark:text-white">{{ tool.name }}</code>
+                            <span class="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium
+                                {% if tool.status == "approved" %}bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200
+                                {% elif tool.status == "pending" %}bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200
+                                {% else %}bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300{% endif %}">{{ tool.status }}</span>
+                            {% if tool.hitl %}
+                            <span class="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">HITL</span>
+                            {% endif %}
+                            {% if !tool.description.is_empty() %}
+                            <span class="text-sm text-gray-500 dark:text-gray-400 truncate">{{ tool.description }}</span>
+                            {% endif %}
+                        </div>
+                        {% if tool.status == "pending" %}
+                        <form method="post" action="/assets/manage/{{ asset.uuid }}/approve-mcp-tools" x-data="csrf" class="shrink-0">
+                            <input type="hidden" name="csrf_token" x-model="token" />
+                            <input type="hidden" name="tool_name" value="{{ tool.name }}" />
+                            <button type="submit" class="text-sm text-green-700 hover:text-green-500 dark:text-green-400">Approve</button>
+                        </form>
+                        {% endif %}
+                    </div>
+                    {% if let Some(msg) = tool.pending_message %}
+                    <p class="mt-1 text-xs text-yellow-800 dark:text-yellow-200" data-testid="mcp-tool-pending-reason">{{ msg }}</p>
+                    {% endif %}
+                    {% if let Some(before) = tool.approved_description %}
+                    <details class="mt-2 text-xs" data-testid="mcp-tool-diff">
+                        <summary class="cursor-pointer text-vauban-600 dark:text-vauban-400">View change</summary>
+                        <div class="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            <div>
+                                <div class="font-semibold text-gray-700 dark:text-gray-300">Previously approved description</div>
+                                <pre class="mt-1 whitespace-pre-wrap break-words rounded bg-gray-50 p-2 text-gray-800 dark:bg-gray-900 dark:text-gray-200" data-testid="mcp-tool-diff-before">{{ before }}</pre>
+                            </div>
+                            <div>
+                                <div class="font-semibold text-gray-700 dark:text-gray-300">Current upstream description</div>
+                                <pre class="mt-1 whitespace-pre-wrap break-words rounded bg-gray-50 p-2 text-gray-800 dark:bg-gray-900 dark:text-gray-200" data-testid="mcp-tool-diff-after">{{ tool.description }}</pre>
+                            </div>
+                        </div>
+                        {% if tool.schema_changed %}
+                        <p class="mt-2 font-semibold text-yellow-800 dark:text-yellow-200" data-testid="mcp-tool-schema-changed">Input schema changed.</p>
+                        <div class="mt-1 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            <pre class="whitespace-pre-wrap break-words rounded bg-gray-50 p-2 text-gray-800 dark:bg-gray-900 dark:text-gray-200">{{ tool.approved_schema }}</pre>
+                            <pre class="whitespace-pre-wrap break-words rounded bg-gray-50 p-2 text-gray-800 dark:bg-gray-900 dark:text-gray-200">{{ tool.current_schema }}</pre>
+                        </div>
+                        {% else %}
+                        <p class="mt-2 text-gray-500 dark:text-gray-400">Input schema unchanged.</p>
+                        {% endif %}
+                    </details>
+                    {% endif %}
+                </li>
+                {% endfor %}
+            </ul>
+            {% endif %}
+            {% if let Some(ins) = asset.mcp_instructions %}
+            <div class="mt-4 border-t border-gray-200 dark:border-gray-700 pt-4" data-testid="mcp-instructions-row">
+                <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div class="flex items-baseline gap-3">
+                        <span class="text-sm font-medium text-gray-900 dark:text-white">Upstream server instructions</span>
+                        <span class="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium
+                            {% if ins.status == "approved" %}bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200
+                            {% else %}bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200{% endif %}">{{ ins.status }}</span>
+                    </div>
+                    {% if ins.status == "pending" %}
+                    <form method="post" action="/assets/manage/{{ asset.uuid }}/approve-mcp-tools" x-data="csrf" class="shrink-0">
+                        <input type="hidden" name="csrf_token" x-model="token" />
+                        <input type="hidden" name="tool_name" value="{{ ins.approve_key }}" />
+                        <button type="submit" class="text-sm text-green-700 hover:text-green-500 dark:text-green-400">Approve</button>
+                    </form>
+                    {% endif %}
+                </div>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Relayed to agents, after the Vauban rules and fenced as untrusted, only while approved and unchanged.</p>
+                {% if let Some(msg) = ins.pending_message %}
+                <p class="mt-1 text-xs text-yellow-800 dark:text-yellow-200" data-testid="mcp-instructions-pending-reason">{{ msg }}</p>
+                {% endif %}
+                {% if let Some(before) = ins.approved_text %}
+                <details class="mt-2 text-xs" data-testid="mcp-instructions-diff">
+                    <summary class="cursor-pointer text-vauban-600 dark:text-vauban-400">View change</summary>
+                    <div class="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <pre class="whitespace-pre-wrap break-words rounded bg-gray-50 p-2 text-gray-800 dark:bg-gray-900 dark:text-gray-200">{{ before }}</pre>
+                        <pre class="whitespace-pre-wrap break-words rounded bg-gray-50 p-2 text-gray-800 dark:bg-gray-900 dark:text-gray-200">{{ ins.text }}</pre>
+                    </div>
+                </details>
+                {% else %}
+                <pre class="mt-2 whitespace-pre-wrap break-words rounded bg-gray-50 p-2 text-xs text-gray-800 dark:bg-gray-900 dark:text-gray-200">{{ ins.text }}</pre>
+                {% endif %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
 
     {# SSH key pair management card. Lives OUTSIDE the edit form so its
        HTMX actions (push / test) never submit the main form. Only shown

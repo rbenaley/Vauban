@@ -19,6 +19,9 @@ use uuid::Uuid;
 /// Actor string for the MCP safety-net recheck loop.
 pub const ACTOR_MCP_RECHECK: &str = "system:mcp_recheck";
 
+/// Actor when `proxy-mcp` boots with empty hop-2 RAM.
+pub const ACTOR_MCP_PROXY_RESTART: &str = "system:mcp_proxy_restart";
+
 /// Actor for Mission Seal CheckStep drift (IAM suspension).
 pub const ACTOR_MANDATE_DRIFT: &str = "system:mandate_drift";
 
@@ -43,6 +46,10 @@ pub fn reason_label(reason: &str) -> &'static str {
         "session_expired" => "Session reached its end time",
         "api_key_inactive" => "API key revoked or rotated (compromise response)",
         "asset_gone" => "Target asset is no longer available",
+        "asset_deleted" => "Target asset was deleted by an administrator",
+        "asset_reconfigured" => {
+            "Target asset's address or certificate pin changed (open a new session)"
+        }
         "access_revoked" => "Removed from access group (IAM suspension)",
         "mandate_drift" => "Mission Seal drift — visit cut (IAM per access rule)",
         "access_check_failed" => "Access could not be verified (session ended for safety)",
@@ -50,6 +57,8 @@ pub fn reason_label(reason: &str) -> &'static str {
         "no_tools_granted" => "No tools remain authorized for this session",
         "approval_now_required" => "Approval is now required mid-session",
         "mfa_now_required" => "MFA is now required mid-session",
+        "mcp_proxy_restart" => "MCP proxy restarted (visit ticket is dead; open a new session)",
+        "policy_update_failed" => "Policy update did not reach the MCP proxy",
         _ => "Session access ended",
     }
 }
@@ -59,6 +68,7 @@ pub fn reason_label(reason: &str) -> &'static str {
 pub fn actor_label(actor: &str) -> String {
     match actor {
         ACTOR_MCP_RECHECK => "Automatic access check".to_string(),
+        ACTOR_MCP_PROXY_RESTART => "MCP proxy restart".to_string(),
         ACTOR_MANDATE_DRIFT => "Mission Seal drift (automatic)".to_string(),
         ACTOR_TERMINATE_LIVE => "Administrator or system action".to_string(),
         other if other.starts_with("user:") => "Named user action".to_string(),
@@ -71,11 +81,20 @@ pub fn actor_label(actor: &str) -> String {
 /// (or that caused) an access cut. Call **before** `notify_policy_changed`
 /// on group-member remove so the subsequent terminate keeps the hint.
 pub async fn stamp_live_mcp_source_group(state: &AppState, user_id: i32, group_id: i32) {
+    stamp_live_mcp_source_groups(state, user_id, &[group_id]).await;
+}
+
+/// Stamp every group the drift `RemoveGroupMember` will cut.
+pub async fn stamp_live_mcp_source_groups(state: &AppState, user_id: i32, group_ids: &[i32]) {
+    if group_ids.is_empty() {
+        return;
+    }
+    let first = group_ids[0];
+    let ids_json = serde_json::json!(group_ids);
     let Ok(mut conn) = state.db_pool.get().await else {
         tracing::warn!(
             user_id,
-            group_id,
-            "R1+: stamp decision_source_group_id skipped (no DB conn)"
+            "R1+: stamp decision_source_group_ids skipped (no DB conn)"
         );
         return;
     };
@@ -90,25 +109,28 @@ pub async fn stamp_live_mcp_source_group(state: &AppState, user_id: i32, group_i
                 "approved",
             ])),
     )
-    .set(proxy_sessions::decision_source_group_id.eq(group_id))
+    .set((
+        proxy_sessions::decision_source_group_id.eq(first),
+        proxy_sessions::decision_source_group_ids.eq(ids_json),
+    ))
     .execute(&mut conn)
     .await
     {
         Ok(n) if n > 0 => {
             tracing::info!(
                 user_id,
-                group_id,
+                first_group = first,
                 stamped = n,
-                "R1+: stamped decision_source_group_id on live MCP sessions"
+                groups = group_ids.len(),
+                "R1+: stamped decision_source_group_ids on live MCP sessions"
             );
         }
         Ok(_) => {}
         Err(e) => {
             tracing::warn!(
                 user_id,
-                group_id,
                 error = %e,
-                "R1+: stamp decision_source_group_id failed"
+                "R1+: stamp decision_source_group_ids failed"
             );
         }
     }
@@ -171,6 +193,12 @@ pub async fn emit_mcp_access_decision_with_group(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn asset_cut_reasons_have_plain_labels() {
+        assert!(reason_label("asset_deleted").contains("deleted by an administrator"));
+        assert!(reason_label("asset_reconfigured").contains("certificate pin changed"));
+    }
 
     #[test]
     fn mint_decision_id_has_d_prefix_and_uuid() {

@@ -1288,6 +1288,7 @@ fn one_my_request() -> MyRequestItem {
         approved_by: None,
         max_session_duration: None,
         decision_id: None,
+        contestation: None,
     }
 }
 

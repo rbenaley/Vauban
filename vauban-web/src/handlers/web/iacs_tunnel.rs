@@ -402,6 +402,7 @@ pub async fn connect_iacs(
         // on `assets` does NOT redirect the live tunnel.
         tunnel_target_addr: Some(format!("{}:{}", asset.hostname, asset.port)),
         expires_at: None,
+        connected_at: None,
     };
 
     if let Err(e) = diesel::insert_into(proxy_sessions::table)

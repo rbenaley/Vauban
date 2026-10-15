@@ -86,6 +86,18 @@ impl SessionType {
         matches!(self, Self::IacsTunnel)
     }
 
+    /// Hop-1 `session_type` must match the asset protocol family.
+    /// MCP / SSH / RDP are exact; IACS tunnels accept any IACS asset.
+    pub fn matches_asset(self, asset: crate::models::asset::AssetType) -> bool {
+        use crate::models::asset::AssetType;
+        match self {
+            Self::Mcp => matches!(asset, AssetType::Mcp),
+            Self::Ssh => matches!(asset, AssetType::Ssh),
+            Self::Rdp => matches!(asset, AssetType::Rdp),
+            Self::IacsTunnel => asset.is_iacs(),
+        }
+    }
+
     /// Exhaustive enumeration of every variant.
     pub const ALL: &'static [SessionType] = &[
         SessionType::Ssh,
@@ -268,6 +280,18 @@ impl SessionStatus {
         "tunnel_active",
     ];
 
+    /// [`Self::LIVE_AS_STR`] plus `suspended`: a suspended MCP session
+    /// still holds its upstream and can be resumed, so revocation,
+    /// cascade terminate and duration clamps must reach it too.
+    pub const OPEN_AS_STR: [&str; 6] = [
+        "connecting",
+        "active",
+        "waiting_client",
+        "ews_connected",
+        "tunnel_active",
+        "suspended",
+    ];
+
     /// Operator "Active Sessions" / Bastion Watch LIVE surface
     /// (connected enough to show; excludes `waiting_client` and
     /// `connecting`).
@@ -389,6 +413,8 @@ pub struct ProxySession {
     pub decision_actor: Option<String>,
     pub decision_at: Option<DateTime<Utc>>,
     pub decision_source_group_id: Option<i32>,
+    /// All groups removed on MCP `suspend_group` drift (JSONB int array).
+    pub decision_source_group_ids: Option<serde_json::Value>,
 }
 
 /// New session for insertion.
@@ -419,6 +445,9 @@ pub struct NewProxySession {
     /// transition to `tunnel_active`.
     pub tunnel_target_addr: Option<String>,
     pub expires_at: Option<DateTime<Utc>>,
+    /// MCP hop 1: visit start (YYYY/MM recording anchor). SSH/RDP leave None
+    /// until the data plane connects.
+    pub connected_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl ProxySession {
@@ -510,6 +539,7 @@ mod tests {
             decision_actor: None,
             decision_at: None,
             decision_source_group_id: None,
+            decision_source_group_ids: None,
         }
     }
 
@@ -802,6 +832,19 @@ mod tests {
         assert_eq!(SessionType::Rdp.to_string(), "rdp");
     }
 
+    #[test]
+    fn test_session_type_matches_asset() {
+        use crate::models::asset::AssetType;
+        assert!(SessionType::Mcp.matches_asset(AssetType::Mcp));
+        assert!(!SessionType::Ssh.matches_asset(AssetType::Mcp));
+        assert!(!SessionType::Rdp.matches_asset(AssetType::Mcp));
+        assert!(!SessionType::IacsTunnel.matches_asset(AssetType::Mcp));
+        assert!(SessionType::Ssh.matches_asset(AssetType::Ssh));
+        assert!(SessionType::Rdp.matches_asset(AssetType::Rdp));
+        assert!(SessionType::IacsTunnel.matches_asset(AssetType::IacsModbus));
+        assert!(!SessionType::Mcp.matches_asset(AssetType::Ssh));
+    }
+
     // ==================== SessionStatus Additional Tests ====================
 
     #[test]
@@ -909,6 +952,7 @@ mod tests {
             ews_uuid: None,
             tunnel_target_addr: None,
             expires_at: None,
+            connected_at: None,
         };
 
         let debug_str = format!("{:?}", new_session);
@@ -936,6 +980,7 @@ mod tests {
             ews_uuid: None,
             tunnel_target_addr: None,
             expires_at: None,
+            connected_at: None,
         };
 
         let cloned = new_session.clone();

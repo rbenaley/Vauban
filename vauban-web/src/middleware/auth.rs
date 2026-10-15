@@ -283,13 +283,13 @@ pub async fn auth_middleware(
 /// the downstream `AuthUser` extractor returns `401`. A human JWT is never
 /// consulted here.
 async fn api_key_auth(state: &AppState, mut request: Request, next: Next) -> Response {
-    use crate::middleware::api_key::{ApiKeyAuth, authenticate_api_key, extract_api_key};
+    use crate::middleware::api_key::{authenticate_api_key, extract_api_key};
 
     if let Some(raw_key) = extract_api_key(request.headers()) {
         let client_ip = api_client_ip(state, &request);
-        if let Some((user, scopes)) = authenticate_api_key(state, &raw_key, client_ip).await {
+        if let Some((user, key_auth)) = authenticate_api_key(state, &raw_key, client_ip).await {
             request.extensions_mut().insert(user);
-            request.extensions_mut().insert(ApiKeyAuth { scopes });
+            request.extensions_mut().insert(key_auth);
         }
     }
 

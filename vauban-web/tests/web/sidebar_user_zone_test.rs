@@ -102,6 +102,7 @@ fn make_sidebar(user: UserContext, perms: PermissionContext) -> SidebarContentTe
         is_assets: false,
         is_manage_assets: false,
         is_sessions: false,
+        is_mcp: false,
         is_recordings: false,
         is_users: false,
         is_groups: false,
@@ -112,6 +113,7 @@ fn make_sidebar(user: UserContext, perms: PermissionContext) -> SidebarContentTe
         is_iacs: false,
         pending_approval_count: 0,
         pending_iacs_count: 0,
+        pending_mcp_count: 0,
         perms,
     }
 }

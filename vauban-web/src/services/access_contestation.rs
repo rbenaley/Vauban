@@ -22,6 +22,16 @@ use uuid::Uuid;
 const OPEN_REASON_MIN: usize = 10;
 const OPEN_REASON_MAX: usize = 1000;
 
+/// A decision is contested once: uphold and overturn are final.
+fn already_contested(status: &str) -> AppError {
+    AppError::Validation(match status {
+        STATUS_OPEN | STATUS_UNDER_REVIEW => {
+            "An open contestation already exists for this decision".into()
+        }
+        _ => "This decision was already reviewed; contact an administrator".into(),
+    })
+}
+
 /// Open a contestation against a session's R0 `decision_id`.
 pub async fn open_contestation(
     state: &AppState,
@@ -57,18 +67,15 @@ pub async fn open_contestation(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {e}")))?;
 
-    let existing: Option<i64> = access_contestations::table
+    let existing: Option<String> = access_contestations::table
         .filter(access_contestations::decision_id.eq(decision_id))
-        .filter(access_contestations::status.eq_any([STATUS_OPEN, STATUS_UNDER_REVIEW]))
-        .select(access_contestations::id)
+        .select(access_contestations::status)
         .first(&mut conn)
         .await
         .optional()
         .map_err(AppError::Database)?;
-    if existing.is_some() {
-        return Err(AppError::Validation(
-            "An open contestation already exists for this decision".into(),
-        ));
+    if let Some(status) = existing {
+        return Err(already_contested(&status));
     }
 
     let row = NewAccessContestation {
@@ -85,7 +92,13 @@ pub async fn open_contestation(
         .values(&row)
         .get_result(&mut conn)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(|e| match e {
+            diesel::result::Error::DatabaseError(
+                diesel::result::DatabaseErrorKind::UniqueViolation,
+                _,
+            ) => already_contested(STATUS_OPEN),
+            e => AppError::Database(e),
+        })?;
 
     drop(conn);
 
@@ -171,9 +184,8 @@ pub async fn uphold_contestation(
     .await
 }
 
-/// Overturn: restore the **same** group that caused the IAM suspension
-/// (1:1). `restore_group_id` must match the session's stamped source
-/// (or the unique heuristic when stamp is missing).
+/// Overturn: restore the **same** group(s) the drift removed.
+/// `restore_group_id` on the contestation row is the first (UI principal).
 pub async fn overturn_contestation(
     state: &AppState,
     contestation_uuid: Uuid,
@@ -182,7 +194,12 @@ pub async fn overturn_contestation(
 ) -> AppResult<AccessContestation> {
     let row = get_by_uuid(state, contestation_uuid).await?;
     let session = load_session_by_uuid(state, row.session_uuid).await?;
-    let (restore_group_id, _) = resolve_restore_group_for_session(state, &session).await?;
+    let restore_groups = resolve_restore_groups_for_session(state, &session).await?;
+    let Some(&(restore_group_id, _)) = restore_groups.as_slice().first() else {
+        return Err(AppError::Validation(
+            "Overturn has no group to restore".into(),
+        ));
+    };
 
     let updated = resolve(
         state,
@@ -195,21 +212,23 @@ pub async fn overturn_contestation(
     .await?;
 
     // Re-eligibility only — never resurrect the old session ticket.
-    if let Err(e) = state
-        .access_client
-        .add_group_member(restore_group_id, updated.subject_user_id)
-        .await
-    {
-        tracing::error!(
-            contestation = %updated.uuid,
-            group_id = restore_group_id,
-            user_id = updated.subject_user_id,
-            error = %e,
-            "R1 overturn: AddGroupMember failed after status write"
-        );
-        return Err(AppError::Internal(anyhow::anyhow!(
-            "Contestation marked overturned but group restore failed: {e}"
-        )));
+    for (gid, _) in &restore_groups {
+        if let Err(e) = state
+            .access_client
+            .add_group_member(*gid, updated.subject_user_id)
+            .await
+        {
+            tracing::error!(
+                contestation = %updated.uuid,
+                group_id = gid,
+                user_id = updated.subject_user_id,
+                error = %e,
+                "R1 overturn: AddGroupMember failed after status write"
+            );
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "Contestation marked overturned but group restore failed: {e}"
+            )));
+        }
     }
     crate::services::mcp_recheck::notify_policy_changed(state).await;
 
@@ -427,6 +446,58 @@ pub async fn find_open_for_decision(
         .await
         .optional()
         .map_err(AppError::Database)
+}
+
+/// Resolve every group the drift removed (JSON array, else the single stamp).
+pub async fn resolve_restore_groups_for_session(
+    state: &AppState,
+    session: &ProxySession,
+) -> AppResult<Vec<(i32, String)>> {
+    let mut ids: Vec<i32> = session
+        .decision_source_group_ids
+        .as_ref()
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_i64().map(|n| n as i32))
+                .collect()
+        })
+        .unwrap_or_default();
+    if ids.is_empty()
+        && let Some(gid) = session.decision_source_group_id
+    {
+        ids.push(gid);
+    }
+    if ids.is_empty() {
+        let (gid, name) = resolve_restore_group_for_session(state, session).await?;
+        return Ok(vec![(gid, name)]);
+    }
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {e}")))?;
+    let mut out = Vec::with_capacity(ids.len());
+    for gid in ids {
+        let name: Option<String> = vauban_groups::table
+            .filter(vauban_groups::id.eq(gid))
+            .select(vauban_groups::name)
+            .first::<String>(&mut conn)
+            .await
+            .optional()
+            .map_err(AppError::Database)?;
+        if let Some(name) = name {
+            out.push((gid, name));
+        }
+    }
+    if out.is_empty() {
+        return Err(AppError::Validation(
+            "Overturn is only available when the cut is linked to a removed access group \
+             (IAM suspension). Uphold instead, or re-add the user to a group manually."
+                .into(),
+        ));
+    }
+    Ok(out)
 }
 
 /// Resolve the unique restore group for an IAM-suspension overturn (1:1).

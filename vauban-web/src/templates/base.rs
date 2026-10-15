@@ -158,6 +158,7 @@ impl BaseTemplate {
             is_assets: false,
             is_manage_assets: false,
             is_sessions: false,
+            is_mcp: false,
             is_recordings: false,
             is_users: false,
             is_groups: false,
@@ -168,6 +169,7 @@ impl BaseTemplate {
             is_iacs: false,
             pending_approval_count: 0,
             pending_iacs_count: 0,
+            pending_mcp_count: 0,
             perms: PermissionContext::default(),
         });
 
@@ -207,6 +209,7 @@ impl BaseTemplate {
             // new admin asset path under `/assets/manage` does not
             // bleed back into the user-zone highlight.
             let on_manage_assets = path.starts_with("/assets/manage");
+            let on_mcp = path.starts_with("/sessions/mcp");
             self.sidebar_content = Some(SidebarContentTemplate {
                 user: user.clone(),
                 is_dashboard: path == "/",
@@ -218,7 +221,9 @@ impl BaseTemplate {
                 is_sessions: path.contains("/sessions")
                     && !path.contains("/recordings")
                     && !path.contains("/approvals")
-                    && !path.contains("/my-requests"),
+                    && !path.contains("/my-requests")
+                    && !on_mcp,
+                is_mcp: on_mcp,
                 is_recordings: path.contains("/recordings"),
                 is_users: path.contains("/users") && !path.contains("/groups"),
                 // `/vault/secrets/groups` and `/vault/secrets/access`
@@ -231,7 +236,7 @@ impl BaseTemplate {
                     && !path.starts_with("/vault")
                     && !on_manage_assets,
                 is_approvals: path.contains("/approvals"),
-                is_access_rules: path.contains("/access") && !path.starts_with("/vault"),
+                is_access_rules: path.contains("/access") && !path.starts_with("/vault") && !on_mcp,
                 is_vault_secrets: path.starts_with("/vault/secrets"),
                 is_my_requests: path.contains("/my-requests"),
                 // The IACS sidebar entry covers BOTH the user-zone
@@ -244,6 +249,7 @@ impl BaseTemplate {
                 is_iacs: path.starts_with("/iacs"),
                 pending_approval_count: 0,
                 pending_iacs_count: 0,
+                pending_mcp_count: 0,
                 perms: preserved_perms,
             });
         }
@@ -274,6 +280,14 @@ impl BaseTemplate {
     pub fn with_pending_iacs_count(mut self, count: i64) -> Self {
         if let Some(ref mut sidebar) = self.sidebar_content {
             sidebar.pending_iacs_count = count;
+        }
+        self
+    }
+
+    /// Set the count of pending MCP HITL decisions (MCP sidebar badge).
+    pub fn with_pending_mcp_count(mut self, count: i64) -> Self {
+        if let Some(ref mut sidebar) = self.sidebar_content {
+            sidebar.pending_mcp_count = count;
         }
         self
     }
@@ -545,6 +559,29 @@ mod tests {
 
         let sidebar = unwrap_some!(base.sidebar_content);
         assert!(sidebar.is_recordings);
+    }
+
+    #[test]
+    fn test_base_template_with_current_path_mcp_hitl() {
+        let user = create_test_user();
+        let base = BaseTemplate::new("MCP".to_string(), Some(user), chrono_tz::Tz::UTC)
+            .with_current_path("/sessions/mcp");
+
+        let sidebar = unwrap_some!(base.sidebar_content);
+        assert!(sidebar.is_mcp);
+        assert!(!sidebar.is_sessions);
+    }
+
+    #[test]
+    fn test_base_template_with_current_path_mcp_access_rules() {
+        let user = create_test_user();
+        let base = BaseTemplate::new("MCP".to_string(), Some(user), chrono_tz::Tz::UTC)
+            .with_current_path("/sessions/mcp/access");
+
+        let sidebar = unwrap_some!(base.sidebar_content);
+        assert!(sidebar.is_mcp);
+        assert!(!sidebar.is_sessions);
+        assert!(!sidebar.is_access_rules);
     }
 
     #[test]

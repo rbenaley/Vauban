@@ -8,14 +8,12 @@ use super::*;
 use crate::handlers::web::access_rules::{
     format_rfc3339_to_display, format_rfc3339_to_local, parse_datetime, to_rfc3339_opt,
 };
-use crate::handlers::web::{
-    load_mcp_group_catalog, load_mcp_live_tool_names, load_mcp_tools_for_asset_group,
-};
+use crate::handlers::web::{load_mcp_group_catalog, load_mcp_tools_for_asset_group};
 use crate::services::mcp_discover::GroupCatalogTool;
 use crate::templates::assets::access_rule_create::GroupOption;
 use crate::templates::mcp::{
     McpAccessCreateTemplate, McpAccessDetailTemplate, McpAccessEditTemplate, McpAccessListTemplate,
-    McpAccessRuleForm, McpAccessRuleItem, McpMatrixSection, McpMatrixTool,
+    McpAccessMatrixTemplate, McpAccessRuleForm, McpAccessRuleItem, McpMatrixSection, McpMatrixTool,
 };
 use shared::messages::{
     ASSET_GROUP_KIND_ALL, AccessRuleData, AccessRuleInfo, GroupOption as IpcGroupOption,
@@ -125,43 +123,16 @@ fn unique_tools(tools: &[String]) -> Option<Vec<String>> {
 }
 
 /// Drop names that are not catalogue-approved for the asset group.
-/// Pending / seed leftovers must not appear as **new** policy.
+/// vauban-access refuses the whole write otherwise.
 fn keep_approved_names(
     names: Option<Vec<String>>,
     approved: &std::collections::HashSet<String>,
 ) -> Option<Vec<String>> {
-    keep_approved_or_existing(names, approved, None, None)
+    names.map(|v| v.into_iter().filter(|n| approved.contains(n)).collect())
 }
 
-/// Like [`keep_approved_names`], but names already stored on the rule
-/// stay (catalogue Approve must not strip a saved mode) **while a
-/// live MCP asset in the group still lists the name**. Tombstoned
-/// assets must not leave a grant that a new asset could inherit.
-fn keep_approved_or_existing(
-    names: Option<Vec<String>>,
-    approved: &std::collections::HashSet<String>,
-    existing: Option<&[String]>,
-    live: Option<&std::collections::HashSet<String>>,
-) -> Option<Vec<String>> {
-    let existing: std::collections::HashSet<&str> =
-        existing.unwrap_or(&[]).iter().map(String::as_str).collect();
-    let v = names?;
-    let kept: Vec<String> = v
-        .into_iter()
-        .filter(|n| {
-            if approved.contains(n) {
-                return true;
-            }
-            if !existing.contains(n.as_str()) {
-                return false;
-            }
-            match live {
-                None => true,
-                Some(live) => live.contains(n),
-            }
-        })
-        .collect();
-    if kept.is_empty() { None } else { Some(kept) }
+fn is_tools_refusal(msg: &str) -> bool {
+    msg.starts_with(shared::mcp_policy::RULE_TOOLS_NOT_APPROVED)
 }
 
 fn flatten_rule_names(lists: &[Option<&[String]>]) -> Vec<String> {
@@ -177,14 +148,14 @@ fn flatten_rule_names(lists: &[Option<&[String]>]) -> Vec<String> {
     names.into_iter().collect()
 }
 
-/// Names the form did not post keep their stored mode (no silent wipe),
-/// unless `live` says no non-deleted MCP asset still exposes the name.
+/// Approved names the form did not post keep their stored mode (no silent
+/// wipe). Names no longer approved are dropped.
 fn with_unposted_modes(
     form_modes: &[(String, String)],
     before_allow: Option<&[String]>,
     before_hitl: Option<&[String]>,
     before_plan: Option<&[String]>,
-    live: Option<&std::collections::HashSet<String>>,
+    approved: &std::collections::HashSet<String>,
 ) -> Vec<(String, String)> {
     let mut out = form_modes.to_vec();
     let posted: std::collections::HashSet<String> = form_modes
@@ -212,7 +183,7 @@ fn with_unposted_modes(
         if posted.contains(&name) {
             continue;
         }
-        if live.is_some_and(|l| !l.contains(&name)) {
+        if !approved.contains(&name) {
             continue;
         }
         out.push((
@@ -221,16 +192,6 @@ fn with_unposted_modes(
         ));
     }
     out
-}
-
-async fn live_names_for_group(
-    state: &AppState,
-    asset_group_id: i32,
-) -> Option<std::collections::HashSet<String>> {
-    let mut conn = state.db_pool.get().await.ok()?;
-    load_mcp_live_tool_names(&mut conn, asset_group_id)
-        .await
-        .ok()
 }
 
 async fn approved_names_for_group(
@@ -287,11 +248,8 @@ fn columns_from_modes(modes: &[(String, String)]) -> McpToolColumns {
             }
         }
     }
-    if allow.is_empty() {
-        (None, None, None)
-    } else {
-        (Some(allow), unique_tools(&hitl), unique_tools(&plan))
-    }
+    // All Off is stored as an empty allow-list, never NULL.
+    (Some(allow), unique_tools(&hitl), unique_tools(&plan))
 }
 
 /// Plan > HITL > Allow > Off. Unrestricted rules (`allowed` is None)
@@ -370,22 +328,13 @@ async fn load_groups(state: &AppState) -> Result<(Vec<GroupOption>, Vec<GroupOpt
 const SHARED_HEADING: &str = "Same name on several assets";
 const SHARED_HINT: &str = "One mode applies to every asset that exposes this name. A session only offers the tool if the opened asset has it.";
 
-#[cfg(test)]
+/// Matrix rows come from the approved group catalogue only: a name stored
+/// on the rule but not approved is never shown (vauban-access prunes it).
 fn sections_from_group_catalog(
     catalog: Vec<GroupCatalogTool>,
     allowed: Option<&[String]>,
     hitl: Option<&[String]>,
     plan: Option<&[String]>,
-) -> Vec<McpMatrixSection> {
-    sections_from_group_catalog_filtered(catalog, allowed, hitl, plan, None)
-}
-
-fn sections_from_group_catalog_filtered(
-    catalog: Vec<GroupCatalogTool>,
-    allowed: Option<&[String]>,
-    hitl: Option<&[String]>,
-    plan: Option<&[String]>,
-    live_names: Option<&std::collections::HashSet<String>>,
 ) -> Vec<McpMatrixSection> {
     let allowed_set: std::collections::HashSet<&str> =
         allowed.unwrap_or(&[]).iter().map(String::as_str).collect();
@@ -398,10 +347,7 @@ fn sections_from_group_catalog_filtered(
     let mut shared = Vec::new();
     let mut by_asset: std::collections::BTreeMap<String, Vec<McpMatrixTool>> =
         std::collections::BTreeMap::new();
-    let mut catalog_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-
     for t in catalog {
-        catalog_names.insert(t.name.clone());
         let mode = matrix_mode(
             t.name.as_str(),
             restrict,
@@ -450,34 +396,6 @@ fn sections_from_group_catalog_filtered(
             tools,
         });
     }
-
-    let mut seen: std::collections::HashSet<String> = catalog_names;
-    let mut orphans = Vec::new();
-    for name in flatten_rule_names(&[allowed, hitl, plan]) {
-        if live_names.is_some_and(|live| !live.contains(&name)) {
-            continue;
-        }
-        if seen.insert(name.clone()) {
-            orphans.push(McpMatrixTool {
-                name: name.clone(),
-                description: String::new(),
-                mode: matrix_mode(name.as_str(), restrict, &allowed_set, &hitl_set, &plan_set)
-                    .to_string(),
-                asset_label: String::new(),
-                shared: false,
-                descriptions_diverge: false,
-            });
-        }
-    }
-    if !orphans.is_empty() {
-        sections.push(McpMatrixSection {
-            heading: "On this rule (not in the approved catalogue)".into(),
-            hint: "Saved on this access rule. Catalogue Approve does not change these modes."
-                .into(),
-            badge_label: String::new(),
-            tools: orphans,
-        });
-    }
     sections
 }
 
@@ -494,10 +412,7 @@ async fn matrix_sections(
     let catalog = load_mcp_group_catalog(&mut conn, asset_group_id)
         .await
         .unwrap_or_default();
-    let live = load_mcp_live_tool_names(&mut conn, asset_group_id)
-        .await
-        .ok();
-    sections_from_group_catalog_filtered(catalog, allowed, hitl, plan, live.as_ref())
+    sections_from_group_catalog(catalog, allowed, hitl, plan)
 }
 
 /// Counts **modes**, not SQL array lengths. HITL / Require plan names
@@ -512,7 +427,7 @@ fn tools_summary_from_columns(
     let plan_set: std::collections::HashSet<&str> =
         plan.unwrap_or(&[]).iter().map(String::as_str).collect();
     let allow_part = match allowed {
-        None => "does not restrict".to_string(),
+        None => "grants nothing".to_string(),
         Some(v) => {
             let n = v
                 .iter()
@@ -589,7 +504,8 @@ pub async fn mcp_access_list(
 
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("MCP access rules".into(), user.clone(), browser_tz.0)
-        .with_current_path("/sessions/mcp/access");
+        .with_current_path("/sessions/mcp/access")
+        .with_messages(flash_messages_for_template(&incoming_flash));
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -644,7 +560,8 @@ pub async fn mcp_access_create_form(
 
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("New MCP access rule".into(), user.clone(), browser_tz.0)
-        .with_current_path("/sessions/mcp/access");
+        .with_current_path("/sessions/mcp/access")
+        .with_messages(flash_messages_for_template(&incoming_flash));
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -673,6 +590,58 @@ pub async fn mcp_access_create_form(
         Err(e) => {
             tracing::error!(error = %e, "MCP access create render failed");
             flash_redirect(flash.error("Failed to render form"), "/sessions/mcp/access")
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct McpAccessMatrixQuery {
+    pub asset_group_id: Option<String>,
+    /// Edited rule: its stored modes prefill the matrix.
+    pub rule: Option<String>,
+}
+
+/// GET `/sessions/mcp/access/matrix`: the tool matrix of one asset group,
+/// swapped into the create / edit form when the asset group changes.
+pub async fn mcp_access_matrix(
+    State(state): State<AppState>,
+    perms: crate::auth::PermissionContext,
+    axum::extract::Query(q): axum::extract::Query<McpAccessMatrixQuery>,
+) -> Response {
+    if !perms.access_rules_write {
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            "You need access_rules:write to edit MCP access rules",
+        )
+            .into_response();
+    }
+    let asset_group_id = q
+        .asset_group_id
+        .as_deref()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    let rule = match q.rule.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(uuid) => load_mcp_rule(&state, uuid).await.ok(),
+        None => None,
+    };
+    let sections = matrix_sections(
+        &state,
+        asset_group_id,
+        rule.as_ref().and_then(|r| r.mcp_allowed_tools.as_deref()),
+        rule.as_ref().and_then(|r| r.mcp_hitl_tools.as_deref()),
+        rule.as_ref()
+            .and_then(|r| r.mcp_require_plan_tools.as_deref()),
+    )
+    .await;
+    match (McpAccessMatrixTemplate { sections }).render() {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "MCP access matrix render failed");
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to render the tool matrix",
+            )
+                .into_response()
         }
     }
 }
@@ -715,8 +684,8 @@ pub async fn create_mcp_access_rule_web(
         let (a, h, p) = columns_from_modes(&form.mcp_tool_modes);
         (
             keep_approved_names(a, &approved),
-            keep_approved_names(h, &approved),
-            keep_approved_names(p, &approved),
+            keep_approved_names(h, &approved).filter(|v| !v.is_empty()),
+            keep_approved_names(p, &approved).filter(|v| !v.is_empty()),
         )
     };
     let data = AccessRuleData {
@@ -752,6 +721,9 @@ pub async fn create_mcp_access_rule_web(
                 flash.success(format!("MCP access rule '{}' created", info.name)),
                 &format!("/sessions/mcp/access/{}", info.uuid),
             )
+        }
+        Err(AppError::Ipc(ref msg)) if is_tools_refusal(msg) => {
+            flash_redirect(flash.error(msg.clone()), "/sessions/mcp/access/new")
         }
         Err(AppError::Ipc(ref msg))
             if msg.to_lowercase().contains("unique")
@@ -805,7 +777,8 @@ pub async fn mcp_access_detail(
     };
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new(info.name.clone(), user.clone(), browser_tz.0)
-        .with_current_path("/sessions/mcp/access");
+        .with_current_path("/sessions/mcp/access")
+        .with_messages(flash_messages_for_template(&incoming_flash));
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -891,7 +864,8 @@ pub async fn mcp_access_edit_form(
     .await;
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new(format!("Edit {}", info.name), user.clone(), browser_tz.0)
-        .with_current_path("/sessions/mcp/access");
+        .with_current_path("/sessions/mcp/access")
+        .with_messages(flash_messages_for_template(&incoming_flash));
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -917,6 +891,7 @@ pub async fn mcp_access_edit_form(
             is_active: info.is_active,
             priority: info.priority.to_string(),
             mcp_drift_iam: shared::mcp_drift_iam::normalize_mcp_drift_iam(&info.mcp_drift_iam),
+            rule_uuid: uuid_str.clone(),
         },
         user_groups,
         asset_groups,
@@ -967,34 +942,18 @@ pub async fn update_mcp_access_rule_web(
     };
     let approved = approved_names_for_group(&state, form.asset_group_id).await;
     let (mcp_allowed_tools, mcp_hitl_tools, mcp_require_plan_tools) = {
-        let live = live_names_for_group(&state, form.asset_group_id).await;
         let modes = with_unposted_modes(
             &form.mcp_tool_modes,
             before.mcp_allowed_tools.as_deref(),
             before.mcp_hitl_tools.as_deref(),
             before.mcp_require_plan_tools.as_deref(),
-            live.as_ref(),
+            &approved,
         );
         let (a, h, p) = columns_from_modes(&modes);
         (
-            keep_approved_or_existing(
-                a,
-                &approved,
-                before.mcp_allowed_tools.as_deref(),
-                live.as_ref(),
-            ),
-            keep_approved_or_existing(
-                h,
-                &approved,
-                before.mcp_hitl_tools.as_deref(),
-                live.as_ref(),
-            ),
-            keep_approved_or_existing(
-                p,
-                &approved,
-                before.mcp_require_plan_tools.as_deref(),
-                live.as_ref(),
-            ),
+            keep_approved_names(a, &approved),
+            keep_approved_names(h, &approved).filter(|v| !v.is_empty()),
+            keep_approved_names(p, &approved).filter(|v| !v.is_empty()),
         )
     };
     let data = AccessRuleData {
@@ -1050,6 +1009,9 @@ pub async fn update_mcp_access_rule_web(
                 &format!("/sessions/mcp/access/{uuid_str}"),
             )
         }
+        Err(AppError::Ipc(ref msg)) if is_tools_refusal(msg) => {
+            flash_redirect(flash.error(msg.clone()), &edit_url)
+        }
         Err(e) => {
             tracing::error!(error = %e, "MCP access update failed");
             flash_redirect(flash.error("Failed to update MCP access rule"), &edit_url)
@@ -1057,42 +1019,48 @@ pub async fn update_mcp_access_rule_web(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn delete_mcp_access_rule_web(
     State(state): State<AppState>,
     _auth_user: WebAuthUser,
     perms: crate::auth::PermissionContext,
     incoming_flash: IncomingFlash,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     axum::extract::Path(uuid_str): axum::extract::Path<String>,
     Form(form): Form<McpAccessDeleteForm>,
 ) -> Response {
     let flash = incoming_flash.flash();
     if !csrf_ok(&state, &jar, &form.csrf_token) {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("Invalid CSRF token"),
             &format!("/sessions/mcp/access/{uuid_str}"),
         );
     }
     if !perms.access_rules_write {
-        return flash_redirect(
+        return htmx_or_flash_redirect(
+            &headers,
             flash.error("You need access_rules:write to delete MCP access rules"),
             "/sessions/mcp/access",
         );
     }
     if let Err(msg) = load_mcp_rule(&state, &uuid_str).await {
-        return flash_redirect(flash.error(msg), "/sessions/mcp/access");
+        return htmx_or_flash_redirect(&headers, flash.error(msg), "/sessions/mcp/access");
     }
     match state.access_client.delete_access_rule(&uuid_str).await {
         Ok(()) => {
             crate::services::mcp_recheck::notify_policy_changed(&state).await;
-            flash_redirect(
+            htmx_or_flash_redirect(
+                &headers,
                 flash.success("MCP access rule deleted"),
                 "/sessions/mcp/access",
             )
         }
         Err(e) => {
             tracing::error!(error = %e, "MCP access delete failed");
-            flash_redirect(
+            htmx_or_flash_redirect(
+                &headers,
                 flash.error("Failed to delete MCP access rule"),
                 &format!("/sessions/mcp/access/{uuid_str}"),
             )
@@ -1140,7 +1108,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_form_all_off_writes_no_allow_list() {
+    fn parse_form_all_off_writes_an_empty_allow_list() {
         let body = b"csrf_token=x&name=r&user_group_id=1&asset_group_id=2&mcp_tool_mode%5Becho%5D=off&mcp_tool_mode%5Bwrite%5D=off";
         let f = parse_mcp_access_form(body);
         assert_eq!(
@@ -1150,7 +1118,11 @@ mod tests {
                 ("write".into(), "off".into())
             ]
         );
-        assert_eq!(columns_from_modes(&f.mcp_tool_modes), (None, None, None));
+        assert_eq!(
+            columns_from_modes(&f.mcp_tool_modes),
+            (Some(vec![]), None, None),
+            "all Off must deny, not fall back to the catalogue"
+        );
     }
 
     #[test]
@@ -1158,7 +1130,10 @@ mod tests {
         let body = b"mcp_tools=echo&mcp_hitl_tools=echo&mcp_require_plan_tools=write";
         let f = parse_mcp_access_form(body);
         assert!(f.mcp_tool_modes.is_empty());
-        assert_eq!(columns_from_modes(&f.mcp_tool_modes), (None, None, None));
+        assert_eq!(
+            columns_from_modes(&f.mcp_tool_modes),
+            (Some(vec![]), None, None)
+        );
     }
 
     #[test]
@@ -1199,17 +1174,18 @@ mod tests {
         );
         assert_eq!(
             keep_approved_names(Some(vec!["restart_service".into()]), &approved),
-            None
+            Some(vec![]),
+            "an allow-list emptied by the filter stays deny-all"
         );
         assert_eq!(keep_approved_names(None, &approved), None);
     }
 
     #[test]
     fn columns_from_modes_derives_sql_without_impossible_combos() {
-        assert_eq!(columns_from_modes(&[]), (None, None, None));
+        assert_eq!(columns_from_modes(&[]), (Some(vec![]), None, None));
         assert_eq!(
             columns_from_modes(&[("echo".into(), "off".into())]),
-            (None, None, None)
+            (Some(vec![]), None, None)
         );
         assert_eq!(
             columns_from_modes(&[("echo".into(), "allow".into())]),
@@ -1329,56 +1305,45 @@ mod tests {
     }
 
     #[test]
-    fn matrix_keeps_saved_rule_names_missing_from_catalogue() {
-        let live = ["read_demo_file".to_string()]
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>();
-        let sections = sections_from_group_catalog_filtered(
+    fn matrix_never_shows_saved_names_outside_the_approved_catalogue() {
+        let sections = sections_from_group_catalog(
             Vec::new(),
+            Some(&["read_demo_file".into(), "add_ticket_comment".into()]),
+            Some(&["add_ticket_comment".into()]),
             Some(&["read_demo_file".into()]),
-            None,
-            Some(&["read_demo_file".into()]),
-            Some(&live),
-        );
-        assert_eq!(sections.len(), 1);
-        assert!(
-            sections[0]
-                .heading
-                .contains("not in the approved catalogue")
-        );
-        assert_eq!(sections[0].tools[0].name, "read_demo_file");
-        assert_eq!(sections[0].tools[0].mode, "require_plan");
-    }
-
-    #[test]
-    fn matrix_hides_rule_names_after_asset_delete() {
-        let live = std::collections::HashSet::new();
-        let sections = sections_from_group_catalog_filtered(
-            Vec::new(),
-            Some(&["add_ticket_comment".into(), "deploy_release".into()]),
-            None,
-            None,
-            Some(&live),
         );
         assert!(
             sections.is_empty(),
-            "names with no live MCP asset must leave the matrix"
+            "a deleted asset or a pending tool must leave no row on the rule"
         );
-        let kept = keep_approved_or_existing(
-            Some(vec!["add_ticket_comment".into(), "echo".into()]),
-            &["echo".into()].into_iter().collect(),
-            Some(&["add_ticket_comment".into(), "echo".into()]),
-            Some(&["echo".to_string()].into_iter().collect()),
+        let catalog = vec![GroupCatalogTool {
+            name: "echo".into(),
+            description: String::new(),
+            descriptions_diverge: false,
+            asset_names: vec!["MCP OPS".into()],
+        }];
+        let sections = sections_from_group_catalog(
+            catalog,
+            Some(&["echo".into(), "ghost".into()]),
+            None,
+            None,
         );
-        assert_eq!(kept, Some(vec!["echo".into()]));
+        let names: Vec<&str> = sections
+            .iter()
+            .flat_map(|s| s.tools.iter().map(|t| t.name.as_str()))
+            .collect();
+        assert_eq!(names, vec!["echo"]);
     }
 
     #[test]
     fn unposted_modes_keep_saved_require_plan() {
+        let approved = ["echo".to_string(), "read_demo_file".to_string()]
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
         let form = vec![("add_ticket_comment".into(), "off".into())];
         let allow = vec!["echo".into(), "read_demo_file".into()];
         let plan = vec!["read_demo_file".into()];
-        let merged = with_unposted_modes(&form, Some(&allow), None, Some(&plan), None);
+        let merged = with_unposted_modes(&form, Some(&allow), None, Some(&plan), &approved);
         let (a, h, p) = columns_from_modes(&merged);
         assert_eq!(h, None);
         assert_eq!(p, Some(vec!["read_demo_file".into()]));
@@ -1386,20 +1351,38 @@ mod tests {
     }
 
     #[test]
-    fn keep_approved_or_existing_does_not_strip_saved_names() {
+    fn unposted_modes_drop_names_no_longer_approved() {
+        let approved = ["echo".to_string()]
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        let allow = vec!["echo".into(), "read_demo_file".into()];
+        let plan = vec!["read_demo_file".into()];
+        let merged = with_unposted_modes(&[], Some(&allow), None, Some(&plan), &approved);
+        let (a, h, p) = columns_from_modes(&merged);
+        assert_eq!((a, h, p), (Some(vec!["echo".into()]), None, None));
+    }
+
+    #[test]
+    fn saved_names_not_approved_are_not_kept_on_save() {
         let approved = ["add_ticket_comment".to_string()]
             .into_iter()
             .collect::<std::collections::HashSet<_>>();
-        let existing = vec!["read_demo_file".to_string()];
         assert_eq!(
-            keep_approved_or_existing(
-                Some(vec!["read_demo_file".into(), "ghost".into()]),
+            keep_approved_names(
+                Some(vec!["read_demo_file".into(), "add_ticket_comment".into()]),
                 &approved,
-                Some(&existing),
-                None
             ),
-            Some(vec!["read_demo_file".into()])
+            Some(vec!["add_ticket_comment".into()])
         );
+    }
+
+    #[test]
+    fn access_refusal_is_recognised_for_the_flash() {
+        assert!(is_tools_refusal(&format!(
+            "{}: create_task",
+            shared::mcp_policy::RULE_TOOLS_NOT_APPROVED
+        )));
+        assert!(!is_tools_refusal("Failed to update access rule: db"));
     }
 
     #[test]
@@ -1417,7 +1400,7 @@ mod tests {
         );
         assert_eq!(
             tools_summary_from_columns(None, None, None),
-            "does not restrict · HITL 0 · plan 0"
+            "grants nothing · HITL 0 · plan 0"
         );
     }
 

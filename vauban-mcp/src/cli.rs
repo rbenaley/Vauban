@@ -23,6 +23,10 @@ pub struct Cli {
     /// File containing the `vbn_` key. Otherwise `VAUBAN_API_KEY`.
     #[arg(long)]
     pub api_key_file: Option<PathBuf>,
+    /// PEM CA certificate(s) trusted for the bastion, on top of the
+    /// public web roots (private PKI). Never used for the asset pin.
+    #[arg(long)]
+    pub ca_file: Option<PathBuf>,
 }
 
 pub fn load_api_key(file: Option<&PathBuf>) -> Result<SecretString, String> {

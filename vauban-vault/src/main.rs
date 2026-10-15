@@ -628,6 +628,7 @@ fn handle_control(
                 recording_ack_dropped: 0,
                 recording_try_send_full: 0,
                 recording_ack_wait_ms_max: 0,
+                audit_events_dropped: 0,
             };
             let pong = Message::Control(ControlMessage::Pong { seq, stats });
             channel.send(&pong)?;
@@ -1101,6 +1102,60 @@ mod tests {
             other => panic!("got {other:?}"),
         }
         assert_eq!(state.requests_denied, 0);
+    }
+
+    /// `proxy_mcp` decrypts the upstream bearer (credentials)
+    /// on its own pipe, and nothing else.
+    #[test]
+    fn test_vau002_proxy_mcp_allowed_credentials_decrypt_only() {
+        let (client, service) = IpcChannel::pair().unwrap();
+        let mut state = test_state();
+
+        let enc = Message::VaultEncrypt {
+            request_id: 1,
+            domain: "credentials".to_string(),
+            plaintext: SensitiveString::new("upstream-bearer".to_string()),
+        };
+        handle_peer_message(&service, &mut state, enc, "web").unwrap();
+        let ct = match client.recv().unwrap() {
+            Message::VaultEncryptResponse {
+                ciphertext: Some(c),
+                ..
+            } => c,
+            other => panic!("got {other:?}"),
+        };
+
+        let dec = Message::VaultDecrypt {
+            request_id: 2,
+            domain: "credentials".to_string(),
+            ciphertext: ct.clone(),
+        };
+        handle_peer_message(&service, &mut state, dec, "proxy_mcp").unwrap();
+        match client.recv().unwrap() {
+            Message::VaultDecryptResponse {
+                plaintext: Some(pt),
+                error: None,
+                ..
+            } => assert_eq!(pt.as_str(), "upstream-bearer"),
+            other => panic!("got {other:?}"),
+        }
+        assert_eq!(state.requests_denied, 0);
+
+        let enc_mcp = Message::VaultEncrypt {
+            request_id: 3,
+            domain: "credentials".to_string(),
+            plaintext: SensitiveString::new("x".to_string()),
+        };
+        handle_peer_message(&service, &mut state, enc_mcp, "proxy_mcp").unwrap();
+        match client.recv().unwrap() {
+            Message::VaultEncryptResponse {
+                ciphertext: None,
+                error: Some(_),
+                ..
+            } => {}
+            other => panic!("got {other:?}"),
+        }
+        assert_eq!(state.requests_denied, 1);
     }
 
     /// auth may verify an MFA code but is REFUSED MfaGetSecret (no exfiltration

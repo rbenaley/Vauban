@@ -34,6 +34,13 @@ use crate::{
 use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 
+/// `termination_reason` when an administrator deletes the asset.
+pub const REASON_ASSET_DELETED: &str = "asset_deleted";
+
+/// `termination_reason` when an MCP asset's upstream address, transport or
+/// TLS pin changes: open visits still hold the old pin and must reopen.
+pub const REASON_ASSET_RECONFIGURED: &str = "asset_reconfigured";
+
 /// Terminate one live proxy session. Returns the updated row.
 ///
 /// `reason` flows into the IACS terminate IPC and the per-session WS
@@ -178,7 +185,13 @@ pub async fn terminate_live_session(
             let decision_id = crate::services::access_decision::mint_decision_id();
             let _ =
                 diesel::update(proxy_sessions::table.filter(proxy_sessions::uuid.eq(session.uuid)))
-                    .set(proxy_sessions::decision_id.eq(&decision_id))
+                    .set((
+                        proxy_sessions::decision_id.eq(&decision_id),
+                        proxy_sessions::termination_reason.eq(reason),
+                        proxy_sessions::decision_actor
+                            .eq(crate::services::access_decision::ACTOR_TERMINATE_LIVE),
+                        proxy_sessions::decision_at.eq(now),
+                    ))
                     .execute(&mut conn)
                     .await;
             crate::services::access_decision::emit_mcp_access_decision(
@@ -194,6 +207,134 @@ pub async fn terminate_live_session(
     }
 
     Ok(updated_session)
+}
+
+/// Terminate every open session (live or suspended, any protocol) on one
+/// asset through [`terminate_live_session`], then refresh the session
+/// lists once. Used when the asset itself is deleted or reconfigured:
+/// the proxies only stop relaying when they are told, so a DB flip alone
+/// leaves the visit running. Returns how many sessions were ended.
+pub async fn terminate_open_sessions_on_asset(
+    state: &AppState,
+    asset_id: i32,
+    reason: &str,
+) -> AppResult<usize> {
+    use crate::models::session::SessionStatus;
+    use crate::schema::proxy_sessions;
+
+    let mut conn = state
+        .db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
+    let open: Vec<ProxySession> = proxy_sessions::table
+        .filter(proxy_sessions::asset_id.eq(asset_id))
+        .filter(proxy_sessions::status.eq_any(SessionStatus::OPEN_AS_STR))
+        .load(&mut conn)
+        .await
+        .map_err(AppError::Database)?;
+    drop(conn);
+
+    let mut ended = 0usize;
+    for session in &open {
+        match terminate_live_session(state, session, reason).await {
+            Ok(_) => ended += 1,
+            Err(e) => tracing::warn!(
+                session_uuid = %session.uuid,
+                asset_id,
+                reason,
+                error = %e,
+                "failed to terminate an open session on the asset"
+            ),
+        }
+    }
+    if ended > 0 {
+        broadcast_session_list_updates(state).await;
+    }
+    Ok(ended)
+}
+
+/// An MCP asset's upstream moved (address, transport or TLS pin): open
+/// visits still hold the old pin, so end them; agents reopen normally.
+pub async fn end_visits_on_reconfigured_asset(state: &AppState, asset_id: i32) {
+    if let Err(e) =
+        terminate_open_sessions_on_asset(state, asset_id, REASON_ASSET_RECONFIGURED).await
+    {
+        tracing::error!(
+            asset_id,
+            error = %e,
+            "asset reconfigured: could not end open visits; the recheck will retry"
+        );
+    }
+}
+
+/// Safety net for cuts that mark the DB row `terminated` before telling
+/// the proxy: if that IPC was lost, no recheck would look at the row
+/// again. Resend the proxy-side close for sessions ended because their
+/// asset was deleted or reconfigured, or cut by the MCP access recheck,
+/// within the longest window a ticket could still be alive. The proxies
+/// treat a repeat as a no-op. Returns how many resends were dispatched.
+pub async fn resend_lost_terminates(state: &AppState) -> usize {
+    use crate::schema::{assets, proxy_sessions};
+    use crate::services::access_decision::ACTOR_MCP_RECHECK;
+
+    let Ok(mut conn) = state.db_pool.get().await else {
+        return 0;
+    };
+    let since =
+        chrono::Utc::now() - chrono::Duration::seconds(state.config.mcp.session_ttl_clamped());
+    let rows: Vec<(uuid::Uuid, SessionType, Option<String>)> = match proxy_sessions::table
+        .inner_join(assets::table.on(assets::id.eq(proxy_sessions::asset_id)))
+        .filter(proxy_sessions::status.eq("terminated"))
+        .filter(proxy_sessions::disconnected_at.ge(since))
+        .filter(
+            assets::is_deleted
+                .eq(true)
+                .or(proxy_sessions::termination_reason.eq(REASON_ASSET_RECONFIGURED))
+                .or(proxy_sessions::decision_actor.eq(ACTOR_MCP_RECHECK)),
+        )
+        .select((
+            proxy_sessions::uuid,
+            proxy_sessions::session_type,
+            proxy_sessions::termination_reason,
+        ))
+        .load(&mut conn)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "resend terminate: list failed");
+            return 0;
+        }
+    };
+
+    let mut resent = 0usize;
+    for (uuid, session_type, stored_reason) in rows {
+        let sid = uuid.to_string();
+        let reason = stored_reason.as_deref().unwrap_or(REASON_ASSET_DELETED);
+        let sent = match session_type {
+            SessionType::Mcp => state
+                .proxy_mcp
+                .as_ref()
+                .is_some_and(|p| p.terminate_session(&sid, reason).is_ok()),
+            SessionType::Ssh => state
+                .ssh_proxy
+                .as_ref()
+                .is_some_and(|p| p.close_session(&sid).is_ok()),
+            SessionType::Rdp => state
+                .rdp_proxy
+                .as_ref()
+                .is_some_and(|p| p.close_session(&sid).is_ok()),
+            SessionType::IacsTunnel => state
+                .proxy_iacs
+                .as_ref()
+                .is_some_and(|p| p.terminate_tunnel(&sid, reason).is_ok()),
+        };
+        if sent {
+            resent += 1;
+        }
+    }
+    resent
 }
 
 /// Push the /sessions and /sessions/active page refreshes once after a

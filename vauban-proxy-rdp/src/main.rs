@@ -170,6 +170,7 @@ impl ServiceState {
             recording_ack_dropped: 0,
             recording_try_send_full: self.recording_write_errors.load(Ordering::SeqCst),
             recording_ack_wait_ms_max: 0,
+            audit_events_dropped: 0,
         }
     }
 

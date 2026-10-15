@@ -66,27 +66,43 @@ pub struct RecordingLeaseReq {
 pub type RecordingLeaseTx = mpsc::Sender<RecordingLeaseReq>;
 
 /// Date-partitioned session directory relative to storage root.
-pub fn compute_base_dir(session_id: &str) -> String {
-    let days = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        / 86_400;
+/// `open_unix` is the visit start (seconds since epoch), frozen at hop 1.
+pub fn compute_base_dir(session_id: &str, open_unix: u64) -> String {
+    let days = open_unix / 86_400;
     let (year, month) = unix_days_to_year_month(days);
     let safe = sanitize_session_id(session_id);
     format!("{year}/{month:02}/{safe}")
 }
 
-pub fn compute_jsonl_relative_path(session_id: &str) -> String {
-    format!("{}/{}", compute_base_dir(session_id), JSONL_FILE_NAME)
+pub fn compute_jsonl_relative_path(session_id: &str, open_unix: u64) -> String {
+    format!(
+        "{}/{}",
+        compute_base_dir(session_id, open_unix),
+        JSONL_FILE_NAME
+    )
 }
 
-pub fn compute_cast_relative_path(session_id: &str) -> String {
-    format!("{}/{}", compute_base_dir(session_id), CAST_FILE_NAME)
+pub fn compute_cast_relative_path(session_id: &str, open_unix: u64) -> String {
+    format!(
+        "{}/{}",
+        compute_base_dir(session_id, open_unix),
+        CAST_FILE_NAME
+    )
 }
 
-pub fn compute_meta_relative_path(session_id: &str) -> String {
-    format!("{}/{}", compute_base_dir(session_id), META_FILE_NAME)
+pub fn compute_meta_relative_path(session_id: &str, open_unix: u64) -> String {
+    format!(
+        "{}/{}",
+        compute_base_dir(session_id, open_unix),
+        META_FILE_NAME
+    )
+}
+
+fn unix_now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn sanitize_session_id(session_id: &str) -> String {
@@ -267,8 +283,15 @@ impl McpRecording {
         &self.inner.storage_base
     }
 
-    /// Open JSONL + cast for a session. Idempotent.
+    /// Open JSONL + cast for a session. Idempotent. Uses wall clock as the
+    /// YYYY/MM anchor (lab HTTP register / tests).
+    #[cfg(test)]
     pub async fn open_session(&self, session_id: &str) -> io::Result<()> {
+        self.open_session_at(session_id, unix_now_secs()).await
+    }
+
+    /// Open JSONL + cast using a frozen hop-1 unix timestamp (seconds).
+    pub async fn open_session_at(&self, session_id: &str, open_unix: u64) -> io::Result<()> {
         {
             let guard = self
                 .inner
@@ -279,9 +302,9 @@ impl McpRecording {
                 return Ok(());
             }
         }
-        let relative_jsonl = compute_jsonl_relative_path(session_id);
-        let relative_cast = compute_cast_relative_path(session_id);
-        let relative_meta = compute_meta_relative_path(session_id);
+        let relative_jsonl = compute_jsonl_relative_path(session_id, open_unix);
+        let relative_cast = compute_cast_relative_path(session_id, open_unix);
+        let relative_meta = compute_meta_relative_path(session_id, open_unix);
         let (jsonl, abs_dir) = self.open_write_file(session_id, &relative_jsonl).await?;
         let (mut cast, _) = self.open_write_file(session_id, &relative_cast).await?;
 
@@ -315,6 +338,16 @@ impl McpRecording {
         guard.insert(session_id.to_string(), rec);
         info!(session_id = %session_id, "MCP JSONL+cast recording opened");
         Ok(())
+    }
+
+    /// Drop an opened recording without finalize (hop-1 rollback).
+    pub fn abort_session(&self, session_id: &str) {
+        let mut guard = self
+            .inner
+            .sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        guard.remove(session_id);
     }
 
     async fn open_write_file(
@@ -391,16 +424,23 @@ impl McpRecording {
             }
             return self.append_fallback(session_id, &payload, &jsonl_bytes);
         };
+        Self::append_to_active(rec, &payload, &jsonl_bytes)
+    }
 
+    fn append_to_active(
+        rec: &mut ActiveRecording,
+        payload: &str,
+        jsonl_bytes: &[u8],
+    ) -> io::Result<()> {
         let t_rel = rec.cast_t_rel;
-        let cast_line = cast_frame_line(t_rel, &payload)?;
+        let cast_line = cast_frame_line(t_rel, payload)?;
         let cast_bytes = cast_line.as_bytes();
 
-        rec.jsonl.write_all(&jsonl_bytes)?;
+        rec.jsonl.write_all(jsonl_bytes)?;
         rec.cast.write_all(cast_bytes)?;
         rec.jsonl.sync_all()?;
         rec.cast.sync_all()?;
-        rec.hasher.update(&jsonl_bytes);
+        rec.hasher.update(jsonl_bytes);
         rec.cast_hasher.update(cast_bytes);
         rec.total_bytes += jsonl_bytes.len() as u64;
         rec.total_events += 1;
@@ -419,8 +459,8 @@ impl McpRecording {
             !self.fd_lease_required(),
             "append_fallback must not run when FD lease is wired"
         );
-        let rel_j = compute_jsonl_relative_path(session_id);
-        let rel_c = compute_cast_relative_path(session_id);
+        let rel_j = compute_jsonl_relative_path(session_id, unix_now_secs());
+        let rel_c = compute_cast_relative_path(session_id, unix_now_secs());
         let abs_j = self.inner.storage_base.join(&rel_j);
         let abs_c = self.inner.storage_base.join(&rel_c);
         if let Some(parent) = abs_j.parent() {
@@ -450,6 +490,9 @@ impl McpRecording {
     }
 
     /// Write session_end, verify cast≡jsonl, seal meta.json.
+    ///
+    /// Exactly once per session under FD lease: the first caller claims the
+    /// active recording; later callers (duplicate terminate) get `None`.
     pub async fn finalize(
         &self,
         session_id: &str,
@@ -463,9 +506,6 @@ impl McpRecording {
             "reason": reason,
             "partial": partial,
         });
-        if let Err(e) = self.append_jsonl(session_id, end) {
-            error!(session_id = %session_id, error = %e, "JSONL session_end write failed");
-        }
 
         let extracted = {
             let mut guard = self
@@ -477,8 +517,22 @@ impl McpRecording {
         };
 
         let Some(mut rec) = extracted else {
+            if self.fd_lease_required() {
+                debug!(session_id = %session_id, "MCP recording already finalized (or never opened)");
+                return None;
+            }
+            if let Err(e) = self.append_jsonl(session_id, end) {
+                error!(session_id = %session_id, error = %e, "JSONL session_end write failed");
+            }
             return self.finalize_from_disk(session_id, partial).await;
         };
+
+        let end_payload = redact_sensitive_json(&end).to_string();
+        let mut end_line = end_payload.clone();
+        end_line.push('\n');
+        if let Err(e) = Self::append_to_active(&mut rec, &end_payload, end_line.as_bytes()) {
+            error!(session_id = %session_id, error = %e, "JSONL session_end write failed");
+        }
 
         let _ = rec.jsonl.sync_all();
         let _ = rec.cast.sync_all();
@@ -639,9 +693,9 @@ impl McpRecording {
     }
 
     async fn finalize_from_disk(&self, session_id: &str, partial: bool) -> Option<FinalizeStats> {
-        let relative_jsonl = compute_jsonl_relative_path(session_id);
-        let relative_cast = compute_cast_relative_path(session_id);
-        let relative_meta = compute_meta_relative_path(session_id);
+        let relative_jsonl = compute_jsonl_relative_path(session_id, unix_now_secs());
+        let relative_cast = compute_cast_relative_path(session_id, unix_now_secs());
+        let relative_meta = compute_meta_relative_path(session_id, unix_now_secs());
         let abs_j = self.inner.storage_base.join(&relative_jsonl);
         let abs_c = self.inner.storage_base.join(&relative_cast);
         let jsonl_bytes = fs::read(&abs_j).ok()?;
@@ -862,13 +916,18 @@ mod tests {
     #[test]
     fn layout_contains_session_and_filenames() {
         let sid = "550e8400-e29b-41d4-a716-446655440000";
-        let j = compute_jsonl_relative_path(sid);
-        let c = compute_cast_relative_path(sid);
-        let m = compute_meta_relative_path(sid);
+        let open_unix = 1_767_139_200; // 2025-12-31 00:00:00 UTC
+        let j = compute_jsonl_relative_path(sid, open_unix);
+        let c = compute_cast_relative_path(sid, open_unix);
+        let m = compute_meta_relative_path(sid, open_unix);
         assert!(j.contains(sid));
         assert!(j.ends_with(JSONL_FILE_NAME));
         assert!(c.ends_with(CAST_FILE_NAME));
         assert!(m.ends_with(META_FILE_NAME));
+        assert_eq!(compute_base_dir(sid, open_unix), format!("2025/12/{sid}"));
+        // Frozen unix must not follow wall clock (month-boundary pin).
+        let jan = 1_767_225_600; // 2026-01-01 00:00:00 UTC
+        assert_eq!(compute_base_dir(sid, jan), format!("2026/01/{sid}"));
     }
 
     #[test]
@@ -1013,6 +1072,67 @@ mod tests {
             append_err.to_string().contains("fail-closed"),
             "unexpected: {append_err}"
         );
+
+        drop(rec);
+        lease_task.abort();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn duplicate_finalize_under_lease_seals_exactly_once() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("vauban-mcp-rec-dupfin-{stamp}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        // Supervisor stand-in: opens the leased path and counts requests.
+        let (tx, mut rx) = mpsc::channel::<RecordingLeaseReq>(8);
+        let base = dir.clone();
+        let leased = Arc::new(Mutex::new(Vec::<String>::new()));
+        let leased_srv = leased.clone();
+        let lease_task = tokio::spawn(async move {
+            while let Some(req) = rx.recv().await {
+                leased_srv.lock().unwrap().push(req.relative_path.clone());
+                let abs = base.join(&req.relative_path);
+                fs::create_dir_all(abs.parent().unwrap()).unwrap();
+                let f = OpenOptions::new()
+                    .create(true)
+                    .truncate(true)
+                    .read(true)
+                    .write(true)
+                    .open(&abs)
+                    .map_err(|e| e.to_string());
+                let _ = req.reply.send(f);
+            }
+        });
+
+        let rec = McpRecording::with_storage_base_and_lease(dir.clone(), tx);
+        let sid = "dddddddd-1111-2222-3333-444444444444";
+        rec.open_session(sid).await.unwrap();
+        rec.append_jsonl(sid, json!({"event":"session_open"}))
+            .unwrap();
+
+        let (a, b) = tokio::join!(
+            rec.finalize(sid, "user_terminated", false),
+            rec.finalize(sid, "user_terminated", false)
+        );
+        assert_eq!(
+            [a.is_some(), b.is_some()].iter().filter(|x| **x).count(),
+            1,
+            "duplicate terminate must finalize exactly once"
+        );
+        let stats = a.or(b).unwrap();
+        assert!(stats.equivalence_verified);
+
+        let paths = leased.lock().unwrap().clone();
+        let meta_leases = paths.iter().filter(|p| p.ends_with(META_FILE_NAME)).count();
+        assert_eq!(meta_leases, 1, "exactly one meta.json lease, got {paths:?}");
+
+        let jsonl = fs::read_to_string(dir.join(&stats.relative_jsonl)).unwrap();
+        assert_eq!(jsonl.matches("\"session_end\"").count(), 1);
 
         drop(rec);
         lease_task.abort();

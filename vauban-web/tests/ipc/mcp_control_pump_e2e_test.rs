@@ -35,6 +35,7 @@ fn sample_open() -> McpSessionOpenRequest {
         session_token: vec![9, 9],
         transport: "direct".into(),
         require_seal: false,
+        recording_open_unix: 1_700_000_000,
     }
 }
 

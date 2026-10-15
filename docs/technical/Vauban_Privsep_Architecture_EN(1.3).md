@@ -530,6 +530,19 @@ pub enum ControlMessage {
 }
 ```
 
+While the supervisor waits for that Pong it may already have a broker
+request queued on the same pipe (`TcpConnectRequest`,
+`RecordingFileRequest`, and the other child-to-supervisor messages).
+That message is not a Pong, so it is set aside and dispatched on the
+next pass of the service loop. It is not discarded.
+
+After `sendmsg` has placed a brokered descriptor in the child's socket
+buffer, the supervisor keeps its own copy for 5 seconds
+(`BROKERED_FD_LINGER`) and then closes it. Those 5 seconds are not an
+acknowledgement from the child. `sendmsg` has already delivered the
+descriptor into the receiver's buffer; the linger only stops the
+supervisor from closing its copy before the child has called `recvmsg`.
+
 ### 4.4 File Descriptor Passing
 
 For connection handoff (e.g., passing a client socket to a proxy), we use **SCM_RIGHTS**:

@@ -121,7 +121,7 @@ pub fn verify_proxy(
     match REPLAY_CACHE.get().and_then(|m| {
         m.lock()
             .ok()
-            .map(|mut c| c.record(&token.session_id, &token.nonce))
+            .map(|mut c| c.record(&token.session_id, &token.nonce, token.expires_at, now))
     }) {
         Some(true) => true,
         Some(false) => {

@@ -254,6 +254,8 @@ log_path = "audit"
 #
 # JSON-RPC leaf. Default `false` in default.toml. Development turns it on
 # and allows loopback upstreams so a local MCP server on 127.0.0.1 works.
+# Loopback upstreams still speak HTTPS with an SPKI pin
+# (connection_config.mcp_upstream_tls_spki); there is no plaintext path (ADR 010).
 
 [mcp]
 enabled = true

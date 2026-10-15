@@ -10,9 +10,10 @@ use crate::models::asset::{Asset, AssetType};
 use crate::schema::{asset_asset_groups, asset_groups, assets};
 use crate::services::mcp_discover::{
     DiscoveredTool, GroupCatalogTool, ToolCatalogStatus, apply_discovered_catalog,
-    approve_pending_catalog, approve_tool_in_catalog, catalog_from_asset,
-    discover_tools_from_upstream, merge_approved_group_catalog,
+    apply_discovered_instructions_at, approve_pending_catalog, approve_tool_in_catalog,
+    catalog_from_asset, discover_tools_from_upstream, merge_approved_group_catalog,
 };
+use crate::services::mcp_rule_prune::prune_after_asset_change;
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
 
@@ -87,7 +88,7 @@ pub async fn discover_mcp_tools_web(
         );
     }
 
-    let tools =
+    let discovered =
         match discover_tools_from_upstream(&state, &asset, &auth_user.uuid.to_string()).await {
             Ok(t) => t,
             Err(e) => {
@@ -96,6 +97,7 @@ pub async fn discover_mcp_tools_web(
             }
         };
 
+    let tools = discovered.tools;
     if tools.is_empty() {
         return flash_redirect(
             flash.error("Upstream MCP server returned no tools"),
@@ -103,7 +105,11 @@ pub async fn discover_mcp_tools_web(
         );
     }
 
-    let new_config = apply_discovered_catalog(asset.connection_config.clone(), &tools);
+    let new_config = apply_discovered_instructions_at(
+        apply_discovered_catalog(asset.connection_config.clone(), &tools),
+        discovered.instructions.as_deref(),
+        &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    );
     if let Err(e) = diesel::update(assets::table.filter(assets::id.eq(asset.id)))
         .set(assets::connection_config.eq(new_config))
         .execute(&mut conn)
@@ -112,6 +118,7 @@ pub async fn discover_mcp_tools_web(
         tracing::error!(error = %e, "persist MCP catalogue failed");
         return flash_redirect(flash.error("Failed to save discovered tools"), &edit_url);
     }
+    prune_after_asset_change(&state, &mut conn, asset.id, "mcp_discover").await;
 
     crate::services::emit_audit(
         &state,
@@ -226,6 +233,7 @@ pub async fn approve_mcp_tools_web(
         tracing::error!(error = %e, "persist MCP tool approval failed");
         return flash_redirect(flash.error("Failed to save approvals"), &edit_url);
     }
+    prune_after_asset_change(&state, &mut conn, asset.id, "mcp_approve").await;
 
     crate::services::emit_audit(
         &state,
@@ -296,27 +304,6 @@ pub async fn load_mcp_group_catalog(
         .map(|a| (a.name.clone(), catalog_from_asset(a)))
         .collect();
     Ok(merge_approved_group_catalog(&pairs))
-}
-
-/// Tool names still present on a **non-deleted** MCP asset in the group
-/// (any catalogue status). Used to drop rule leftovers after an asset
-/// is tombstoned — those names are not "pending Approve".
-// allow-ungated: catalogue helper; callers already gate assets:manage or access_rules:read
-pub async fn load_mcp_live_tool_names(
-    conn: &mut crate::db::DbConnection,
-    asset_group_id: i32,
-) -> AppResult<std::collections::HashSet<String>> {
-    let mcp_assets = mcp_assets_in_group(conn, asset_group_id).await?;
-    let mut names = std::collections::HashSet::new();
-    for asset in mcp_assets {
-        for tool in catalog_from_asset(&asset) {
-            let n = tool.name.trim();
-            if !n.is_empty() {
-                names.insert(n.to_string());
-            }
-        }
-    }
-    Ok(names)
 }
 
 /// Union of **approved** MCP tools for every MCP asset in an

@@ -1572,6 +1572,7 @@ fn watchdog_loop(
     // Track services that need linked restart (will be processed after reaping)
     let mut pending_linked_restarts: Vec<String> = Vec::new();
     let mut service_pipes = pipe_store.derive_service_pipes();
+    let mut heartbeat_deferred: Vec<(String, Message)> = Vec::new();
 
     loop {
         // Check global shutdown flag before processing.
@@ -1625,12 +1626,13 @@ fn watchdog_loop(
             &config.auth.kerberos,
             &iacs_guards,
             &McpConnectGuards::from_config(&config.mcp, config.server.port),
+            std::mem::take(&mut heartbeat_deferred),
         );
 
         // Send heartbeats periodically
         if last_heartbeat.elapsed() >= heartbeat_interval {
             for (service_key, state) in children.iter_mut() {
-                send_heartbeat(service_key, state);
+                send_heartbeat(service_key, state, &mut heartbeat_deferred);
             }
             last_heartbeat = Instant::now();
         }
@@ -1880,7 +1882,13 @@ fn reap_children(
     }
 }
 
-fn send_heartbeat(service_key: &str, state: &mut ChildState) {
+/// Non-Pong messages read while waiting for the Pong are appended to
+/// `deferred` for [`process_service_messages`].
+fn send_heartbeat(
+    service_key: &str,
+    state: &mut ChildState,
+    deferred: &mut Vec<(String, Message)>,
+) {
     use shared::ipc::poll_readable;
     use std::io::ErrorKind;
 
@@ -1920,9 +1928,11 @@ fn send_heartbeat(service_key: &str, state: &mut ChildState) {
                             }
                         }
                     }
-                    Ok(_other) => {
-                        // Other message types - skip them
-                        // (the service might be sending data to other components)
+                    Ok(other) => {
+                        // Broker requests (RecordingFile, TcpConnect, …) share this
+                        // pipe; dropping one leaves the child waiting on a lease
+                        // that is never answered.
+                        deferred.push((service_key.to_string(), other));
                     }
                     Err(shared::ipc::IpcError::Io(ref e)) if e.kind() == ErrorKind::WouldBlock => {
                         // Buffer drained
@@ -2957,7 +2967,7 @@ fn handle_tcp_connect_request(
         if !matches!(target_service, Service::ProxyIacs | Service::ProxyMcp)
             && !session_token_replay_cache()
                 .lock()
-                .map(|mut c| c.record(&token.session_id, &token.nonce))
+                .map(|mut c| c.record(&token.session_id, &token.nonce, token.expires_at, now))
                 .unwrap_or(false)
         {
             warn!(
@@ -3234,9 +3244,55 @@ fn handle_tcp_connect_request(
         "broker tcp connect complete"
     );
 
-    // Keep the TcpStream alive until after the FD has been sent
-    // The child will have its own copy of the FD after SCM_RIGHTS
-    drop(tcp_stream);
+    linger_brokered_stream(tcp_stream);
+}
+
+/// How long the supervisor keeps its copy of a brokered TCP FD after SCM_RIGHTS.
+const BROKERED_FD_LINGER: Duration = Duration::from_secs(5);
+
+/// Close the supervisor's copy of a brokered socket only after the target proxy
+/// has had time to `recvmsg` it. On macOS, an SCM_RIGHTS socket whose sender
+/// closes it while the message is still queued can be received with its read
+/// side already at EOF (MCP hop 1 / re-broker "upstream closed before HTTP
+/// headers"). A single reaper thread drops each stream after
+/// [`BROKERED_FD_LINGER`].
+fn linger_brokered_stream(stream: std::net::TcpStream) {
+    static TX: OnceLock<Mutex<std::sync::mpsc::Sender<(Instant, std::net::TcpStream)>>> =
+        OnceLock::new();
+    let tx = TX.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<(Instant, std::net::TcpStream)>();
+        let spawned = std::thread::Builder::new()
+            .name("broker-fd-linger".into())
+            .spawn(move || {
+                let mut held: std::collections::VecDeque<(Instant, std::net::TcpStream)> =
+                    std::collections::VecDeque::new();
+                loop {
+                    let wait = held.front().map_or(Duration::from_secs(3600), |(t, _)| {
+                        BROKERED_FD_LINGER.saturating_sub(t.elapsed())
+                    });
+                    match rx.recv_timeout(wait) {
+                        Ok(item) => held.push_back(item),
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                    }
+                    while held
+                        .front()
+                        .is_some_and(|(t, _)| t.elapsed() >= BROKERED_FD_LINGER)
+                    {
+                        held.pop_front();
+                    }
+                }
+            });
+        if let Err(e) = spawned {
+            warn!(error = %e, "broker-fd-linger thread spawn failed; closing FDs immediately");
+        }
+        Mutex::new(tx)
+    });
+    // A dead reaper hands the stream back in the error, which closes it here.
+    let _ = tx
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .send((Instant::now(), stream));
 }
 
 /// Handle a Kerberos KDC FD-lease request from the sandboxed RDP proxy.
@@ -3801,7 +3857,27 @@ fn process_service_messages(
     kerberos: &crate::config::KerberosConfig,
     iacs_guards: &IacsTunnelGuards,
     mcp_guards: &McpConnectGuards,
+    deferred: Vec<(String, Message)>,
 ) {
+    // Requests read off a channel by `send_heartbeat` go first, in arrival order.
+    for (service_key, msg) in deferred {
+        if let Some(state) = children.get(&service_key) {
+            dispatch_service_message(
+                msg,
+                &service_key,
+                state,
+                children,
+                recording_storage_path,
+                audit_log_path,
+                mailer,
+                ldap,
+                kerberos,
+                iacs_guards,
+                mcp_guards,
+            );
+        }
+    }
+
     // Collect all read FDs from services
     let service_fds: Vec<(String, i32)> = children
         .iter()
@@ -3828,198 +3904,20 @@ fn process_service_messages(
                     None => continue,
                 };
 
-                // Try to read a message
                 match state.channel.try_recv() {
-                    Ok(Message::TcpConnectRequest {
-                        request_id,
-                        session_id,
-                        host,
-                        port,
-                        target_service,
-                        session_token,
-                    }) => {
-                        info!(
-                            "Received TcpConnectRequest from {} for {}:{} -> {:?}",
-                            service_key, host, port, target_service
-                        );
-                        handle_tcp_connect_request(
-                            TcpConnectPayload {
-                                request_id,
-                                session_id,
-                                host,
-                                port,
-                                target_service,
-                                session_token,
-                            },
-                            &state.channel,
-                            service_key,
-                            children,
-                            mailer,
-                            ldap,
-                            iacs_guards,
-                            mcp_guards,
-                        );
-                    }
-                    Ok(Message::KerberosKdcRequest {
-                        request_id,
-                        session_id,
-                        data,
-                    }) => {
-                        handle_kerberos_kdc_request(
-                            request_id,
-                            session_id,
-                            data,
-                            &state.channel,
-                            service_key,
-                            children,
-                            kerberos,
-                        );
-                    }
-                    Ok(Message::AcmeRenewRequest {
-                        request_id,
-                        directory_url,
-                        domains,
-                        email,
-                        account_key_path,
-                        cert_path,
-                        key_path,
-                        eab_kid,
-                        eab_hmac_key,
-                    }) => {
-                        info!(
-                            request_id = request_id,
-                            domains = ?domains,
-                            "Received ACME renewal request from {}",
-                            service_key
-                        );
-                        acme::handle_acme_renew(
-                            acme::AcmeRenewParams {
-                                request_id,
-                                directory_url,
-                                domains,
-                                email,
-                                account_key_path,
-                                cert_path,
-                                key_path,
-                                eab_kid,
-                                eab_hmac_key,
-                            },
-                            &state.channel,
-                        );
-                    }
-                    Ok(Message::RecordingFileRequest {
-                        request_id,
-                        session_id,
-                        relative_path,
-                        read_only,
-                    }) => {
-                        debug!(
-                            request_id,
-                            session_id = %session_id,
-                            path = %relative_path,
-                            read_only,
-                            "Received RecordingFileRequest from {}",
-                            service_key
-                        );
-                        handle_recording_file_request(
-                            request_id,
-                            &session_id,
-                            &relative_path,
-                            read_only,
-                            recording_storage_path,
-                            state,
-                        );
-                    }
-                    Ok(Message::AuditLogFileRequest {
-                        request_id,
-                        segment_name,
-                    }) => {
-                        debug!(
-                            request_id,
-                            segment_name = %segment_name,
-                            "Received AuditLogFileRequest from {}",
-                            service_key
-                        );
-                        handle_audit_log_file_request(
-                            request_id,
-                            &segment_name,
-                            audit_log_path,
-                            state,
-                        );
-                    }
-                    Ok(Message::RecordingFileGzipRequest {
-                        request_id,
-                        session_id,
-                        src_relative,
-                        dst_relative,
-                    }) => {
-                        debug!(
-                            request_id,
-                            session_id = %session_id,
-                            src = %src_relative,
-                            dst = %dst_relative,
-                            "Received deprecated RecordingFileGzipRequest from {}",
-                            service_key
-                        );
-                        handle_recording_file_gzip_request(
-                            request_id,
-                            &session_id,
-                            &src_relative,
-                            &dst_relative,
-                            recording_storage_path,
-                            state,
-                        );
-                    }
-                    Ok(Message::RecordingFileUnlinkRequest {
-                        request_id,
-                        session_id,
-                        relative_path,
-                    }) => {
-                        debug!(
-                            request_id,
-                            session_id = %session_id,
-                            path = %relative_path,
-                            "Received RecordingFileUnlinkRequest from {}",
-                            service_key
-                        );
-                        handle_recording_file_unlink_request(
-                            request_id,
-                            &session_id,
-                            &relative_path,
-                            recording_storage_path,
-                            state,
-                        );
-                    }
-                    Ok(Message::RecordingDeleteRequest {
-                        request_id,
-                        session_id,
-                        relative_path,
-                    }) => {
-                        debug!(
-                            request_id,
-                            session_id = %session_id,
-                            path = %relative_path,
-                            "Received RecordingDeleteRequest from {}",
-                            service_key
-                        );
-                        recording_delete::handle_recording_delete_request(
-                            request_id,
-                            &session_id,
-                            &relative_path,
-                            recording_storage_path,
-                            service_key,
-                            &state.channel,
-                        );
-                    }
-                    Ok(Message::Control(ControlMessage::Pong { .. })) => {
-                        // Pong messages are handled by send_heartbeat, skip here
-                    }
-                    Ok(msg) => {
-                        debug!(
-                            "Received unexpected message from {}: {:?}",
-                            service_key, msg
-                        );
-                    }
+                    Ok(msg) => dispatch_service_message(
+                        msg,
+                        service_key,
+                        state,
+                        children,
+                        recording_storage_path,
+                        audit_log_path,
+                        mailer,
+                        ldap,
+                        kerberos,
+                        iacs_guards,
+                        mcp_guards,
+                    ),
                     Err(shared::ipc::IpcError::Io(ref e))
                         if e.kind() == std::io::ErrorKind::WouldBlock =>
                     {
@@ -4033,6 +3931,210 @@ fn process_service_messages(
         }
         Err(e) => {
             debug!("Poll error in process_service_messages: {}", e);
+        }
+    }
+}
+
+/// Route one service → supervisor message to its broker handler.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_service_message(
+    msg: Message,
+    service_key: &str,
+    state: &ChildState,
+    children: &HashMap<String, ChildState>,
+    recording_storage_path: &str,
+    audit_log_path: &str,
+    mailer: &crate::config::MailerConfig,
+    ldap: &crate::config::LdapConfig,
+    kerberos: &crate::config::KerberosConfig,
+    iacs_guards: &IacsTunnelGuards,
+    mcp_guards: &McpConnectGuards,
+) {
+    match msg {
+        Message::TcpConnectRequest {
+            request_id,
+            session_id,
+            host,
+            port,
+            target_service,
+            session_token,
+        } => {
+            info!(
+                "Received TcpConnectRequest from {} for {}:{} -> {:?}",
+                service_key, host, port, target_service
+            );
+            handle_tcp_connect_request(
+                TcpConnectPayload {
+                    request_id,
+                    session_id,
+                    host,
+                    port,
+                    target_service,
+                    session_token,
+                },
+                &state.channel,
+                service_key,
+                children,
+                mailer,
+                ldap,
+                iacs_guards,
+                mcp_guards,
+            );
+        }
+        Message::KerberosKdcRequest {
+            request_id,
+            session_id,
+            data,
+        } => {
+            handle_kerberos_kdc_request(
+                request_id,
+                session_id,
+                data,
+                &state.channel,
+                service_key,
+                children,
+                kerberos,
+            );
+        }
+        Message::AcmeRenewRequest {
+            request_id,
+            directory_url,
+            domains,
+            email,
+            account_key_path,
+            cert_path,
+            key_path,
+            eab_kid,
+            eab_hmac_key,
+        } => {
+            info!(
+                request_id = request_id,
+                domains = ?domains,
+                "Received ACME renewal request from {}",
+                service_key
+            );
+            acme::handle_acme_renew(
+                acme::AcmeRenewParams {
+                    request_id,
+                    directory_url,
+                    domains,
+                    email,
+                    account_key_path,
+                    cert_path,
+                    key_path,
+                    eab_kid,
+                    eab_hmac_key,
+                },
+                &state.channel,
+            );
+        }
+        Message::RecordingFileRequest {
+            request_id,
+            session_id,
+            relative_path,
+            read_only,
+        } => {
+            debug!(
+                request_id,
+                session_id = %session_id,
+                path = %relative_path,
+                read_only,
+                "Received RecordingFileRequest from {}",
+                service_key
+            );
+            handle_recording_file_request(
+                request_id,
+                &session_id,
+                &relative_path,
+                read_only,
+                recording_storage_path,
+                state,
+            );
+        }
+        Message::AuditLogFileRequest {
+            request_id,
+            segment_name,
+        } => {
+            debug!(
+                request_id,
+                segment_name = %segment_name,
+                "Received AuditLogFileRequest from {}",
+                service_key
+            );
+            handle_audit_log_file_request(request_id, &segment_name, audit_log_path, state);
+        }
+        Message::RecordingFileGzipRequest {
+            request_id,
+            session_id,
+            src_relative,
+            dst_relative,
+        } => {
+            debug!(
+                request_id,
+                session_id = %session_id,
+                src = %src_relative,
+                dst = %dst_relative,
+                "Received deprecated RecordingFileGzipRequest from {}",
+                service_key
+            );
+            handle_recording_file_gzip_request(
+                request_id,
+                &session_id,
+                &src_relative,
+                &dst_relative,
+                recording_storage_path,
+                state,
+            );
+        }
+        Message::RecordingFileUnlinkRequest {
+            request_id,
+            session_id,
+            relative_path,
+        } => {
+            debug!(
+                request_id,
+                session_id = %session_id,
+                path = %relative_path,
+                "Received RecordingFileUnlinkRequest from {}",
+                service_key
+            );
+            handle_recording_file_unlink_request(
+                request_id,
+                &session_id,
+                &relative_path,
+                recording_storage_path,
+                state,
+            );
+        }
+        Message::RecordingDeleteRequest {
+            request_id,
+            session_id,
+            relative_path,
+        } => {
+            debug!(
+                request_id,
+                session_id = %session_id,
+                path = %relative_path,
+                "Received RecordingDeleteRequest from {}",
+                service_key
+            );
+            recording_delete::handle_recording_delete_request(
+                request_id,
+                &session_id,
+                &relative_path,
+                recording_storage_path,
+                service_key,
+                &state.channel,
+            );
+        }
+        Message::Control(ControlMessage::Pong { .. }) => {
+            // Pong messages are handled by send_heartbeat, skip here
+        }
+        msg => {
+            debug!(
+                "Received unexpected message from {}: {:?}",
+                service_key, msg
+            );
         }
     }
 }
@@ -4979,6 +5081,7 @@ mod tests {
                 recording_ack_dropped: 0,
                 recording_try_send_full: 0,
                 recording_ack_wait_ms_max: 0,
+                audit_events_dropped: 0,
             }),
             is_draining: false,
             drain_started: None,
@@ -5011,6 +5114,7 @@ mod tests {
                 recording_ack_dropped: 0,
                 recording_try_send_full: 0,
                 recording_ack_wait_ms_max: 0,
+                audit_events_dropped: 0,
             }),
             is_draining: false,
             drain_started: None,
@@ -5049,6 +5153,7 @@ mod tests {
                 recording_ack_dropped: 0,
                 recording_try_send_full: 0,
                 recording_ack_wait_ms_max: 0,
+                audit_events_dropped: 0,
             }),
             is_draining: false,
             drain_started: None,
@@ -5172,6 +5277,7 @@ mod tests {
                     recording_ack_dropped: 0,
                     recording_try_send_full: 0,
                     recording_ack_wait_ms_max: 0,
+                    audit_events_dropped: 0,
                 };
                 let pong = Message::Control(ControlMessage::Pong { seq, stats });
                 service_channel.send(&pong).unwrap();
@@ -5180,7 +5286,7 @@ mod tests {
         });
 
         // Send heartbeat from supervisor
-        send_heartbeat("test_service", &mut state);
+        send_heartbeat("test_service", &mut state, &mut Vec::new());
 
         // Wait for service thread
         let _ = service_thread.join().unwrap();
@@ -5190,6 +5296,157 @@ mod tests {
         assert_eq!(
             state.missed_heartbeats, 0,
             "Missed heartbeats should be 0 after valid Pong"
+        );
+    }
+
+    #[test]
+    fn test_brokered_stream_lingers_then_closes() {
+        use std::io::Read;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+
+        linger_brokered_stream(client);
+
+        let mut buf = [0u8; 1];
+        match peer.read(&mut buf) {
+            Ok(0) => panic!("supervisor copy closed immediately (macOS EOF-on-receive bug)"),
+            Ok(_) => panic!("unexpected data"),
+            Err(e) => assert!(
+                matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ),
+                "expected still-open socket, got {e}"
+            ),
+        }
+
+        peer.set_read_timeout(Some(BROKERED_FD_LINGER + Duration::from_secs(3)))
+            .unwrap();
+        assert_eq!(
+            peer.read(&mut buf).unwrap(),
+            0,
+            "linger must close the FD afterwards"
+        );
+    }
+
+    #[test]
+    fn test_heartbeat_defers_broker_requests_instead_of_dropping() {
+        let (supervisor_channel, service_channel) = IpcChannel::pair().unwrap();
+        let mut state = ChildState {
+            pid: 12345,
+            service_key: "proxy_mcp".to_string(),
+            channel: supervisor_channel,
+            last_pong: Instant::now(),
+            missed_heartbeats: 0,
+            heartbeat_seq: 0,
+            respawn_count: 0,
+            last_respawn: Instant::now(),
+            last_stats: None,
+            is_draining: false,
+            drain_started: None,
+            ever_ponged: false,
+            fd_passing_socket: None,
+        };
+
+        // A recording lease request already queued when the Ping goes out.
+        service_channel
+            .send(&Message::RecordingFileRequest {
+                request_id: 7,
+                session_id: "sess-hb".to_string(),
+                relative_path: "2026/10/sess-hb/session.mcp.jsonl".to_string(),
+                read_only: false,
+            })
+            .unwrap();
+
+        let mut deferred = Vec::new();
+        send_heartbeat("proxy_mcp", &mut state, &mut deferred);
+
+        assert_eq!(
+            deferred.len(),
+            1,
+            "broker request must survive the Pong drain"
+        );
+        let (key, msg) = &deferred[0];
+        assert_eq!(key, "proxy_mcp");
+        assert!(
+            matches!(
+                msg,
+                Message::RecordingFileRequest { request_id: 7, session_id, .. } if session_id == "sess-hb"
+            ),
+            "deferred message must be the original RecordingFileRequest, got {msg:?}"
+        );
+    }
+
+    /// A broker request read while the heartbeat drains toward a Pong is
+    /// handed to the same dispatcher as a message read on the poll loop.
+    #[test]
+    fn heartbeat_dispatches_tcp_connect_read_during_pong_wait() {
+        let (supervisor_channel, service_channel) = IpcChannel::pair().unwrap();
+        let mut state = ChildState {
+            pid: 12345,
+            service_key: "web".to_string(),
+            channel: supervisor_channel,
+            last_pong: Instant::now(),
+            missed_heartbeats: 0,
+            heartbeat_seq: 0,
+            respawn_count: 0,
+            last_respawn: Instant::now(),
+            last_stats: None,
+            is_draining: false,
+            drain_started: None,
+            ever_ponged: false,
+            fd_passing_socket: None,
+        };
+        service_channel
+            .send(&Message::TcpConnectRequest {
+                request_id: 42,
+                session_id: "sess-hb-tcp".to_string(),
+                host: "127.0.0.1".to_string(),
+                port: 1,
+                target_service: Service::Supervisor,
+                session_token: Vec::new(),
+            })
+            .unwrap();
+
+        let mut deferred = Vec::new();
+        send_heartbeat("web", &mut state, &mut deferred);
+        assert_eq!(deferred.len(), 1, "the connect must be kept, not dropped");
+
+        let mut children = HashMap::new();
+        children.insert("web".to_string(), state);
+        process_service_messages(
+            &children,
+            "/tmp",
+            "/tmp",
+            &crate::config::MailerConfig::default(),
+            &crate::config::LdapConfig::default(),
+            &crate::config::KerberosConfig::default(),
+            &IacsTunnelGuards::from_config(&crate::config::IacsTunnelSupervisorConfig::default()),
+            &McpConnectGuards::from_config(&crate::config::McpConfig::default(), 443),
+            deferred,
+        );
+
+        let mut saw = false;
+        for _ in 0..4 {
+            match service_channel.try_recv() {
+                Ok(Message::TcpConnectResponse {
+                    request_id: 42,
+                    success: false,
+                    ..
+                }) => {
+                    saw = true;
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        assert!(
+            saw,
+            "the deferred TcpConnectRequest must be dispatched and answered"
         );
     }
 
@@ -5215,7 +5472,7 @@ mod tests {
         };
 
         // Send heartbeat - service won't respond, will timeout
-        send_heartbeat("unresponsive_service", &mut state);
+        send_heartbeat("unresponsive_service", &mut state, &mut Vec::new());
 
         // Verify missed heartbeat was counted
         assert_eq!(state.heartbeat_seq, 1, "Heartbeat seq should increment");
@@ -5258,7 +5515,7 @@ mod tests {
             service_channel
         });
 
-        send_heartbeat("bad_seq_service", &mut state);
+        send_heartbeat("bad_seq_service", &mut state, &mut Vec::new());
         let _ = service_thread.join().unwrap();
 
         // Significant seq lag should count as missed
@@ -5299,7 +5556,7 @@ mod tests {
             service_channel
         });
 
-        send_heartbeat("recovering_service", &mut state);
+        send_heartbeat("recovering_service", &mut state, &mut Vec::new());
         let _ = service_thread.join().unwrap();
 
         // Valid Pong should reset missed count
@@ -5334,7 +5591,7 @@ mod tests {
         };
 
         // One more miss should trigger restart
-        send_heartbeat("failing_service", &mut state);
+        send_heartbeat("failing_service", &mut state, &mut Vec::new());
 
         assert!(
             state.missed_heartbeats >= max_missed,
@@ -5376,6 +5633,7 @@ mod tests {
             recording_ack_dropped: 0,
             recording_try_send_full: 0,
             recording_ack_wait_ms_max: 0,
+            audit_events_dropped: 0,
         };
         let expected_stats_clone = expected_stats.clone();
 
@@ -5391,7 +5649,7 @@ mod tests {
             service_channel
         });
 
-        send_heartbeat("stats_service", &mut state);
+        send_heartbeat("stats_service", &mut state, &mut Vec::new());
         let _ = service_thread.join().unwrap();
 
         // Heartbeat was successful

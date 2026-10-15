@@ -13,8 +13,8 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{Connector, connect_async_tls_with_config};
 
 pub fn known_hosts_path() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
@@ -106,42 +106,57 @@ fn write_store_atomic(path: &Path, text: &str) -> Result<(), String> {
     Ok(())
 }
 
-struct WsIo {
-    inner: tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
+/// Inner-TLS bytes over binary WebSocket frames. Control frames (the
+/// bastion pings at once) are skipped, never surfaced as "no data".
+struct WsIo<T> {
+    inner: tokio_tungstenite::WebSocketStream<T>,
     buf: Vec<u8>,
     pos: usize,
 }
 
-impl AsyncRead for WsIo {
+impl<T> WsIo<T> {
+    fn new(inner: tokio_tungstenite::WebSocketStream<T>) -> Self {
+        Self {
+            inner,
+            buf: Vec::new(),
+            pos: 0,
+        }
+    }
+}
+
+impl<T: AsyncRead + AsyncWrite + Unpin> AsyncRead for WsIo<T> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
         let this = self.get_mut();
-        if this.pos < this.buf.len() {
-            let n = (this.buf.len() - this.pos).min(buf.remaining());
-            buf.put_slice(&this.buf[this.pos..this.pos + n]);
-            this.pos += n;
-            return Poll::Ready(Ok(()));
-        }
-        match Pin::new(&mut this.inner).poll_next(cx) {
-            Poll::Ready(Some(Ok(Message::Binary(bytes)))) => {
-                this.buf = bytes.to_vec();
-                this.pos = 0;
-                Pin::new(this).poll_read(cx, buf)
+        loop {
+            if this.pos < this.buf.len() {
+                let n = (this.buf.len() - this.pos).min(buf.remaining());
+                buf.put_slice(&this.buf[this.pos..this.pos + n]);
+                this.pos += n;
+                return Poll::Ready(Ok(()));
             }
-            Poll::Ready(Some(Ok(_))) => Poll::Pending,
-            Poll::Ready(Some(Err(e))) => Poll::Ready(Err(std::io::Error::other(e.to_string()))),
-            Poll::Ready(None) => Poll::Ready(Ok(())),
-            Poll::Pending => Poll::Pending,
+            match Pin::new(&mut this.inner).poll_next(cx) {
+                Poll::Ready(Some(Ok(Message::Binary(bytes)))) => {
+                    this.buf = bytes.to_vec();
+                    this.pos = 0;
+                }
+                Poll::Ready(Some(Ok(Message::Close(_)))) | Poll::Ready(None) => {
+                    return Poll::Ready(Ok(()));
+                }
+                Poll::Ready(Some(Ok(_))) => {}
+                Poll::Ready(Some(Err(e))) => {
+                    return Poll::Ready(Err(std::io::Error::other(e.to_string())));
+                }
+                Poll::Pending => return Poll::Pending,
+            }
         }
     }
 }
 
-impl AsyncWrite for WsIo {
+impl<T: AsyncRead + AsyncWrite + Unpin> AsyncWrite for WsIo<T> {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -195,7 +210,7 @@ pub async fn post_direct(
         .body(body.to_string())
         .send()
         .await
-        .map_err(|e| format!("direct hop 2: {e}"))?;
+        .map_err(|e| format!("direct hop 2: {}", crate::error_chain(&e)))?;
     response
         .text()
         .await
@@ -209,6 +224,7 @@ pub async fn post_tunnel(
     cli_origin: &str,
     body: &str,
     hosts: &Path,
+    tls: &std::sync::Arc<rustls::ClientConfig>,
 ) -> Result<String, String> {
     let pin = hop
         .tunnel_spki
@@ -220,15 +236,22 @@ pub async fn post_tunnel(
     let pin = accept_pin(cli_origin, pin, hosts)?;
     let host = tofu::origin_host(cli_origin);
     let ws_url = hop::tunnel_ws_url(&hop.url)?;
-    let (ws, _) = connect_async(&ws_url)
-        .await
-        .map_err(|e| format!("tunnel websocket: {e}"))?;
-    let io = WsIo {
-        inner: ws,
-        buf: Vec::new(),
-        pos: 0,
-    };
-    mcp_post_pinned(io, host, &pin, hop.bearer.expose_secret(), body.as_bytes()).await
+    let (ws, _) = connect_async_tls_with_config(
+        &ws_url,
+        None,
+        false,
+        Some(Connector::Rustls(std::sync::Arc::clone(tls))),
+    )
+    .await
+    .map_err(|e| format!("tunnel websocket: {}", crate::error_chain(&e)))?;
+    mcp_post_pinned(
+        WsIo::new(ws),
+        host,
+        &pin,
+        hop.bearer.expose_secret(),
+        body.as_bytes(),
+    )
+    .await
 }
 
 /// Used by tests that already hold a byte stream (no WebSocket).
@@ -242,6 +265,40 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::io::AsyncReadExt;
+    use tokio_tungstenite::WebSocketStream;
+    use tokio_tungstenite::tungstenite::protocol::Role;
+
+    /// The bastion pings before the first TLS record: the read must wait
+    /// for the binary frame, not stall on the ping.
+    #[tokio::test]
+    async fn control_frames_do_not_stall_the_tunnel_read() {
+        let (client, server) = tokio::io::duplex(4096);
+        let mut server = WebSocketStream::from_raw_socket(server, Role::Server, None).await;
+        let client = WebSocketStream::from_raw_socket(client, Role::Client, None).await;
+        let mut io = WsIo::new(client);
+        tokio::spawn(async move {
+            server.send(Message::Ping(vec![].into())).await.unwrap();
+            server.send(Message::Text("noise".into())).await.unwrap();
+            server
+                .send(Message::Binary(b"hello".to_vec().into()))
+                .await
+                .unwrap();
+            server.send(Message::Close(None)).await.unwrap();
+            while server.next().await.is_some() {}
+        });
+        let mut got = [0u8; 5];
+        tokio::time::timeout(std::time::Duration::from_secs(5), io.read_exact(&mut got))
+            .await
+            .expect("tunnel read stalled on a control frame")
+            .unwrap();
+        assert_eq!(&got, b"hello");
+        let mut rest = Vec::new();
+        io.read_to_end(&mut rest).await.unwrap();
+        assert!(rest.is_empty(), "Close must read as end of stream");
+    }
+
     use std::os::unix::fs::PermissionsExt;
     use std::sync::{Arc, Barrier};
 
@@ -370,7 +427,8 @@ mod tests {
             transport: "tunnel".into(),
             tunnel_spki: Some("SHA256:evil".into()),
         };
-        let err = post_tunnel(&hop, "b.example:443", "{}", &path)
+        let tls = crate::trust::client_config(&[]).expect("tls");
+        let err = post_tunnel(&hop, "b.example:443", "{}", &path, &tls)
             .await
             .unwrap_err();
         assert!(err.contains("not on the --url origin"), "{err}");

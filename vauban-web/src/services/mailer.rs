@@ -413,6 +413,7 @@ pub enum EmailEvent {
     McpContestationOpened(McpContestationOpenedEvent),
     McpContestationResolved(McpContestationResolvedEvent),
     McpMandateDrift(McpMandateDriftEvent),
+    McpToolDefinitionDrift(McpToolDefinitionDriftEvent),
 }
 
 impl EmailEvent {
@@ -437,6 +438,7 @@ impl EmailEvent {
             Self::McpContestationOpened(_) => "mcp.contestation_opened",
             Self::McpContestationResolved(_) => "mcp.contestation_resolved",
             Self::McpMandateDrift(_) => "mcp.mandate_drift",
+            Self::McpToolDefinitionDrift(_) => "mcp.tool_definition_drift",
         }
     }
 
@@ -461,6 +463,7 @@ impl EmailEvent {
             Self::McpContestationOpened(e) => e.event_id,
             Self::McpContestationResolved(e) => e.event_id,
             Self::McpMandateDrift(e) => e.event_id,
+            Self::McpToolDefinitionDrift(e) => e.event_id,
         }
     }
 
@@ -485,6 +488,7 @@ impl EmailEvent {
             Self::McpContestationOpened(e) => &e.recipient,
             Self::McpContestationResolved(e) => &e.recipient,
             Self::McpMandateDrift(e) => &e.recipient,
+            Self::McpToolDefinitionDrift(e) => &e.recipient,
         }
     }
 
@@ -513,6 +517,7 @@ impl EmailEvent {
             Self::McpContestationOpened(e) => render_mcp_contestation_opened(e),
             Self::McpContestationResolved(e) => render_mcp_contestation_resolved(e),
             Self::McpMandateDrift(e) => render_mcp_mandate_drift(e),
+            Self::McpToolDefinitionDrift(e) => render_mcp_tool_definition_drift(e),
         }
     }
 }
@@ -1330,6 +1335,22 @@ pub struct McpMandateDriftEvent {
     pub from_brand: String,
 }
 
+/// An approved MCP tool (or the upstream instructions) changed on the
+/// upstream server and went back to pending (CIS MCP 4.1.1).
+#[derive(Debug, Clone)]
+pub struct McpToolDefinitionDriftEvent {
+    pub event_id: Uuid,
+    pub recipient: EmailRecipient,
+    pub asset_name: String,
+    /// Tool name, or "upstream instructions".
+    pub tool: String,
+    /// e.g. "description, input schema"; empty when unknown.
+    pub changed_fields: String,
+    pub asset_url: String,
+    pub base_url: String,
+    pub from_brand: String,
+}
+
 fn mcp_plain(
     brand: &str,
     base_url: &str,
@@ -1408,6 +1429,27 @@ fn render_mcp_mandate_drift(e: &McpMandateDriftEvent) -> Result<RenderedEmail, R
     )
 }
 
+fn render_mcp_tool_definition_drift(
+    e: &McpToolDefinitionDriftEvent,
+) -> Result<RenderedEmail, RenderError> {
+    let changed = if e.changed_fields.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", e.changed_fields)
+    };
+    mcp_plain(
+        &e.from_brand,
+        &e.base_url,
+        "[Vauban] MCP tool changed upstream, re-approval required",
+        &format!(
+            "The definition of {} on {} changed on the upstream server{changed}.\n\
+             It is quarantined and back to pending: review the change and approve it again.\n\
+             Review: {}\n",
+            e.tool, e.asset_name, e.asset_url
+        ),
+    )
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -1436,6 +1478,32 @@ mod tests {
             base_url: "https://vauban.test".into(),
             from_brand: "Vauban PAM".into(),
         })
+    }
+
+    #[test]
+    fn tool_definition_drift_mail_names_asset_tool_and_fields() {
+        let mut e = McpToolDefinitionDriftEvent {
+            event_id: deterministic_event_id("mcp.tool_definition_drift", "k", "a@x.test"),
+            recipient: fake_recipient(),
+            asset_name: "MCP OPS".into(),
+            tool: "update_task".into(),
+            changed_fields: "description".into(),
+            asset_url: "https://vauban.test/assets/manage/u/edit".into(),
+            base_url: "https://vauban.test".into(),
+            from_brand: "Vauban PAM".into(),
+        };
+        let ev = EmailEvent::McpToolDefinitionDrift(e.clone());
+        assert_eq!(ev.kind(), "mcp.tool_definition_drift");
+        assert_eq!(ev.event_id(), e.event_id);
+        assert_eq!(ev.recipient().address, "alice@example.test");
+        let r = ev.render().unwrap();
+        assert!(r.subject.contains("re-approval required"));
+        assert!(r.body_text.contains("update_task on MCP OPS"));
+        assert!(r.body_text.contains("(description)"));
+        assert!(r.body_text.contains("/assets/manage/u/edit"));
+        e.changed_fields.clear();
+        let r = EmailEvent::McpToolDefinitionDrift(e).render().unwrap();
+        assert!(r.body_text.contains("upstream server.\n"));
     }
 
     #[test]

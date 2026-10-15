@@ -72,8 +72,8 @@
 
     <!-- Player Container -->
     <div class="bg-gray-900 rounded-lg overflow-hidden shadow-xl">
-        {% if recording.is_ssh() %}
-        <!-- SSH Terminal Replay (asciinema-player) -->
+        {% if recording.uses_asciinema() %}
+        <!-- SSH / MCP asciinema-player (MCP: json-events-v1 payloads in o frames) -->
         {% if recording.recording_path.is_some() %}
         <div id="player"
              data-src="/recordings/{{ recording.session_uuid }}/session.cast"
@@ -89,7 +89,7 @@
                     <path fill-rule="evenodd" d="M3.25 3A2.25 2.25 0 001 5.25v9.5A2.25 2.25 0 003.25 17h13.5A2.25 2.25 0 0019 14.75v-9.5A2.25 2.25 0 0016.75 3H3.25zM2.5 5.25a.75.75 0 01.75-.75h13.5a.75.75 0 01.75.75v9.5a.75.75 0 01-.75.75H3.25a.75.75 0 01-.75-.75v-9.5z" clip-rule="evenodd"/>
                     <path d="M6.22 7.22a.75.75 0 011.06 0L9.5 9.44l2.22-2.22a.75.75 0 111.06 1.06l-2.22 2.22 2.22 2.22a.75.75 0 11-1.06 1.06L9.5 11.56l-2.22 2.22a.75.75 0 01-1.06-1.06l2.22-2.22-2.22-2.22a.75.75 0 010-1.06z"/>
                 </svg>
-                <p class="text-gray-400 text-lg">SSH Recording not available</p>
+                <p class="text-gray-400 text-lg">Asciicast recording not available</p>
                 <p class="text-gray-500 mt-2">The recording file for this session was not found.</p>
             </div>
         </div>

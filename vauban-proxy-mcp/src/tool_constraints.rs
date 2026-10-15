@@ -16,6 +16,7 @@
 //! any depth). Failure → caller maps to JSON-RPC `-32602`.
 
 use serde_json::Value;
+use shared::mcp_tool_fingerprint::{INSTRUCTIONS_KEY, RESERVED_PREFIX};
 use std::collections::HashMap;
 
 const MAX_DEPTH: usize = 6;
@@ -39,13 +40,22 @@ pub struct ToolConstraint {
 /// Accepted per-tool shapes:
 /// - plain schema object (`{"type":"object",...}`)
 /// - wrapper `{"input_schema":{...},"forbidden_keys":[...],"hitl":true,"require_plan":true,...}`
-pub fn parse_constraints_json(raw: &str) -> HashMap<String, ToolConstraint> {
-    let Ok(Value::Object(map)) = serde_json::from_str::<Value>(raw) else {
-        return HashMap::new();
+///
+/// Blank input means no constraints. Anything else that is not a JSON
+/// object is an error: dropping it would silently remove HITL, plan and
+/// schema gates.
+pub fn parse_constraints_json(raw: &str) -> Result<HashMap<String, ToolConstraint>, String> {
+    if raw.trim().is_empty() {
+        return Ok(HashMap::new());
+    }
+    let map = match serde_json::from_str::<Value>(raw) {
+        Ok(Value::Object(map)) => map,
+        Ok(_) => return Err("tool_constraints_json is not a JSON object".to_string()),
+        Err(e) => return Err(format!("tool_constraints_json is not valid JSON: {e}")),
     };
     let mut out = HashMap::new();
     for (name, val) in map {
-        if name.is_empty() {
+        if name.is_empty() || name.starts_with(RESERVED_PREFIX) {
             continue;
         }
         let constraint = match val {
@@ -103,7 +113,19 @@ pub fn parse_constraints_json(raw: &str) -> HashMap<String, ToolConstraint> {
         };
         out.insert(name, constraint);
     }
-    out
+    Ok(out)
+}
+
+/// Approved upstream-instructions fingerprint carried under the reserved
+/// `INSTRUCTIONS_KEY` of `tool_constraints_json` (`{"fingerprint": "…"}`).
+pub fn approved_instructions_fp(raw: &str) -> Option<String> {
+    serde_json::from_str::<Value>(raw)
+        .ok()?
+        .get(INSTRUCTIONS_KEY)?
+        .get("fingerprint")?
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 /// Mid-session tighten: merge incoming constraints into the live map.
@@ -339,19 +361,48 @@ mod tests {
     fn parse_wrapper_and_plain() {
         let map = parse_constraints_json(
             r#"{"a":{"type":"object"},"b":{"input_schema":{"type":"string"},"forbidden_keys":["x"]}}"#,
-        );
+        )
+        .unwrap();
         assert!(map.contains_key("a"));
         assert_eq!(map["b"].forbidden_keys, vec!["x"]);
     }
 
     #[test]
+    fn blank_constraints_are_empty_and_garbage_is_refused() {
+        assert!(parse_constraints_json("").unwrap().is_empty());
+        assert!(parse_constraints_json("  ").unwrap().is_empty());
+        assert!(parse_constraints_json("{}").unwrap().is_empty());
+        assert!(parse_constraints_json("not json").is_err());
+        assert!(parse_constraints_json("[1,2]").is_err());
+        assert!(parse_constraints_json(r#""echo""#).is_err());
+    }
+
+    #[test]
+    fn reserved_instructions_key_is_not_a_tool() {
+        let raw = r#"{"echo":{"status":"approved"},"__vauban_upstream_instructions":{"fingerprint":"abc"}}"#;
+        let map = parse_constraints_json(raw).unwrap();
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key("echo"));
+        assert_eq!(approved_instructions_fp(raw).as_deref(), Some("abc"));
+        assert_eq!(approved_instructions_fp(r#"{"echo":{}}"#), None);
+        assert_eq!(
+            approved_instructions_fp(r#"{"__vauban_upstream_instructions":{"fingerprint":""}}"#),
+            None
+        );
+        assert_eq!(approved_instructions_fp("not json"), None);
+    }
+
+    #[test]
     fn merge_constraints_tightens_hitl_only() {
-        let mut cur = parse_constraints_json(r#"{"echo":{"hitl":false,"input_schema":{}}}"#);
-        let incoming = parse_constraints_json(r#"{"echo":{"hitl":true,"input_schema":{}}}"#);
+        let mut cur =
+            parse_constraints_json(r#"{"echo":{"hitl":false,"input_schema":{}}}"#).unwrap();
+        let incoming =
+            parse_constraints_json(r#"{"echo":{"hitl":true,"input_schema":{}}}"#).unwrap();
         merge_constraints_tighten(&mut cur, incoming);
         assert!(cur["echo"].hitl, "HITL must enable mid-session");
 
-        let clear_attempt = parse_constraints_json(r#"{"echo":{"hitl":false,"input_schema":{}}}"#);
+        let clear_attempt =
+            parse_constraints_json(r#"{"echo":{"hitl":false,"input_schema":{}}}"#).unwrap();
         merge_constraints_tighten(&mut cur, clear_attempt);
         assert!(
             cur["echo"].hitl,

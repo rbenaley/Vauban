@@ -138,6 +138,7 @@ secrecy = { workspace = true }
 rand = "0.8"
 subtle = "2.5"
 uuid = { version = "1.11", features = ["v4", "serde"] }
+serde_json = { workspace = true }
 
 [[test]]
 name = "iacs_classify_proptest"
@@ -161,6 +162,18 @@ required-features = ["access-guard"]
 
 [[test]]
 name = "mcp_policy_proptest"
+
+[[test]]
+name = "json_redact_proptest"
+required-features = ["json-redact"]
+
+[[test]]
+name = "mcp_mandate_proptest"
+required-features = ["mcp-mandate"]
+
+[[test]]
+name = "mcp_replay_battle_test"
+required-features = ["session-token"]
 
 [[test]]
 name = "mcp_mandate_battle"

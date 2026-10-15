@@ -856,6 +856,9 @@ async fn async_main() -> Result<bool, Box<dyn std::error::Error>> {
     // `AppState` is built so tunnel-close can enqueue hydration.
     // Boot Snapshot resync runs AFTER the IPC pump is started (below).
     let proxy_iacs = init_iacs_proxy_client();
+
+    // Create MCP proxy client if running under supervisor (Lot 1a).
+    // IPC pump starts after AppState so McpProxyReady can reap leftover rows.
     let proxy_mcp = init_mcp_proxy_client();
 
     // Create vault crypto client if running under supervisor
@@ -1010,10 +1013,19 @@ async fn async_main() -> Result<bool, Box<dyn std::error::Error>> {
                 pump_ctx.clone(),
             );
         }
+        // Exactly one reader on this pipe: a second pump would split frames.
         let client_clone = Arc::clone(client);
+        let reap_state = app_state.clone();
         spawn_ipc_pump(
             "mcp_proxy",
-            async move { client_clone.process_incoming().await },
+            async move {
+                vauban_web::services::mcp_recheck::terminate_live_mcp_on_proxy_restart(&reap_state)
+                    .await;
+                let result = client_clone.process_incoming().await;
+                vauban_web::services::mcp_recheck::terminate_live_mcp_on_proxy_restart(&reap_state)
+                    .await;
+                result
+            },
             pump_ctx.clone(),
         );
         tracing::info!("MCP proxy IPC processing task started");
@@ -1120,6 +1132,9 @@ async fn async_main() -> Result<bool, Box<dyn std::error::Error>> {
     // every session it transitions to terminated/disconnected, hence
     // the `app_state.clone()` instead of just `db_pool`.
     start_cleanup_tasks(app_state.clone(), config.security.session_idle_timeout_secs).await;
+    // Safety net for every protocol: re-asks access for live sessions and
+    // resends lost terminates. Instant cuts happen at the mutation site.
+    vauban_web::services::policy_recheck::spawn_policy_recheck(app_state.clone());
     if config.mcp.enabled {
         vauban_web::services::mcp_recheck::spawn_recheck(app_state.clone());
     }
@@ -1744,6 +1759,7 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
                         .post(handlers::web::create_mcp_access_rule_web),
                 )
                 .route("/access/new", get(handlers::web::mcp_access_create_form))
+                .route("/access/matrix", get(handlers::web::mcp_access_matrix))
                 .route("/access/{uuid}", get(handlers::web::mcp_access_detail))
                 .route(
                     "/access/{uuid}/edit",
@@ -2902,6 +2918,7 @@ mod tests {
                 recording_ack_dropped: 0,
                 recording_try_send_full: 0,
                 recording_ack_wait_ms_max: 0,
+                audit_events_dropped: 0,
             };
             let pong = Message::Control(ControlMessage::Pong { seq, stats });
             service_channel.send(&pong).unwrap();

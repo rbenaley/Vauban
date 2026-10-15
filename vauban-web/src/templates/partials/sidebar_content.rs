@@ -19,6 +19,8 @@ pub struct SidebarContentTemplate {
     /// (`/assets/manage/*`) — issue #27 asset zone split.
     pub is_manage_assets: bool,
     pub is_sessions: bool,
+    /// MCP HITL, access rules, contestations (`/sessions/mcp/*`).
+    pub is_mcp: bool,
     pub is_recordings: bool,
     pub is_users: bool,
     pub is_groups: bool,
@@ -37,6 +39,9 @@ pub struct SidebarContentTemplate {
     /// admins). Loaded by [`crate::handlers::web::apply_sidebar_rbac`]
     /// in the same pass as `pending_approval_count`.
     pub pending_iacs_count: i64,
+    /// MCP tool calls waiting for a HITL decision (badge next to the MCP
+    /// entry for `sessions_supervise`).
+    pub pending_mcp_count: i64,
     /// Casbin-backed permission context. Sole source of truth for UI gates.
     pub perms: PermissionContext,
 }
@@ -82,6 +87,7 @@ mod tests {
             is_assets: false,
             is_manage_assets: false,
             is_sessions: false,
+            is_mcp: false,
             is_recordings: false,
             is_users: false,
             is_groups: false,
@@ -92,6 +98,7 @@ mod tests {
             is_iacs: false,
             pending_approval_count: 0,
             pending_iacs_count: 0,
+            pending_mcp_count: 0,
             perms,
         }
     }

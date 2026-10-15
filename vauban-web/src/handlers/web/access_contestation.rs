@@ -93,7 +93,8 @@ pub async fn contestation_list(
 
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("Access contestations".into(), user.clone(), browser_tz.0)
-        .with_current_path("/sessions/mcp/contestations");
+        .with_current_path("/sessions/mcp/contestations")
+        .with_messages(flash_messages_for_template(&incoming_flash));
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -289,7 +290,8 @@ async fn contestation_detail_inner(
         "/sessions/mcp/contestations"
     };
     let base = BaseTemplate::new("Contestation".into(), user.clone(), browser_tz.0)
-        .with_current_path(current_path);
+        .with_current_path(current_path)
+        .with_messages(flash_messages_for_template(&incoming_flash));
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -330,7 +332,9 @@ pub async fn contestation_open_web(
     let Ok(session_uuid) = Uuid::parse_str(&session_uuid_str) else {
         return flash_redirect(flash.error("Invalid session id"), "/sessions");
     };
-    let back = format!("/sessions/{session_uuid}");
+    // The form lives on My Requests; the session page may be closed to a
+    // suspended subject.
+    let back = "/sessions/my-requests".to_string();
 
     if !csrf_ok(&state, &jar, &form.csrf_token) {
         return flash_redirect(flash.error("Invalid CSRF token"), &back);

@@ -20,14 +20,16 @@ members = [
 # conflicts in the RustCrypto ecosystem between ironrdp/picky/sspi (sha1
 # =0.11.0-rc.2, digest =0.11.0-rc.5, crypto-common =0.2.0-rc.8) and
 # russh/ssh-key (sha1 ^0.11.0-rc.3). Use `just build` to compile everything.
-exclude = ["vauban-proxy-rdp"]
+# vauban-e2e (full-stack browser tests) is dev tooling, never part of the
+# product build. Run it with `just test-full-stack`.
+exclude = ["vauban-proxy-rdp", "vauban-e2e"]
 
 # Default package for `cargo run` from workspace root
 # vauban-supervisor is the main entry point that orchestrates all services
 default-members = ["vauban-supervisor"]
 
 [workspace.package]
-version = "0.9.46"
+version = "0.9.47"
 edition = "2024"
 rust-version = "1.93"
 authors = ["Richard Ben Aleya"]

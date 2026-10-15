@@ -167,4 +167,88 @@ mod tests {
         );
         assert!(build_tls_config(&pin).is_ok());
     }
+
+    #[tokio::test]
+    async fn tls12_upstream_is_pinned_too() {
+        use tokio_rustls::rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+        let key_pair = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+        let cert = rcgen::CertificateParams::new(vec!["localhost".to_string()])
+            .unwrap()
+            .self_signed(&key_pair)
+            .unwrap();
+        let cert_der = pki_types::CertificateDer::from(cert.der().to_vec());
+        let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der()));
+        let cfg = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_protocol_versions(&[&rustls::version::TLS12])
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der.clone()], key_der)
+        .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(cfg));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((tcp, _)) = listener.accept().await {
+                let _ = acceptor.accept(tcp).await;
+            }
+        });
+
+        let pin = spki_sha256_fingerprint(&cert_der).unwrap();
+        let tls = connect_pinned(TcpStream::connect(addr).await.unwrap(), "localhost", &pin)
+            .await
+            .unwrap();
+        assert_eq!(
+            tls.get_ref().1.protocol_version(),
+            Some(rustls::ProtocolVersion::TLSv1_2)
+        );
+
+        let wrong = format!(
+            "SHA256:{}",
+            base64::engine::general_purpose::STANDARD.encode([0u8; 32])
+        );
+        let err = connect_pinned(TcpStream::connect(addr).await.unwrap(), "localhost", &wrong)
+            .await
+            .unwrap_err();
+        assert!(err.contains("mismatch"), "{err}");
+    }
+
+    /// A certificate whose SPKI is not the asset pin is refused. The verifier
+    /// compares that fingerprint only; expiry and the name are not a second PKI.
+    #[tokio::test]
+    async fn attack_wrong_spki_pin_is_rejected() {
+        use tokio_rustls::rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+        let key_pair = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+        let cert = rcgen::CertificateParams::new(vec!["localhost".to_string()])
+            .unwrap()
+            .self_signed(&key_pair)
+            .unwrap();
+        let cert_der = pki_types::CertificateDer::from(cert.der().to_vec());
+        let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der()));
+        let cfg = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_protocol_versions(&[&rustls::version::TLS12])
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der], key_der)
+        .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(cfg));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((tcp, _)) = listener.accept().await {
+                let _ = acceptor.accept(tcp).await;
+            }
+        });
+        let wrong = format!(
+            "SHA256:{}",
+            base64::engine::general_purpose::STANDARD.encode([9u8; 32])
+        );
+        let err = connect_pinned(TcpStream::connect(addr).await.unwrap(), "localhost", &wrong)
+            .await
+            .unwrap_err();
+        assert!(err.contains("mismatch"), "{err}");
+    }
 }

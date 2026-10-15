@@ -51,6 +51,8 @@ pub mod access_guard;
 
 #[cfg(feature = "mcp-mandate")]
 pub mod mcp_mandate;
+#[cfg(feature = "mcp-mandate")]
+pub mod mcp_tool_fingerprint;
 
 /// SPKI SHA-256 pin. The certificate under verification is not the trust anchor.
 #[cfg(feature = "tls-pin")]

@@ -29,6 +29,7 @@ mod tests {
             is_assets: false,
             is_manage_assets: false,
             is_sessions: false,
+            is_mcp: false,
             is_recordings: false,
             is_users: false,
             is_groups: false,
@@ -39,6 +40,7 @@ mod tests {
             is_iacs: false,
             pending_approval_count: 0,
             pending_iacs_count: 0,
+            pending_mcp_count: 0,
             perms: crate::auth::PermissionContext::default(),
         }
     }

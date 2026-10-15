@@ -174,6 +174,7 @@ pub async fn create_access_rule(
             }
             e
         })?;
+    crate::services::mcp_recheck::notify_policy_changed(&state).await;
     Ok(Json(info_to_response(info)))
 }
 
@@ -238,6 +239,7 @@ pub async fn update_access_rule(
         .update_access_rule(&rule_uuid_str, data, Some(user.uuid.clone()))
         .await
         .map_err(|e| map_not_found(e, "Access rule"))?;
+    crate::services::mcp_recheck::notify_policy_changed(&state).await;
     Ok(Json(info_to_response(updated)))
 }
 
@@ -260,6 +262,7 @@ pub async fn delete_access_rule(
         .delete_access_rule(&rule_uuid_str)
         .await
         .map_err(|e| map_not_found(e, "Access rule"))?;
+    crate::services::mcp_recheck::notify_policy_changed(&state).await;
     Ok(Json(serde_json::json!({
         "status": "deleted",
         "uuid": rule_uuid_str,

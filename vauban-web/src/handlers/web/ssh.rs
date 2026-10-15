@@ -638,6 +638,7 @@ pub async fn connect_ssh(
             ews_uuid: None,
             tunnel_target_addr: None,
             expires_at: None,
+            connected_at: None,
         };
 
         if let Err(e) = diesel::insert_into(proxy_sessions::table)

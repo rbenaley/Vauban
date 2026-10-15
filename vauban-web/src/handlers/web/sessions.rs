@@ -1632,6 +1632,7 @@ pub async fn submit_access_request(
         ews_uuid: None,
         tunnel_target_addr: None,
         expires_at: None,
+        connected_at: None,
     };
 
     if let Err(e) = diesel::insert_into(proxy_sessions::table)
@@ -2057,7 +2058,7 @@ pub async fn update_access_duration(
     ))
 }
 
-/// Terminate every LIVE proxy session of the (requester, asset) couple
+/// Terminate every open (live or suspended) proxy session of the (requester, asset) couple
 /// of a just-revoked grant. Best-effort: each failure is logged; the
 /// WS revalidation probe and the IACS watchdog backstop leftovers.
 async fn cascade_terminate_grant_sessions(state: &AppState, grant_uuid: ::uuid::Uuid) {
@@ -2088,7 +2089,7 @@ async fn cascade_terminate_grant_sessions(state: &AppState, grant_uuid: ::uuid::
     let live_sessions: Vec<ProxySession> = proxy_sessions::table
         .filter(proxy_sessions::user_id.eq(grant_user_id))
         .filter(proxy_sessions::asset_id.eq(grant_asset_id))
-        .filter(proxy_sessions::status.eq_any(SessionStatus::LIVE_AS_STR))
+        .filter(proxy_sessions::status.eq_any(SessionStatus::OPEN_AS_STR))
         .load(&mut conn)
         .await
         .unwrap_or_default();
@@ -2121,7 +2122,7 @@ async fn cascade_terminate_grant_sessions(state: &AppState, grant_uuid: ::uuid::
     }
 }
 
-/// Clamp `expires_at` of every LIVE session of the grant's
+/// Clamp `expires_at` of every open (live or suspended) session of the grant's
 /// (requester, asset) couple to the grant's new horizon. NULL
 /// `expires_at` counts as "unbounded" and is clamped too; later
 /// horizons are reduced; earlier ones are left as-is (a duration
@@ -2158,7 +2159,7 @@ async fn clamp_grant_live_sessions(state: &AppState, grant_uuid: ::uuid::Uuid) {
         proxy_sessions::table
             .filter(proxy_sessions::user_id.eq(grant_user_id))
             .filter(proxy_sessions::asset_id.eq(grant_asset_id))
-            .filter(proxy_sessions::status.eq_any(SessionStatus::LIVE_AS_STR))
+            .filter(proxy_sessions::status.eq_any(SessionStatus::OPEN_AS_STR))
             .filter(
                 proxy_sessions::expires_at
                     .is_null()
@@ -2783,10 +2784,12 @@ pub async fn my_requests(
     jar: CookieJar,
     browser_tz: BrowserTz,
     Query(params): Query<HashMap<String, String>>,
+    incoming_flash: IncomingFlash,
 ) -> Result<impl IntoResponse, AppError> {
     let user = Some(user_context_from_auth(&auth_user));
     let base = BaseTemplate::new("My Requests".to_string(), user.clone(), browser_tz.0)
-        .with_current_path("/sessions/my-requests");
+        .with_current_path("/sessions/my-requests")
+        .with_messages(flash_messages_for_template(&incoming_flash));
     let (title, user_ctx, vauban, messages, language_code, sidebar_content, header_user) =
         apply_sidebar_rbac(&state, &auth_user, base)
             .await
@@ -2911,6 +2914,27 @@ pub async fn my_requests(
             .map_err(AppError::Database)?
     };
 
+    let decision_ids: Vec<&String> = requests_data.iter().filter_map(|r| r.11.as_ref()).collect();
+    let contested: std::collections::HashMap<String, (uuid::Uuid, String)> =
+        if decision_ids.is_empty() {
+            std::collections::HashMap::new()
+        } else {
+            use crate::schema::access_contestations;
+            access_contestations::table
+                .filter(access_contestations::decision_id.eq_any(decision_ids))
+                .select((
+                    access_contestations::decision_id,
+                    access_contestations::uuid,
+                    access_contestations::status,
+                ))
+                .load::<(String, uuid::Uuid, String)>(&mut conn)
+                .await
+                .map_err(AppError::Database)?
+                .into_iter()
+                .map(|(did, uuid, status)| (did, (uuid, status)))
+                .collect()
+        };
+
     let requests: Vec<crate::templates::sessions::my_requests::MyRequestItem> = requests_data
         .into_iter()
         .map(
@@ -2928,6 +2952,12 @@ pub async fn my_requests(
                 max_session_duration,
                 decision_id,
             )| {
+                let contestation = decision_id.as_ref().and_then(|did| contested.get(did)).map(
+                    |(uuid, status)| crate::templates::sessions::my_requests::MyContestation {
+                        uuid: uuid.to_string(),
+                        status_label: crate::models::access_contestation::status_label(status),
+                    },
+                );
                 crate::templates::sessions::my_requests::MyRequestItem {
                     uuid: uuid.to_string(),
                     asset_name,
@@ -2941,6 +2971,7 @@ pub async fn my_requests(
                     approved_by,
                     max_session_duration,
                     decision_id,
+                    contestation,
                 }
             },
         )

@@ -16,7 +16,7 @@ fn auth_csrf_cookie(token: &str, csrf: &str) -> String {
     format!("access_token={}; __vauban_csrf={}", token, csrf)
 }
 
-async fn seed_terminated_mcp(
+pub(crate) async fn seed_terminated_mcp(
     conn: &mut diesel_async::AsyncPgConnection,
     user_id: i32,
     created_by: i32,
@@ -276,6 +276,289 @@ async fn subject_follows_contestation_in_user_zone_reviewer_stays_in_nest() {
     assert!(
         stranger_loc.contains("/sessions/my-requests"),
         "intruder redirect must land on My Requests, got {stranger_loc}"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+async fn contestations_of(conn: &mut diesel_async::AsyncPgConnection, decision_id: &str) -> i64 {
+    use vauban_web::schema::access_contestations;
+    access_contestations::table
+        .filter(access_contestations::decision_id.eq(decision_id))
+        .count()
+        .get_result(conn)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+#[serial]
+async fn a_decision_is_contested_once_uphold_is_final() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let subject =
+        create_test_user(&mut conn, &app.auth_service, &unique_name("uz_once_subj")).await;
+    let reviewer =
+        create_admin_user(&mut conn, &app.auth_service, &unique_name("uz_once_rev")).await;
+    let (session_uuid, decision_id) =
+        seed_terminated_mcp(&mut conn, subject.user.id, reviewer.user.id).await;
+
+    let post = |token: &str, path: String, extra: Option<(&'static str, &'static str)>| {
+        let csrf = app.generate_csrf_token();
+        let mut form = vec![("csrf_token", csrf.clone())];
+        if let Some((k, v)) = extra {
+            form.push((k, v.to_string()));
+        }
+        app.server
+            .post(&path)
+            .add_header(AUTHORIZATION, app.auth_header(token))
+            .add_header(COOKIE, auth_csrf_cookie(token, &csrf))
+            .form(&form)
+    };
+    let contest = || {
+        post(
+            &subject.token,
+            format!("/sessions/{session_uuid}/contest"),
+            Some((
+                "open_reason",
+                "The drift was a false positive on a documented tool",
+            )),
+        )
+    };
+    let location = |r: &axum_test::TestResponse| {
+        r.headers()
+            .get(LOCATION)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("")
+            .to_string()
+    };
+
+    let loc = location(&contest().await);
+    assert!(loc.starts_with("/sessions/contestations/"), "{loc}");
+    let again = location(&contest().await);
+    assert!(
+        !again.starts_with("/sessions/contestations/"),
+        "a second contestation opened while the first is open: {again}"
+    );
+    assert_eq!(contestations_of(&mut conn, &decision_id).await, 1);
+
+    let nest = loc.replacen(
+        "/sessions/contestations/",
+        "/sessions/mcp/contestations/",
+        1,
+    );
+    post(&reviewer.token, format!("{nest}/claim"), None).await;
+    post(
+        &reviewer.token,
+        format!("{nest}/uphold"),
+        Some(("resolution_note", "Drift confirmed by the recording")),
+    )
+    .await;
+
+    let csrf = app.generate_csrf_token();
+    let my_html = app
+        .server
+        .get("/sessions/my-requests")
+        .add_header(AUTHORIZATION, app.auth_header(&subject.token))
+        .add_header(COOKIE, auth_csrf_cookie(&subject.token, &csrf))
+        .await
+        .text();
+    assert!(
+        my_html.contains("Contestation: Upheld") && my_html.contains(&format!("href=\"{loc}\"")),
+        "My Requests must show the upheld contestation and link to it"
+    );
+    assert!(
+        !my_html.contains(&format!("action=\"/sessions/{session_uuid}/contest\"")),
+        "My Requests still offers Contest on a reviewed decision"
+    );
+
+    let after = location(&contest().await);
+    assert!(
+        !after.starts_with("/sessions/contestations/"),
+        "an upheld decision was contested again: {after}"
+    );
+    assert_eq!(
+        contestations_of(&mut conn, &decision_id).await,
+        1,
+        "uphold must be final"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn an_overturned_decision_cannot_be_contested_again() {
+    use vauban_web::models::access_contestation::{NewAccessContestation, STATUS_OVERTURNED};
+    use vauban_web::models::session::ProxySession;
+    use vauban_web::schema::{access_contestations, vauban_groups};
+
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let subject = create_test_user(&mut conn, &app.auth_service, &unique_name("uz_ovr_subj")).await;
+    let reviewer =
+        create_admin_user(&mut conn, &app.auth_service, &unique_name("uz_ovr_rev")).await;
+    let (session_uuid, decision_id) =
+        seed_terminated_mcp(&mut conn, subject.user.id, reviewer.user.id).await;
+    let group = crate::fixtures::create_test_vauban_group(&mut conn, "uz-ovr").await;
+    let group_id: i32 = vauban_groups::table
+        .filter(vauban_groups::uuid.eq(group))
+        .select(vauban_groups::id)
+        .first(&mut conn)
+        .await
+        .unwrap();
+    let row = NewAccessContestation {
+        uuid: Uuid::new_v4(),
+        decision_id: decision_id.clone(),
+        session_uuid,
+        subject_user_id: subject.user.id,
+        status: "open".into(),
+        opened_by_id: subject.user.id,
+        open_reason: "The drift was a false positive on a documented tool".into(),
+    };
+    diesel::insert_into(access_contestations::table)
+        .values(&row)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    diesel::update(access_contestations::table.filter(access_contestations::uuid.eq(row.uuid)))
+        .set((
+            access_contestations::status.eq(STATUS_OVERTURNED),
+            access_contestations::resolved_by_id.eq(reviewer.user.id),
+            access_contestations::restore_group_id.eq(group_id),
+        ))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+    let session: ProxySession = proxy_sessions::table
+        .filter(proxy_sessions::uuid.eq(session_uuid))
+        .first(&mut conn)
+        .await
+        .unwrap();
+    let err = vauban_web::services::access_contestation::open_contestation(
+        &app.app_state,
+        &session,
+        subject.user.id,
+        "Contesting the same decision a second time",
+    )
+    .await
+    .expect_err("an overturned decision was contested again");
+    assert!(
+        err.to_string().contains("already reviewed"),
+        "unexpected refusal: {err}"
+    );
+
+    // The database holds the rule even past the service check.
+    let dup = diesel::insert_into(access_contestations::table)
+        .values(&NewAccessContestation {
+            uuid: Uuid::new_v4(),
+            ..row
+        })
+        .execute(&mut conn)
+        .await;
+    assert!(
+        matches!(
+            dup,
+            Err(diesel::result::Error::DatabaseError(
+                diesel::result::DatabaseErrorKind::UniqueViolation,
+                _
+            ))
+        ),
+        "a second contestation row was stored: {dup:?}"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+async fn mails_to(conn: &mut diesel_async::AsyncPgConnection, kind: &str, to: &str) -> i64 {
+    use vauban_web::schema::email_outbox;
+    email_outbox::table
+        .filter(email_outbox::event_kind.eq(kind))
+        .filter(email_outbox::recipient.eq(to))
+        .count()
+        .get_result(conn)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+#[serial]
+async fn contestation_mails_reviewers_on_open_and_the_subject_on_resolve() {
+    let app = TestApp::spawn().await;
+    let mut state = app.app_state.clone();
+    state.mailer = vauban_web::services::mailer::Mailer::new(
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+        true,
+        5,
+    );
+    let server = axum_test::TestServer::new(crate::common::build_test_router(state)).unwrap();
+    let mut conn = app.get_conn().await;
+    let subject =
+        create_test_user(&mut conn, &app.auth_service, &unique_name("uz_mail_subj")).await;
+    let reviewer =
+        create_admin_user(&mut conn, &app.auth_service, &unique_name("uz_mail_rev")).await;
+    let (session_uuid, _) = seed_terminated_mcp(&mut conn, subject.user.id, reviewer.user.id).await;
+
+    let post = |token: &str, path: String, extra: Option<(&'static str, &'static str)>| {
+        let csrf = app.generate_csrf_token();
+        let mut form = vec![("csrf_token", csrf.clone())];
+        if let Some((k, v)) = extra {
+            form.push((k, v.to_string()));
+        }
+        server
+            .post(&path)
+            .add_header(AUTHORIZATION, app.auth_header(token))
+            .add_header(COOKIE, auth_csrf_cookie(token, &csrf))
+            .form(&form)
+    };
+
+    let opened = post(
+        &subject.token,
+        format!("/sessions/{session_uuid}/contest"),
+        Some((
+            "open_reason",
+            "The drift was a false positive on a documented tool",
+        )),
+    )
+    .await;
+    let loc = opened
+        .headers()
+        .get(LOCATION)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let nest = loc.replacen(
+        "/sessions/contestations/",
+        "/sessions/mcp/contestations/",
+        1,
+    );
+    assert!(nest.starts_with("/sessions/mcp/contestations/"), "{loc}");
+    assert_eq!(
+        mails_to(&mut conn, "mcp.contestation_opened", &reviewer.user.email).await,
+        1
+    );
+    assert_eq!(
+        mails_to(&mut conn, "mcp.contestation_opened", &subject.user.email).await,
+        0,
+        "the opener is not asked to review their own contestation"
+    );
+
+    post(&reviewer.token, format!("{nest}/claim"), None).await;
+    post(
+        &reviewer.token,
+        format!("{nest}/uphold"),
+        Some(("resolution_note", "Drift confirmed by the recording")),
+    )
+    .await;
+    assert_eq!(
+        mails_to(&mut conn, "mcp.contestation_resolved", &subject.user.email).await,
+        1,
+        "the subject hears the outcome once"
+    );
+    assert_eq!(
+        mails_to(&mut conn, "mcp.contestation_resolved", &reviewer.user.email).await,
+        0
     );
 
     test_db::cleanup(&mut conn).await;

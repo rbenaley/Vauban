@@ -51,6 +51,23 @@ fn no_oauth_discovery_routes() {
 }
 
 #[test]
+fn mcp_control_pipe_has_a_single_reader_that_reaps_live_rows() {
+    let src = include_str!("../../src/main.rs");
+    assert_eq!(
+        src.matches("\"mcp_proxy\",").count(),
+        1,
+        "two pumps on the MCP control pipe split frames (Message too large)"
+    );
+    let start = src.find("\"mcp_proxy\",").expect("mcp_proxy pump");
+    let pump = &src[start..start + 800];
+    assert_eq!(
+        pump.matches("terminate_live_mcp_on_proxy_restart").count(),
+        2,
+        "reap live MCP rows before and after the control pump"
+    );
+}
+
+#[test]
 fn hop1_url_comes_from_the_public_origin() {
     let api = include_str!("../../src/handlers/api/mcp_sessions.rs");
     let web = include_str!("../../src/handlers/web/mcp.rs");

@@ -912,6 +912,9 @@ fn spawn_relay(job: RelayJob) {
         // new `direct-tcpip` for the next local TCP `accept()`.
         // Saturating sub: a panic in the relay task that ran before
         // the increment would otherwise underflow.
+        // `try_update` is 1.95; MSRV is 1.93. `fetch_update` is the same
+        // function, renamed in 1.99.
+        #[allow(deprecated)]
         live_channels
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .ok();

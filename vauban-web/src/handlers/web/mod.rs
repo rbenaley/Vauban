@@ -27,7 +27,7 @@ pub(crate) use axum::{
 };
 pub(crate) use axum_extra::extract::CookieJar;
 pub(crate) use diesel::prelude::*;
-pub(crate) use diesel_async::{AsyncConnection, RunQueryDsl};
+pub(crate) use diesel_async::RunQueryDsl;
 pub(crate) use secrecy::ExposeSecret;
 pub(crate) use std::collections::HashMap;
 pub(crate) use zeroize::Zeroize;
@@ -37,6 +37,22 @@ pub(crate) use crate::error::{AppError, AppResult};
 pub(crate) use crate::middleware::auth::{AuthUser, WebAuthUser};
 pub(crate) use crate::middleware::browser_tz::BrowserTz;
 pub(crate) use crate::middleware::flash::{IncomingFlash, flash_redirect, htmx_or_flash_redirect};
+
+/// Incoming flash messages in the shape `BaseTemplate::with_messages`
+/// expects. Every page a `flash_redirect` lands on must render them: the
+/// flash middleware clears the cookie on any response, read or not.
+pub(crate) fn flash_messages_for_template(
+    incoming: &IncomingFlash,
+) -> Vec<crate::templates::base::FlashMessage> {
+    incoming
+        .messages()
+        .iter()
+        .map(|m| crate::templates::base::FlashMessage {
+            level: m.level.clone(),
+            message: m.message.clone(),
+        })
+        .collect()
+}
 pub(crate) use crate::schema::{api_keys, assets as schema_assets, auth_sessions, proxy_sessions};
 pub(crate) use crate::templates::accounts::{
     ApiKeyItem, ApikeyListTemplate, AuthSessionItem, GroupDetailTemplate, GroupListTemplate,
@@ -86,8 +102,20 @@ pub(crate) async fn broadcast_mcp_hitl_badge(state: &crate::AppState) {
         .as_ref()
         .map(|p| p.list_hitl_pendings().len() as i64)
         .unwrap_or(0);
-    let html = format!(r#"<span id="sidebar-mcp-badge" hx-swap-oob="true">{count}</span>"#);
+    let html = mcp_badge_html(count);
     let _ = state.broadcast.send_raw("notifications", html).await;
+}
+
+/// `#sidebar-mcp-badge`, rendered only for `sessions_supervise` (other
+/// pages have no target and ignore the swap, as for the IACS badge).
+pub(crate) fn mcp_badge_html(count: i64) -> String {
+    if count > 0 {
+        format!(
+            r#"<span id="sidebar-mcp-badge" hx-swap-oob="outerHTML" data-testid="sidebar-mcp-badge" class="ml-auto inline-flex items-center rounded-full bg-vauban-600 px-2 py-0.5 text-xs font-medium text-white">{count}</span>"#
+        )
+    } else {
+        r#"<span id="sidebar-mcp-badge" hx-swap-oob="outerHTML" data-testid="sidebar-mcp-badge"></span>"#.to_string()
+    }
 }
 
 /// Same MCP sidebar signal as [`broadcast_mcp_hitl_badge`].
@@ -160,7 +188,12 @@ pub(crate) async fn apply_sidebar_rbac(
     let perms = crate::auth::PermissionContext::load(state, auth_user).await;
     let admin = perms.admin_view;
     let iacs_manage = perms.iacs_manage;
+    let supervise = perms.sessions_supervise;
     let mut base = base.with_perms(perms);
+
+    if supervise && let Some(proxy) = state.proxy_mcp.as_ref() {
+        base = base.with_pending_mcp_count(proxy.list_hitl_pendings().len() as i64);
+    }
 
     if iacs_manage && let Ok(mut conn) = state.db_pool.get().await {
         use crate::schema::ews_onboarding_requests;
@@ -564,6 +597,35 @@ pub(crate) fn validate_kerberos_fqdn(hostname: &str) -> Result<(), String> {
             "Kerberos RDP requires a fully-qualified hostname (e.g. host.example.com), \
              got a short name: {host}"
         ));
+    }
+    Ok(())
+}
+
+/// Store the MCP upstream SPKI pin from the asset form
+/// (`connection_config.mcp_upstream_tls_spki`). Blank keeps the stored
+/// value. Sessions and discover refuse an MCP asset without a pin (ADR 010).
+pub(crate) fn apply_mcp_tls_spki(
+    config: &mut serde_json::Value,
+    input: Option<&str>,
+) -> Result<(), String> {
+    use base64::Engine as _;
+    let Some(pin) = input.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(());
+    };
+    let digest = pin
+        .strip_prefix("SHA256:")
+        .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok());
+    if digest.is_none_or(|d| d.len() != 32) {
+        return Err(
+            "MCP upstream TLS pin must be SHA256:<base64> of the server SPKI (32 bytes)"
+                .to_string(),
+        );
+    }
+    if let Some(obj) = config.as_object_mut() {
+        obj.insert(
+            "mcp_upstream_tls_spki".to_string(),
+            serde_json::Value::String(pin.to_string()),
+        );
     }
     Ok(())
 }

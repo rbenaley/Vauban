@@ -314,6 +314,15 @@ pub async fn create_session(
         }
     }
 
+    // After the access decision so a denied caller learns nothing about the asset type.
+    let asset_kind = crate::models::asset::AssetType::try_parse(&asset_type);
+    if !asset_kind.is_some_and(|t| request.session_type.matches_asset(t)) {
+        return Err(AppError::Validation(format!(
+            "session_type '{}' does not match asset type '{}'",
+            request.session_type, asset_type
+        )));
+    }
+
     // TODO: Get real client IP from request headers
     // SAFETY: "127.0.0.1" is a valid IP address literal, parsing cannot fail
     #[allow(clippy::unwrap_used)]
@@ -341,6 +350,7 @@ pub async fn create_session(
         ews_uuid: None,
         tunnel_target_addr: None,
         expires_at: None,
+        connected_at: None,
     };
 
     let session: ProxySession = diesel::insert_into(proxy_sessions)

@@ -1,0 +1,193 @@
+# path:line  # reason        or        path:~substring  # reason
+# Lines that cannot run under `cargo test`. Keep each entry justified.
+
+# main_loop needs a capsicum::Entered token and live pipes; dispatch_authorized
+# itself is unit-tested and test_main_loop_routes_every_channel_through_peer_gate
+# pins that both receive arms call it.
+vauban-access/src/main.rs:~dispatch_authorized(supervisor, state, msg, Some(AccessPeer::Supervisor), "supervisor")
+vauban-access/src/main.rs:~if let Err(e) =
+vauban-access/src/main.rs:~let peer = AccessPeer::from_channel_label(name);
+vauban-access/src/main.rs:~if let Err(e) = dispatch_authorized(channel, state, msg, peer, name) {
+
+# Compare-and-swap conflict: needs another writer to change connection_config
+# between the SELECT and the UPDATE of the same drift report; not reproducible
+# deterministically. The happy path and the retry loop bound are tested.
+vauban-web/src/services/mcp_tool_drift.rs:~continue;
+vauban-web/src/services/mcp_tool_drift.rs:~drift not applied
+
+# Discover and MCP open run only after vauban-access mints a diagnostic or
+# session token over IPC, and the discover result needs a proxy-mcp round trip.
+# Neither peer exists under `cargo test`; the parsing helpers they call are
+# unit-tested, and local-tools/scripts/live_mcp_fixes.py (F2, F4, F5) runs
+# these paths against the live stack.
+vauban-web/src/handlers/web/mcp_discover.rs:~let discovered =
+vauban-web/src/handlers/web/mcp_discover.rs:~discover_tools_from_upstream(&state, &asset
+vauban-web/src/handlers/web/mcp_discover.rs:~tracing::warn!(asset = %uuid_str, error = %e, "MCP tool discovery failed");
+vauban-web/src/handlers/web/mcp_discover.rs:~let tools = discovered.tools;
+vauban-web/src/handlers/web/mcp_discover.rs:~let new_config = apply_discovered_instructions_at(
+vauban-web/src/handlers/web/mcp_discover.rs:~apply_discovered_catalog(asset.connection_config.clone(), &tools),
+vauban-web/src/handlers/web/mcp_discover.rs:~discovered.instructions.as_deref(),
+vauban-web/src/handlers/web/mcp_discover.rs:~&chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+vauban-web/src/handlers/web/mcp_discover.rs:~"mcp_discover").await;
+vauban-web/src/services/mcp_discover.rs:~) -> AppResult<DiscoveredCatalog> {
+vauban-web/src/services/mcp_discover.rs:~mcp_upstream_tls_pin(&asset.connection_config)?
+vauban-web/src/services/mcp_discover.rs:~Ok(DiscoveredCatalog {
+vauban-web/src/services/mcp_discover.rs:~tools: tools_from_list_result(&listed)?,
+vauban-web/src/services/mcp_discover.rs:~instructions: instructions_from_list_result(&listed),
+vauban-web/src/services/mcp_session.rs:~mcp_upstream_tls_pin(&asset.connection_config)?
+vauban-web/src/services/mcp_session.rs:~"MCP asset hostname must be bare (no URL scheme); the upstream is always HTTPS"
+vauban-web/src/services/mcp_session.rs:~tool_constraints_json_for_asset(&asset.connection_config, &rule_hitl, &rule_plan)
+
+# Proxy races that need a second thread to land between two lock scopes of
+# one request, with no await in between (not deterministic):
+# - 1919: a call that is not a HITL one-shot finds its session suspended or
+#   ended at the relay re-check (the else of `if hitl_oneshot`); the awaited
+#   cases are pinned by suspend/terminate_during_pdp_wait_* in
+#   mcp_pyramid_tests.rs.
+# - 1434-1437: `step_inflight` on an approved plan pending. An in-flight step
+#   keeps the mandate active (`all_steps_done` needs `inflight == None`), so
+#   the CheckStep above answers first unless another request installs a new
+#   mandate in between; that CheckStep's `step_inflight` is tested.
+vauban-proxy-mcp/src/main.rs:1919
+vauban-proxy-mcp/src/main.rs:1434
+vauban-proxy-mcp/src/main.rs:1435
+vauban-proxy-mcp/src/main.rs:1436
+vauban-proxy-mcp/src/main.rs:1437
+
+# Heartbeat Pong while the leaf waits for its tunnel identity at boot
+# (`wait_for_mcp_identity`): runs only on a live supervisor channel before
+# the sandbox. The field is the same counter as the main-loop Pong.
+vauban-proxy-mcp/src/main.rs:3445
+
+# Supervisor TcpConnect broker: runs only with live service channels and an
+# FD-passing socket. The replay cache it calls is 100 % covered in
+# shared/src/session_token/replay_cache.rs; live sessions exercise the broker.
+vauban-supervisor/src/main.rs:~c.record(&token.session_id, &token.nonce, token.expires_at, now)
+
+# Cutting events: a database failure that lands between two queries of the
+# same request (the session list loads, then terminating one row or the
+# resend list fails; the tombstone commits, then listing the open sessions
+# fails; the asset delete reads the asset, then its groups). Not
+# reproducible deterministically with one shared pool; an
+# unreachable database before the first query is covered by
+# gwt_an_unreachable_database_is_logged_not_fatal.
+vauban-web/src/services/session_termination.rs:~Err(e) => tracing::warn!(
+vauban-web/src/services/session_termination.rs:~resend terminate: list failed
+vauban-web/src/services/session_termination.rs:305
+vauban-web/src/services/session_termination.rs:307
+vauban-web/src/handlers/web/manage_assets.rs:2053
+vauban-web/src/handlers/web/manage_assets.rs:2016
+vauban-web/src/handlers/web/manage_assets.rs:2017
+vauban-web/src/handlers/web/manage_assets.rs:2018
+vauban-web/src/handlers/web/manage_assets.rs:2019
+vauban-web/src/handlers/web/manage_assets.rs:2020
+vauban-web/src/handlers/web/manage_assets.rs:2021
+vauban-web/src/services/mcp_rule_prune.rs:74
+
+# web `fn main` starts the 30 s recheck loop; the loop calls `recheck_tick`
+# only after a real tick. `recheck_tick` itself is driven by
+# gwt_lost_terminate_is_resent_by_the_recheck; the pin
+# lost_terminates_are_resent_by_the_safety_net checks main.rs spawns it.
+# The tick summary is an info! event, skipped when tests install no
+# subscriber; llvm-cov then marks the macro and the closing brace of its
+# `if` as missed although the test asserts the branch is taken (resent >= 3).
+vauban-web/src/main.rs:~policy_recheck::spawn_policy_recheck(app_state.clone());
+vauban-web/src/services/policy_recheck.rs:~recheck_tick(&state, &mut failures).await;
+vauban-web/src/services/policy_recheck.rs:~"policy_recheck: tick complete"
+vauban-web/src/services/policy_recheck.rs:136
+
+# Heartbeat Pong replies of the web supervisor loop: field added to the shared
+# ServiceStats literal (always 0 outside proxy-mcp); the loop needs the
+# supervisor pipes.
+vauban-web/src/ipc/supervisor.rs:~audit_events_dropped: 0,
+vauban-web/src/main.rs:~audit_events_dropped: 0,
+
+# MCP rule tools prune: vauban-access answers PruneMcpRuleTools with an
+# Error only when PostgreSQL fails mid-request, and the boot call runs in the
+# access binary (capsicum, supervisor pipes). prune_mcp_rule_tools and
+# prune_at_boot are tested in vauban-access (mcp_rule_tools_db), and the web
+# side logs and moves on (scope_is_sorted_deduped_and_never_widens_to_every_rule).
+vauban-access/src/main.rs:~mcp_rule_tools::prune_at_boot(&pool)
+vauban-access/src/handlers.rs:~Failed to prune MCP rule tools
+vauban-web/src/ipc/access.rs:~AccessResp::Error(e) => Err(AppError::Ipc(e)),
+vauban-web/src/ipc/access.rs:~_ => Err(AppError::Ipc("unexpected response".to_string())),
+
+# MCP rule tools prune: the scope is empty only before boot sets the virtual
+# « All assets » id, and access answers with an Error only when PostgreSQL
+# fails mid-request (same as the prune entries above).
+vauban-web/src/services/mcp_rule_prune.rs:44
+vauban-web/src/services/mcp_rule_prune.rs:56
+vauban-access/src/mcp_rule_tools.rs:~Err(e) => warn!(error = %e, "MCP rule tools boot prune failed"),
+vauban-access/src/mcp_rule_tools.rs:217
+vauban-access/src/mcp_rule_tools.rs:218
+vauban-access/src/mcp_rule_tools.rs:219
+
+# MCP access recheck: a terminate IPC that fails needs a proxy-mcp link whose
+# send errors after the database cut; the no-link branch and the cut itself
+# are tested (gwt_lost_access_recheck_terminate_is_resent). The recheck loop
+# body runs only from web `fn main`; run_once is driven directly by tests.
+vauban-web/src/services/mcp_recheck.rs:~Some(Err(e)) => tracing::warn!(
+vauban-web/src/services/mcp_recheck.rs:~run_once(&state).await;
+
+# Same macro artifact as policy_recheck above: the resume warn! runs in
+# suspend_and_resume_of_an_unknown_visit_change_nothing, but with no tracing
+# subscriber llvm-cov marks the closing brace of its `if` as missed.
+vauban-proxy-mcp/src/main.rs:2877
+
+# Binary-only wiring: web `fn main` (proxy-mcp pump reap and the production
+# router; tests/common mirrors the matrix route and drives the handler), the
+# access main loop (capsicum, supervisor pipes; rustfmt splits the
+# dispatch_authorized call matched above), the supervisor message loop.
+vauban-web/src/main.rs:~terminate_live_mcp_on_proxy_restart(&reap_state)
+vauban-web/src/main.rs:1020
+vauban-web/src/main.rs:1023
+vauban-web/src/main.rs:~.route("/access/matrix", get(handlers::web::mcp_access_matrix))
+vauban-access/src/main.rs:422
+vauban-access/src/main.rs:423
+vauban-access/src/main.rs:424
+vauban-access/src/main.rs:425
+vauban-access/src/main.rs:426
+vauban-access/src/main.rs:427
+vauban-supervisor/src/main.rs:~handle_audit_log_file_request(request_id, &segment_name, audit_log_path, state);
+
+# hyper hands the request back only when the connection closes between
+# `ready()` and `try_send_request` (a race); the Lost branch next to it and
+# the NotSent from `ready()` are tested.
+vauban-proxy-mcp/src/upstream_http.rs:249
+
+# Connect success swaps the page: it needs a session token minted by access
+# and an opened visit on proxy-mcp (same as the MCP open entries above).
+# ComputeMcpEffectiveTools fails only when access cannot reach PostgreSQL;
+# its empty answer is tested (connect_and_hop1_refuse_when_no_approved_tool_is_granted).
+vauban-web/src/handlers/web/mcp.rs:~("HX-Reswap", "innerHTML"),
+vauban-web/src/handlers/web/mcp.rs:~tracing::error!(error = %e, "access ComputeMcpEffectiveTools failed");
+vauban-web/src/handlers/web/mcp.rs:329
+
+# MCP access forms, defence in depth: every role of the default Casbin policy
+# that passes require_mcp_zone also holds access_rules:write, so these
+# refusals only run with a customised policy. Askama render of a fixed
+# template cannot fail at run time. Access refuses a delete only when
+# PostgreSQL fails after the rule was loaded.
+vauban-web/src/handlers/web/mcp_access.rs:612
+vauban-web/src/handlers/web/mcp_access.rs:613
+vauban-web/src/handlers/web/mcp_access.rs:614
+vauban-web/src/handlers/web/mcp_access.rs:615
+vauban-web/src/handlers/web/mcp_access.rs:616
+vauban-web/src/handlers/web/mcp_access.rs:638
+vauban-web/src/handlers/web/mcp_access.rs:639
+vauban-web/src/handlers/web/mcp_access.rs:640
+vauban-web/src/handlers/web/mcp_access.rs:641
+vauban-web/src/handlers/web/mcp_access.rs:642
+vauban-web/src/handlers/web/mcp_access.rs:643
+vauban-web/src/handlers/web/mcp_access.rs:644
+vauban-web/src/handlers/web/mcp_access.rs:1042
+vauban-web/src/handlers/web/mcp_access.rs:1043
+vauban-web/src/handlers/web/mcp_access.rs:1062
+vauban-web/src/handlers/web/mcp_access.rs:1063
+
+# Contestation insert: the unique index on an open contestation per decision
+# fires only when two opens race past the existence check; any other database
+# error there is a PostgreSQL failure.
+vauban-web/src/services/access_contestation.rs:99
+vauban-web/src/services/access_contestation.rs:100
+vauban-web/src/services/access_contestation.rs:101

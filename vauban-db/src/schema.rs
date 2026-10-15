@@ -271,6 +271,16 @@ diesel::table! {
 }
 
 diesel::table! {
+    mcp_mandates (session_id) {
+        session_id -> Text,
+        mandate_id -> Text,
+        state -> Jsonb,
+        expires_at -> Timestamptz,
+        updated_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
     proxy_sessions (id) {
         id -> Int4,
         uuid -> Uuid,
@@ -336,6 +346,7 @@ diesel::table! {
         decision_actor -> Nullable<Varchar>,
         decision_at -> Nullable<Timestamptz>,
         decision_source_group_id -> Nullable<Int4>,
+        decision_source_group_ids -> Nullable<Jsonb>,
     }
 }
 
@@ -498,6 +509,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     ews,
     ews_audit_log,
     ews_onboarding_requests,
+    mcp_mandates,
     proxy_sessions,
     secret_access_rules,
     secret_groups,

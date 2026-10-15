@@ -92,7 +92,7 @@ pub struct PlanStory {
     pub risks: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SealedStep {
     pub step_id: String,
     pub operation: String,
@@ -106,7 +106,7 @@ pub struct SealedStep {
     pub consumed: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MandateState {
     pub mandate_id: String,
     pub sealed_digest: String,
@@ -115,11 +115,55 @@ pub struct MandateState {
     pub contract_json: String,
     pub steps: Vec<SealedStep>,
     /// Memorized JSON-RPC bodies for idempotent replay (no second upstream).
+    #[serde(with = "mandate_results_serde")]
     pub results: HashMap<(String, String), Value>,
     /// Step consumed pending upstream success — rolled back on failure.
     pub inflight: Option<(String, String)>,
     /// Unix seconds; after this the mandate is dead (fail-closed).
     pub expires_at: f64,
+}
+
+mod mandate_results_serde {
+    use super::*;
+    use serde::de::{MapAccess, Visitor};
+    use serde::ser::SerializeMap;
+    use serde::{Deserializer, Serializer};
+    use std::fmt;
+
+    const SEP: char = '\u{1f}';
+
+    pub fn serialize<S>(map: &HashMap<(String, String), Value>, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut s = ser.serialize_map(Some(map.len()))?;
+        for ((a, b), v) in map {
+            s.serialize_entry(&format!("{a}{SEP}{b}"), v)?;
+        }
+        s.end()
+    }
+
+    pub fn deserialize<'de, D>(de: D) -> Result<HashMap<(String, String), Value>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = HashMap<(String, String), Value>;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("map of step_id\\x1fdigest -> JSON")
+            }
+            fn visit_map<M: MapAccess<'de>>(self, mut acc: M) -> Result<Self::Value, M::Error> {
+                let mut out = HashMap::new();
+                while let Some((k, v)) = acc.next_entry::<String, Value>()? {
+                    let (a, b) = k.split_once(SEP).unwrap_or((k.as_str(), ""));
+                    out.insert((a.to_string(), b.to_string()), v);
+                }
+                Ok(out)
+            }
+        }
+        de.deserialize_map(V)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -229,16 +273,31 @@ pub fn strip_vauban_args(args: &Value) -> Value {
     v
 }
 
-/// Strip `params.arguments.vauban` on a JSON-RPC body before upstream.
+/// Strip every Vauban-reserved key from a JSON-RPC body before upstream:
+/// `params.arguments.vauban` and `params._meta.vauban` (Story, Contract,
+/// pending_id). A `_meta` left empty by the strip is dropped; other `_meta`
+/// keys (e.g. `progressToken`) are relayed untouched.
 pub fn strip_vauban_from_rpc_body(body: &mut Value) {
     if let Some(Value::Object(map)) = body.pointer_mut("/params/arguments") {
         map.remove(VAUBAN_ARGS_KEY);
     }
+    let Some(Value::Object(params)) = body.get_mut("params") else {
+        return;
+    };
+    let emptied = match params.get_mut("_meta") {
+        Some(Value::Object(meta)) => meta.remove(VAUBAN_ARGS_KEY).is_some() && meta.is_empty(),
+        _ => false,
+    };
+    if emptied {
+        params.remove("_meta");
+    }
 }
 
+/// Bounds count characters, like the `minLength`/`maxLength` the agent
+/// sees in `arguments.vauban`.
 fn story_field_len(s: &str, min: usize, max: usize, name: &str) -> Result<(), String> {
-    let t = s.trim();
-    if t.len() < min || t.len() > max {
+    let n = s.trim().chars().count();
+    if n < min || n > max {
         return Err(format!(
             "require_plan_story_for_human: {name} must be {min}..{max} (trimmed)"
         ));
@@ -286,8 +345,8 @@ pub fn parse_contract(raw: &Value) -> Result<Contract, String> {
         if s.operation.trim().is_empty() {
             return Err("invalid_contract: empty operation".into());
         }
-        let intent = s.intent.trim();
-        if intent.len() < 10 || intent.len() > 500 {
+        let intent = s.intent.trim().chars().count();
+        if !(10..=500).contains(&intent) {
             return Err("invalid_contract: intent must be 10..500".into());
         }
         if !matches!(s.mode, BindingMode::Literal) {
@@ -1042,5 +1101,65 @@ mod tests {
         });
         strip_vauban_from_rpc_body(&mut body);
         assert_eq!(body["params"]["arguments"], json!({ "name": "hello.txt" }));
+    }
+
+    /// `_meta.vauban` (Story, Contract, pending_id) must
+    /// never reach the upstream; foreign `_meta` keys are relayed.
+    #[test]
+    fn strip_vauban_removes_meta_vauban_keeps_other_meta() {
+        let mut body = json!({
+            "method": "tools/call",
+            "params": {
+                "name": "t",
+                "arguments": { "a": 1 },
+                "_meta": { "vauban": { "story": "secret" }, "progressToken": 3 }
+            }
+        });
+        strip_vauban_from_rpc_body(&mut body);
+        assert_eq!(body["params"]["_meta"], json!({ "progressToken": 3 }));
+        assert_eq!(body["params"]["arguments"], json!({ "a": 1 }));
+
+        let mut only_vauban = json!({
+            "params": { "_meta": { "vauban": { "pending_id": "p" } } }
+        });
+        strip_vauban_from_rpc_body(&mut only_vauban);
+        assert!(only_vauban["params"].get("_meta").is_none());
+
+        let mut empty_meta = json!({ "params": { "_meta": {} } });
+        strip_vauban_from_rpc_body(&mut empty_meta);
+        assert_eq!(empty_meta["params"]["_meta"], json!({}));
+
+        let mut odd_meta = json!({ "params": { "_meta": "x" } });
+        strip_vauban_from_rpc_body(&mut odd_meta);
+        assert_eq!(odd_meta["params"]["_meta"], "x");
+
+        let mut no_params = json!({ "method": "tools/list" });
+        strip_vauban_from_rpc_body(&mut no_params);
+        assert_eq!(no_params, json!({ "method": "tools/list" }));
+    }
+
+    #[test]
+    fn mandate_state_json_roundtrip_tuple_results() {
+        let contract = parse_contract(&json!({
+            "approval": "mission",
+            "steps": [{
+                "step_id": "1",
+                "intent": "Echo a sealed lab message now",
+                "operation": "echo",
+                "mode": "literal",
+                "arguments": { "message": "hi" }
+            }]
+        }))
+        .unwrap();
+        let mut m = seal_mandate("m1", "s1", "a1", &contract, 1_000.0).unwrap();
+        m.results
+            .insert(("1".into(), "deadbeef".into()), json!({"ok": true}));
+        let v = serde_json::to_value(&m).unwrap();
+        let back: MandateState = serde_json::from_value(v).unwrap();
+        assert_eq!(back.mandate_id, "m1");
+        assert_eq!(
+            back.results.get(&("1".into(), "deadbeef".into())),
+            Some(&json!({"ok": true}))
+        );
     }
 }

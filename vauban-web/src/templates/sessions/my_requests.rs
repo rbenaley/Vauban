@@ -20,6 +20,15 @@ pub struct MyRequestItem {
     /// MCP access decision stamped on a terminated visit. Present only
     /// when the subject may open a contestation.
     pub decision_id: Option<String>,
+    /// The contestation of `decision_id`, if any: a decision is contested
+    /// once, so its presence replaces the Contest form.
+    pub contestation: Option<MyContestation>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MyContestation {
+    pub uuid: String,
+    pub status_label: &'static str,
 }
 
 impl MyRequestItem {
@@ -75,6 +84,7 @@ mod tests {
             approved_by: None,
             max_session_duration: duration,
             decision_id: None,
+            contestation: None,
         }
     }
 
