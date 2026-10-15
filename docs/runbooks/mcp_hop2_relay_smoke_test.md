@@ -81,4 +81,4 @@ Pass: the leaf exits 0 on the IPC shutdown, in the same breath as the other chil
 1. Open a visit whose asset has no SPKI pin (or clear the pin on a throw-away asset). Hop 1 must refuse. A pin of the wrong key must refuse before any MCP byte reaches that upstream.
 2. Stop `vauban-audit` so the leaf's audit pipe closes, then `tools/call` on a visit that was already open. The call must fail (`recording_sync_failed`). The upstream must show no new request for that call.
 
-Pass: an upstream without a pin is refused, and a closed audit pipe does not let the visit succeed. A successful `tools/call` while the audit pipe is down is a fail. `just test-full-stack mcp` is this staging check. It is not a substitute for `just test-mcp-pyramid`, and `vauban-e2e` stays outside the workspace.
+Pass: an upstream without a pin is refused, and a closed audit pipe does not let the visit succeed. A successful `tools/call` while the audit pipe is down is a fail. `just test-full-stack mcp` is this staging check. It is not a substitute for `just test`, and `vauban-e2e` stays outside the workspace.

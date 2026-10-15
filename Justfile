@@ -27,57 +27,14 @@ check *ARGS:
 # Requires PostgreSQL for crates that hit DATABASE_URL (see config/testing.toml).
 # vauban-web exposes a single integration crate (`integration_tests`) so the
 # workspace run does not spawn two binaries racing on the same catalog.
+# `--all-features` turns on shared's optional features while that crate is
+# the test root (`mcp-mandate`, `session-token`, `json-redact`, and the
+# rest). Without it, Cargo skips every `required-features` suite. One
+# workspace invocation covers those suites and every crate test; a filter
+# is `just test gwt_`.
 test *ARGS:
-    cargo test --workspace {{ARGS}} -- --test-threads=1
+    cargo test --workspace --all-features {{ARGS}} -- --test-threads=1
     cargo test {{rdp_manifest}} {{ARGS}} -- --test-threads=1
-
-# MCP acceptance GWT filter (docs/technical/Vauban_MCP_Architecture_EN(1.0).md).
-# Covers V-1, V-8, V-15, L0-1, B-5, B-6, B-7, B-11 (proxy-mcp unit + web source pins).
-# V-15 AccessGuard timeout substrate is also asserted inside proxy-mcp `gwt_v15_*`.
-# Also runs the proxy `gwt_*` tests of the MCP security fixes.
-# FreeBSD live checklist: docs/runbooks/mcp_staging_gwt_acceptance.md
-test-mcp-gwt:
-    cargo test -p vauban-proxy-mcp --bin vauban-proxy-mcp gwt_ -- --test-threads=1
-    cargo test -p vauban-proxy-mcp --bin vauban-proxy-mcp upstream_rebroker -- --test-threads=1
-    cargo test -p vauban-supervisor --bin vauban-supervisor test_supervisor_tcp_broker_bypasses -- --test-threads=1
-    cargo test -p vauban-web --test integration_tests gwt_ -- --test-threads=1
-    cargo test -p vauban-web --test integration_tests mcp_audit_fixes -- --test-threads=1
-    cargo test -p vauban-web --test integration_tests mcp_security_fixes -- --test-threads=1
-    cargo test -p vauban-web --test integration_tests mcp_hitl_decide -- --test-threads=1
-    cargo test -p shared --lib --features access-guard test_authorize_timeout_when_backend_silent -- --test-threads=1
-    cargo test -p shared --lib --features access-guard,mcp-mandate test_mcp_mandate_ -- --test-threads=1
-    cargo test -p shared --lib --features mcp-mandate plan_mandate_pdp -- --test-threads=1
-    cargo test -p vauban-access --lib mcp_pdp -- --test-threads=1
-    cargo test -p vauban-access --lib peer_authz -- --test-threads=1
-    cargo test -p vauban-vault --bin vauban-vault proxy_mcp -- --test-threads=1
-    cargo test -p vauban-proxy-mcp --bin vauban-proxy-mcp mcp_fix_e2e -- --test-threads=1
-    cargo test -p vauban-proxy-mcp --bin vauban-proxy-mcp audit::tests -- --test-threads=1
-    cargo test -p vauban-proxy-mcp --bin vauban-proxy-mcp tool_drift -- --test-threads=1
-    cargo test -p vauban-proxy-mcp --bin vauban-proxy-mcp heartbeat_reports_worm_refusals -- --test-threads=1
-    cargo test -p shared --lib --features session-token replay_cache -- --test-threads=1
-    cargo test -p shared --lib --features json-redact json_redact -- --test-threads=1
-    cargo test -p vauban-web --lib mcp_discover -- --test-threads=1
-
-# MCP test pyramid (docs/technical/Vauban_MCP_Architecture_EN(1.0).md §13):
-# every in-process MCP layer (unit, invariant pins, proptest, battle, attack,
-# wire, web and IPC end to end). Filters are substrings of the test path, so
-# a new `mcp_*` test module is picked up without editing this recipe.
-# Smoke runbooks and `just test-full-stack mcp` are the two layers above it.
-test-mcp-pyramid:
-    cargo test -p shared --features mcp-mandate --test mcp_source_invariants --test mcp_policy_proptest --test mcp_mandate_battle --test mcp_wire_frozen_test -- --test-threads=1
-    cargo test -p shared --features session-token --test session_token_proptest --test mcp_replay_battle_test -- --test-threads=1
-    cargo test -p shared --features mcp-mandate --test mcp_mandate_proptest -- --test-threads=1
-    cargo test -p shared --features json-redact --test json_redact_proptest -- --test-threads=1
-    cargo test -p shared --lib --features access-guard,mcp-mandate,session-token,json-redact -- --test-threads=1 mcp json_redact replay_cache
-    cargo test -p vauban-proxy-mcp -- --test-threads=1
-    cargo test -p vauban-mcp -- --test-threads=1
-    cargo test -p vauban-access --lib -- --test-threads=1 mcp peer_authz
-    cargo test -p vauban-vault --bin vauban-vault -- --test-threads=1 proxy_mcp
-    cargo test -p vauban-supervisor --bin vauban-supervisor -- --test-threads=1 broker
-    cargo test -p vauban-supervisor --bin vauban-supervisor -- --test-threads=1 heartbeat_dispatches_tcp_connect_read_during_pong_wait
-    for f in vauban-proxy-mcp/scripts/check_mcp_*.sh; do bash "$f" || exit 1; done
-    cargo test -p vauban-web --lib -- --test-threads=1 mcp session_termination policy_recheck access_decision templates::sessions::recording_
-    cargo test -p vauban-web --test integration_tests -- --test-threads=1 mcp cutting_events jit_grant_revocation jit_revocation_pins
 
 # Full-stack tests (vauban-e2e, outside the workspace): real supervisor and
 # every service on a throw-away `vauban_e2e` database, driven by headless
@@ -115,6 +72,9 @@ lint:
     # Prune .cursor: the MCP lab archive lives there and is not the
     # product tree. Its check_*.sh would lint that copy and fail validate.
     done < <(find . \( -path ./target -o -path ./.git -o -path ./.cursor \) -prune -o -path '*/scripts/check_*.sh' -print | sort)
+    # Packaging pin lives next to pkg/, not under scripts/, so the find
+    # above does not see it. One run, with the other structural checks.
+    just check-mcp-pkg
     just deny
     just semgrep
 
@@ -153,8 +113,8 @@ semgrep:
     "${SEMGREP}" --config .semgrep/untrusted-input.yml --error --quiet
 
 # Full validation cycle: build + lint + clippy + test (stops on first failure).
-# Packaging dry-check is extra (Mac-safe; FreeBSD live A–C stays in
-# docs/runbooks/mcp_staging_gwt_acceptance.md).
+# The MCP packaging dry-check runs inside lint. FreeBSD live A–C stays in
+# docs/runbooks/mcp_staging_gwt_acceptance.md.
 # Exports VAUBAN_CONFIG_DIR to the repo config/ for the duration (release
 # binaries do not fall back to compile-time workspace paths).
 validate:
@@ -165,8 +125,6 @@ validate:
     just lint
     just clippy
     just test
-    just test-mcp-pyramid
-    just check-mcp-pkg
 
 # Build release binaries
 release:

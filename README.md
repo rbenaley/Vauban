@@ -547,7 +547,7 @@ just run -- migrate --database-url postgresql://vauban_test:vauban_test@localhos
 ### Running Tests
 
 ```bash
-# Full gate (workspace + vauban-proxy-rdp, --test-threads=1)
+# Full gate (workspace --all-features + vauban-proxy-rdp, --test-threads=1)
 just test
 
 # Workspace unit/lib tests only

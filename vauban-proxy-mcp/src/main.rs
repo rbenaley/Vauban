@@ -4052,7 +4052,7 @@ async fn main() -> ExitCode {
 #[cfg(test)]
 mod gwt_tests {
     //! Phase 5.1 automated acceptance pins (docs/specs/vauban-mcp/08 + 09).
-    //! Named `gwt_*` so `just test-mcp-gwt` can filter them.
+    //! Named `gwt_*` so `just test gwt_` can filter them.
 
     use super::*;
     use axum::body::to_bytes;
