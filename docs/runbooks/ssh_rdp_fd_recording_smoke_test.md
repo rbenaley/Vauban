@@ -21,14 +21,14 @@ Related:
 ```bash
 rtk cargo fmt --all -- --check
 rtk cargo clippy -p shared -p vauban-proxy-ssh -p vauban-audit -p vauban-supervisor -p vauban-web --all-targets -- -D warnings
-rtk cargo clippy --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target --all-targets -- -D warnings
+rtk cargo clippy --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target-rdp --all-targets -- -D warnings
 bash vauban-proxy-ssh/scripts/check_ssh_recording_fd.sh
 bash vauban-proxy-rdp/scripts/check_rdp_recording_fd.sh
 rtk cargo test -p shared -p vauban-proxy-ssh -p vauban-audit -p vauban-web -- recording_fd -- --test-threads=1
-rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target -- recording_fd -- --test-threads=1
+rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target-rdp -- recording_fd -- --test-threads=1
 # hand-off:
 rtk cargo test --workspace -- --test-threads=1
-rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target -- --test-threads=1
+rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target-rdp -- --test-threads=1
 ```
 
 ## Lab prerequisites

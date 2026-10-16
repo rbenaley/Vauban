@@ -22,9 +22,9 @@ Related:
 bash shared/scripts/check_ipc_eof_handling.sh
 rtk cargo fmt --all -- --check
 rtk cargo clippy -p shared -p vauban-supervisor -p vauban-web -p vauban-proxy-ssh --all-targets -- -D warnings
-rtk cargo clippy --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target --all-targets -- -D warnings
+rtk cargo clippy --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target-rdp --all-targets -- -D warnings
 rtk cargo test -p shared -p vauban-supervisor -p vauban-web -p vauban-proxy-ssh -- pipe_store linked pump_exit web_eof recv_after_eof classify_web -- --test-threads=1
-rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target -- classify_web recv_delivers battle_recv e2e_select -- --test-threads=1
+rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target-rdp -- classify_web recv_delivers battle_recv e2e_select -- --test-threads=1
 ```
 
 ## Lab prerequisites

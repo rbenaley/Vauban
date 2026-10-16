@@ -32,7 +32,7 @@ rtk cargo test -p shared -p vauban-web -- correlated -- --test-threads=1
 rtk cargo test -p shared --features access-guard -- access_guard -- --test-threads=1
 # before hand-off / merge:
 rtk cargo test --workspace -- --test-threads=1
-rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target -- --test-threads=1
+rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target-rdp -- --test-threads=1
 ```
 
 Suite highlights that must stay green:

@@ -20,6 +20,14 @@ fn full_mini_topology() -> Vec<(Service, Service, PipeKind)> {
     ]
 }
 
+/// `/dev/fd` is the whole process. The two tests in this binary both open
+/// pipes, and `just test` runs them on several threads. Hold this lock for
+/// the whole test so one test's close cannot move the other's baseline.
+fn lock_fd_table() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn open_fd_count() -> usize {
     match std::fs::read_dir("/dev/fd") {
         Ok(iter) => iter.count(),
@@ -37,6 +45,7 @@ fn open_fd_count() -> usize {
 
 #[test]
 fn battle_replace_cycles_keep_fd_count_stable() {
+    let _fd_table = lock_fd_table();
     let topology = full_mini_topology();
     let mut store = PipeStore::new(&topology).expect("new");
     let edges: Vec<_> = store.edges().collect();
@@ -70,6 +79,7 @@ fn battle_replace_cycles_keep_fd_count_stable() {
 #[test]
 fn battle_data_edge_replace_under_concurrent_derive() {
     use std::sync::{Arc, Barrier, Mutex};
+    let _fd_table = lock_fd_table();
     let store = PipeStore::new(&[
         (Service::Web, Service::ProxyMcp, PipeKind::Control),
         (Service::Web, Service::ProxyMcp, PipeKind::Data),

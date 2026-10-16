@@ -35,7 +35,7 @@ rtk cargo test -p vauban-web -- \
 rtk cargo test -p vauban-mailer -- backoff_cap -- --test-threads=1
 # hand-off:
 rtk cargo test --workspace -- --test-threads=1
-rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target \
+rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target-rdp \
   -- --test-threads=1
 ```
 

@@ -26,7 +26,7 @@ just deny
 rg -n 'name = "pqcrypto' Cargo.lock; test $? -eq 1
 # hand-off:
 rtk cargo test --workspace -- --test-threads=1
-rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target -- --test-threads=1
+rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target-rdp -- --test-threads=1
 ```
 
 ## Lab prerequisites

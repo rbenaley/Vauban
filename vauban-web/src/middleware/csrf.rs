@@ -173,7 +173,14 @@ mod tests {
     fn test_verify_token_invalid_signature() {
         let secret = b"test-secret";
         let token = generate_csrf_token(secret);
-        let tampered = format!("{}{}", &token[..token.len() - 2], "aa");
+        // The signature is hex. Replacing a fixed suffix with "aa" is a
+        // no-op when the MAC already ends in 0xAA (1/256), so flip one
+        // digit to a different value.
+        let mut tampered: Vec<char> = token.chars().collect();
+        let last = tampered.len() - 1;
+        tampered[last] = if tampered[last] == 'a' { 'b' } else { 'a' };
+        let tampered: String = tampered.into_iter().collect();
+        assert_ne!(tampered, token);
         assert!(!verify_csrf_token(secret, &tampered));
     }
 

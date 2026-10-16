@@ -126,7 +126,7 @@ Vauban's security is built on defense in depth:
 ### Build
 
 ```bash
-# Full validation cycle (build + clippy + test)
+# Full validation cycle (lint + clippy + test)
 just validate
 
 # Build all crates (debug)
@@ -547,7 +547,7 @@ just run -- migrate --database-url postgresql://vauban_test:vauban_test@localhos
 ### Running Tests
 
 ```bash
-# Full gate (workspace --all-features + vauban-proxy-rdp, --test-threads=1)
+# Full gate (workspace --all-features; --test-threads=1 on web, access, supervisor)
 just test
 
 # Workspace unit/lib tests only

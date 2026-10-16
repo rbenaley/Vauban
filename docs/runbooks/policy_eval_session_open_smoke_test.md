@@ -29,7 +29,7 @@ bash vauban-web/scripts/check_policy_eval_session_open.sh
 rtk cargo test -p shared -p vauban-access -p vauban-web -- policy_eval -- --test-threads=1
 # before hand-off / merge:
 rtk cargo test --workspace -- --test-threads=1
-rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target -- --test-threads=1
+rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target-rdp -- --test-threads=1
 ```
 
 Suite highlights that must stay green:

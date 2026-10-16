@@ -57,7 +57,7 @@ Pass: `just lint` exits 0.
 
 ## B -- Agent / validate
 
-1. After any significant Rust change, `just validate` (build, lint, clippy
+1. After any significant Rust change, `just validate` (lint, clippy
    `-D warnings`, tests).
 2. Do not declare done on clippy or tests alone.
 

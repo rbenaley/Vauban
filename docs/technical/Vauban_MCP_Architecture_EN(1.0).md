@@ -1096,16 +1096,18 @@ removed entirely by tunnel mode.
 
 The whole MCP feature (proxy PEP, access PDP, shared engines, web,
 recording) follows the full Vauban pyramid. `just test` runs every
-in-process layer below (13.1 to 13.6) in one workspace invocation.
-`--all-features` enables the optional `shared` features those suites
-require (`mcp-mandate`, `session-token`, `json-redact`, and the rest);
-without it Cargo skips every `required-features` target. A new `mcp_*`
-test module is picked up with the other crate tests. `just validate`
-is build, lint, clippy, and that test pass.
-`shared/scripts/check_just_lint_wired.sh` fails if `just test` drops
-`--all-features`. Smoke (13.7) is manual and Full Stack (13.8) runs
-with `just test-full-stack mcp`. `just test gwt_` is the acceptance
-filter. The proxy is a binary crate, so its pyramid tests live in-tree
+in-process layer below (13.1 to 13.6). `--all-features` enables the
+optional `shared` features those suites require (`mcp-mandate`,
+`session-token`, `json-redact`, and the rest); without it Cargo skips
+every `required-features` target. A new `mcp_*` test module is picked
+up with the other crate tests. `vauban-web`, `vauban-access`, and
+`vauban-supervisor` share the `vauban_test` catalog and run in a
+second invocation with `--test-threads=1`. The other crates use
+Cargo's default parallelism. `just validate` is lint, clippy, and
+that test pass. `shared/scripts/check_just_lint_wired.sh` fails if
+`just test` drops `--all-features`. Smoke (13.7) is manual and Full
+Stack (13.8) runs with `just test-full-stack mcp`. `just test gwt_`
+is the acceptance filter. The proxy is a binary crate, so its pyramid tests live in-tree
 (`vauban-proxy-mcp/src/*_tests.rs`) and drive the real `handle_mcp`
 (direct ingress) against `test_upstream::FakeUpstream` over pinned TLS.
 

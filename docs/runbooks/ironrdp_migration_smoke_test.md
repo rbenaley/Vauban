@@ -14,8 +14,8 @@
 
 ```bash
 rtk cargo test --workspace -- --test-threads=1
-rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target -- --test-threads=1
-rtk cargo clippy --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target --all-targets
+rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target-rdp -- --test-threads=1
+rtk cargo clippy --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target-rdp --all-targets
 ```
 
 The proxy suite carries the migration guards: locked-version pins

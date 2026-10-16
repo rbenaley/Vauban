@@ -1328,6 +1328,9 @@ mod tests {
     async fn from_fds_wires_like_from_env_without_the_environment() {
         let (read_fd, write_fd, stub) = pipe_pair();
         let metrics = Arc::new(CountingMetrics::default());
+        // Hold the env lock across both reads: a sibling test may set
+        // VAUBAN_ACCESS_IPC_READ while this harness runs in parallel.
+        let _env = lock_process_env();
         let before_read = std::env::var_os("VAUBAN_ACCESS_IPC_READ");
         let wiring = AccessGuard::from_fds(
             "ssh",
@@ -1338,6 +1341,7 @@ mod tests {
         .unwrap();
         assert_eq!(wiring.fds, vec![read_fd, write_fd]);
         assert_eq!(std::env::var_os("VAUBAN_ACCESS_IPC_READ"), before_read);
+        drop(_env);
         let _handle = wiring.guard.spawn_dispatcher();
         let stub_join = tokio::task::spawn_blocking(move || {
             let Message::AccessRequest { request_id, .. } = stub.recv().unwrap() else {
@@ -1360,10 +1364,17 @@ mod tests {
         assert_eq!(metrics.granted.load(Ordering::SeqCst), 1);
     }
 
+    /// Serializes tests that mutate `VAUBAN_ACCESS_IPC_*`. Those vars are
+    /// process-global, and `just test` runs this harness on several threads.
+    fn lock_process_env() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn test_from_env_reports_missing_read_fd() {
-        // SAFETY: tests are single-threaded by default; we explicitly
-        // remove both vars to avoid pollution from a previous test.
+        let _env = lock_process_env();
+        // SAFETY: the lock above is the only env mutator in this harness.
         unsafe {
             std::env::remove_var("VAUBAN_ACCESS_IPC_READ");
             std::env::remove_var("VAUBAN_ACCESS_IPC_WRITE");
@@ -1378,7 +1389,8 @@ mod tests {
 
     #[test]
     fn test_from_env_reports_invalid_fd() {
-        // SAFETY: tests run sequentially when sharing env vars.
+        let _env = lock_process_env();
+        // SAFETY: the lock above is the only env mutator in this harness.
         unsafe {
             std::env::set_var("VAUBAN_ACCESS_IPC_READ", "not-an-fd");
             std::env::set_var("VAUBAN_ACCESS_IPC_WRITE", "0");

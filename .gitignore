@@ -1,5 +1,7 @@
 # Rust
 **/target/
+# vauban-proxy-rdp lockfile builds here so it cannot invalidate target/.
+/target-rdp/
 **/*.rs.bk
 Cargo.lock
 

@@ -4,11 +4,12 @@
 # pre-release dependency conflicts in the RustCrypto ecosystem (ironrdp/picky/sspi
 # vs russh/ssh-key). These recipes ensure it is always built alongside the workspace.
 #
-# --target-dir target ensures vauban-proxy-rdp outputs binaries into the shared
-# target/ directory where the supervisor expects them (bin_path = "./target/debug").
+# RDP compiles into target-rdp/ so its lockfile cannot invalidate the
+# workspace target/. link-rdp points ./target/{debug,release}/vauban-proxy-rdp
+# at that artifact: the supervisor execs bin_path = "./target/debug".
 
 rdp_path     := "--manifest-path vauban-proxy-rdp/Cargo.toml"
-rdp_manifest := rdp_path + " --target-dir target"
+rdp_manifest := rdp_path + " --target-dir target-rdp"
 
 # Workspace config/ for recipes that boot or load conf (not a global export).
 repo_config_dir := justfile_directory() / "config"
@@ -17,24 +18,41 @@ repo_config_dir := justfile_directory() / "config"
 build *ARGS:
     cargo build --workspace {{ARGS}}
     cargo build {{rdp_manifest}} {{ARGS}}
+    just link-rdp
+
+# Point the supervisor's bin_path at the RDP artifact in target-rdp/.
+# No-op until that binary exists (check, clippy, and test do not need it).
+link-rdp:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for profile in debug release; do
+        src="target-rdp/${profile}/vauban-proxy-rdp"
+        if [[ -x "${src}" ]]; then
+            mkdir -p "target/${profile}"
+            ln -sfn "../../${src}" "target/${profile}/vauban-proxy-rdp"
+        fi
+    done
 
 # Check all crates without producing binaries
 check *ARGS:
     cargo check --workspace {{ARGS}}
     cargo check {{rdp_manifest}} {{ARGS}}
 
-# Run all tests (single-threaded per harness to reduce DB contention).
+# Run all tests.
 # Requires PostgreSQL for crates that hit DATABASE_URL (see config/testing.toml).
-# vauban-web exposes a single integration crate (`integration_tests`) so the
-# workspace run does not spawn two binaries racing on the same catalog.
+# vauban-web, vauban-access, and vauban-supervisor share the vauban_test
+# catalog, so that invocation stays single-threaded. vauban-db uses a
+# throwaway database and runs with the other crates at Cargo's default
+# parallelism. vauban-web exposes a single integration crate
+# (`integration_tests`) so two binaries cannot race on the same catalog.
 # `--all-features` turns on shared's optional features while that crate is
 # the test root (`mcp-mandate`, `session-token`, `json-redact`, and the
-# rest). Without it, Cargo skips every `required-features` suite. One
-# workspace invocation covers those suites and every crate test; a filter
+# rest). Without it, Cargo skips every `required-features` suite. A filter
 # is `just test gwt_`.
 test *ARGS:
-    cargo test --workspace --all-features {{ARGS}} -- --test-threads=1
-    cargo test {{rdp_manifest}} {{ARGS}} -- --test-threads=1
+    cargo test --workspace --all-features --exclude vauban-web --exclude vauban-access --exclude vauban-supervisor {{ARGS}}
+    cargo test --all-features -p vauban-web -p vauban-access -p vauban-supervisor {{ARGS}} -- --test-threads=1
+    cargo test {{rdp_manifest}} {{ARGS}}
 
 # Full-stack tests (vauban-e2e, outside the workspace): real supervisor and
 # every service on a throw-away `vauban_e2e` database, driven by headless
@@ -112,7 +130,9 @@ semgrep:
     export PATH="$(dirname "${SEMGREP}"):${PATH}"
     "${SEMGREP}" --config .semgrep/untrusted-input.yml --error --quiet
 
-# Full validation cycle: build + lint + clippy + test (stops on first failure).
+# Full validation cycle: lint + clippy + test (stops on first failure).
+# Clippy and test already compile the crates; `just build` stays the
+# recipe that produces a runnable tree (and the RDP symlink).
 # The MCP packaging dry-check runs inside lint. FreeBSD live A–C stays in
 # docs/runbooks/mcp_staging_gwt_acceptance.md.
 # Exports VAUBAN_CONFIG_DIR to the repo config/ for the duration (release
@@ -121,7 +141,6 @@ validate:
     #!/usr/bin/env bash
     set -euo pipefail
     export VAUBAN_CONFIG_DIR="{{repo_config_dir}}"
-    just build
     just lint
     just clippy
     just test
@@ -130,6 +149,7 @@ validate:
 release:
     cargo build --workspace --release
     cargo build {{rdp_manifest}} --release
+    just link-rdp
 
 # Examples: just run | just run --release | just run -- -- create-superuser
 # Run the supervisor (workspace default-members → vauban-supervisor).

@@ -28,7 +28,7 @@ bash vauban-audit/scripts/check_audit_mfa_hol.sh
 rtk cargo test -p vauban-audit -- --test-threads=1
 # before hand-off / merge:
 rtk cargo test --workspace -- --test-threads=1
-rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target -- --test-threads=1
+rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target-rdp -- --test-threads=1
 ```
 
 Audit suite highlights that must stay green:

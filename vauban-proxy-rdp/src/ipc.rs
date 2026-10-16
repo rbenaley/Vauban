@@ -194,7 +194,7 @@ mod tests {
     async fn battle_recv_after_eof_never_spins() {
         let (async_ch, peer) = pair_async();
         drop(peer);
-        let cpu_before = process_cpu_millis();
+        let cpu_before = thread_cpu_millis();
         assert!(matches!(
             async_ch.recv().await,
             Err(IpcError::ConnectionClosed)
@@ -203,22 +203,23 @@ mod tests {
             let parked = tokio::time::timeout(Duration::from_millis(8), async_ch.recv()).await;
             assert!(parked.is_err(), "sticky EOF must stay pending");
         }
-        let cpu_delta = process_cpu_millis() - cpu_before;
+        let cpu_delta = thread_cpu_millis() - cpu_before;
         assert!(
             cpu_delta < 50,
             "EOF must not spin the reactor (cpu_delta_ms={cpu_delta})"
         );
     }
 
-    fn process_cpu_millis() -> i64 {
-        let mut usage = unsafe { std::mem::zeroed::<libc::rusage>() };
-        let rc = unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+    /// CPU time of this thread. `#[tokio::test]` polls on the current
+    /// thread, so a spinning `recv` shows up here. `RUSAGE_SELF` also
+    /// counts every other test the harness runs in parallel.
+    fn thread_cpu_millis() -> i64 {
+        let mut ts = unsafe { std::mem::zeroed::<libc::timespec>() };
+        let rc = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
         if rc != 0 {
             return 0;
         }
-        let user = usage.ru_utime.tv_sec * 1000 + i64::from(usage.ru_utime.tv_usec) / 1000;
-        let sys = usage.ru_stime.tv_sec * 1000 + i64::from(usage.ru_stime.tv_usec) / 1000;
-        user + sys
+        ts.tv_sec * 1000 + ts.tv_nsec / 1_000_000
     }
 
     #[tokio::test]

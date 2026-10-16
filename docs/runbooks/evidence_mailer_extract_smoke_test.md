@@ -40,7 +40,7 @@ rtk cargo test -p shared -- sandbox -- --test-threads=1
 rtk cargo test -p vauban-web-evidence -p vauban-mailer -p vauban-web -p vauban-supervisor -- evidence_mailer -- --test-threads=1
 # hand-off:
 rtk cargo test --workspace -- --test-threads=1
-rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target -- --test-threads=1
+rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target-rdp -- --test-threads=1
 ```
 
 Suite highlights that must stay green:
