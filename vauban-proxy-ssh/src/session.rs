@@ -753,9 +753,8 @@ impl client::Handler for SshHandler {
 
     /// Verify the SSH server's host key against the expected key.
     ///
-    /// Behavior:
-    /// - If `expected_host_key` is set: compare and accept only if match
-    /// - If `expected_host_key` is None: accept with a warning (insecure)
+    /// A missing or blank pin is refused. `fetch_host_key` is the only
+    /// path that captures a key without one.
     async fn check_server_key(
         &mut self,
         server_public_key: &russh::keys::PublicKey,
@@ -764,43 +763,40 @@ impl client::Handler for SshHandler {
             .to_openssh()
             .unwrap_or_else(|_| format!("{:?}", server_public_key.algorithm()));
 
-        match &self.expected_host_key {
-            Some(expected) => {
-                // Compare the key data (ignore trailing whitespace/comments)
-                let received_trimmed = received_key.trim();
-                let expected_trimmed = expected.trim();
-
-                if received_trimmed == expected_trimmed {
-                    info!(
-                        session_id = %self.session_id,
-                        key_type = ?server_public_key.algorithm(),
-                        "SSH host key verified successfully"
-                    );
-                    Ok(true)
-                } else {
-                    // Compute fingerprints for readable error reporting
-                    let received_fp = server_public_key.fingerprint(russh::keys::HashAlg::Sha256);
-                    error!(
-                        session_id = %self.session_id,
-                        received_fingerprint = %received_fp,
-                        "SSH host key MISMATCH - possible MITM attack. \
-                         Connection refused. Update the stored host key if \
-                         the server key was intentionally changed."
-                    );
-                    Ok(false)
-                }
-            }
-            None => {
-                warn!(
-                    session_id = %self.session_id,
-                    key_type = ?server_public_key.algorithm(),
-                    "No expected host key configured - accepting server key (INSECURE). \
-                     Fetch the host key from the asset detail page to enable verification."
-                );
-                Ok(true)
-            }
+        if !host_key_pin_present(self.expected_host_key.as_deref()) {
+            warn!(
+                session_id = %self.session_id,
+                key_type = ?server_public_key.algorithm(),
+                "SSH session refused: no pinned host key"
+            );
+            return Ok(false);
         }
+
+        let expected = self.expected_host_key.as_deref().unwrap_or("");
+        let received_trimmed = received_key.trim();
+        let expected_trimmed = expected.trim();
+        if received_trimmed == expected_trimmed {
+            info!(
+                session_id = %self.session_id,
+                key_type = ?server_public_key.algorithm(),
+                "SSH host key verified successfully"
+            );
+            return Ok(true);
+        }
+        let received_fp = server_public_key.fingerprint(russh::keys::HashAlg::Sha256);
+        error!(
+            session_id = %self.session_id,
+            received_fingerprint = %received_fp,
+            "SSH host key MISMATCH - possible MITM attack. \
+             Connection refused. Update the stored host key if \
+             the server key was intentionally changed."
+        );
+        Ok(false)
     }
+}
+
+fn host_key_pin_present(expected: Option<&str>) -> bool {
+    expected.is_some_and(|value| !value.trim().is_empty())
 }
 
 #[cfg(test)]
@@ -1035,6 +1031,28 @@ mod tests {
             source.contains("MITM"),
             "session.rs must warn about MITM attacks on key mismatch"
         );
+        assert!(
+            source.contains("SSH session refused: no pinned host key"),
+            "a session without a host key must be refused"
+        );
+    }
+
+    #[test]
+    fn attack_ssh_session_without_host_key_is_rejected() {
+        assert!(!host_key_pin_present(None));
+        assert!(!host_key_pin_present(Some("")));
+        assert!(!host_key_pin_present(Some("   ")));
+        assert!(host_key_pin_present(Some("ssh-ed25519 AAAA")));
+    }
+
+    use proptest::prelude::*;
+
+    proptest::proptest! {
+        #[test]
+        fn proptest_whitespace_host_keys_are_refused(pad in "[ \\t]{0,6}") {
+            let value = format!("{pad}{pad}");
+            prop_assert!(!host_key_pin_present(Some(&value)));
+        }
     }
 }
 

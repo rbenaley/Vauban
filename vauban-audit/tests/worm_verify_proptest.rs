@@ -18,6 +18,7 @@ fn event() -> AuditRecord {
         session_id: None,
         source_ip: None,
         details: "x".to_string(),
+        producer: None,
     }
 }
 

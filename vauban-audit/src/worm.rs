@@ -65,13 +65,18 @@ pub struct AuditRecord {
     pub session_id: Option<String>,
     pub source_ip: Option<String>,
     pub details: String,
+    /// Channel label stamped by the audit service. `None` omits the key.
+    pub producer: Option<String>,
 }
 
 /// The hashed body of a record. Field order is FIXED (struct order) so the
 /// canonical serialization is deterministic and reproducible at verify time.
 ///
-/// All fields are always serialized (absent optionals become JSON `null`) so a
-/// deserialize -> reserialize round-trip yields byte-identical canonical bytes.
+/// Every optional except `producer` is always serialized (absent values
+/// become JSON `null`) so a deserialize -> reserialize round-trip yields
+/// byte-identical canonical bytes. `producer` is omitted when absent: a
+/// segment sealed before that field has no key, and reserializing it must
+/// not insert one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RecordCore {
     /// Strictly monotonic sequence number (starts at 0).
@@ -95,6 +100,10 @@ struct RecordCore {
     pubkey: Option<String>,
     /// Base64 of the Ed25519 signature over the raw 32-byte `sealed_head`.
     signature: Option<String>,
+    /// Channel the event arrived on (`web`, `proxy_ssh`, ...). Absent on
+    /// seal records and on segments written before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    producer: Option<String>,
 }
 
 /// One serialized line: the hashed `core` plus its BLAKE3 `hash` (hex).
@@ -261,6 +270,7 @@ impl WormLog {
             sealed_head: None,
             pubkey: None,
             signature: None,
+            producer: ev.producer.clone(),
         };
         self.write_line(core)
     }
@@ -282,6 +292,7 @@ impl WormLog {
             sealed_head: Some(hex32(&head)),
             pubkey: Some(BASE64.encode(key.verifying_key().to_bytes())),
             signature: Some(BASE64.encode(signature.to_bytes())),
+            producer: None,
         };
         self.write_line(core)
     }
@@ -458,6 +469,7 @@ mod tests {
             session_id: None,
             source_ip: Some("203.0.113.7".to_string()),
             details: "bad password".to_string(),
+            producer: None,
         }
     }
 
@@ -655,5 +667,169 @@ mod tests {
         let report = verify_reader(Cursor::new(seg2), head_after_1, seq_after_1, &pin()).unwrap();
         assert_eq!(report.events, 2);
         assert_eq!(report.seals, 1);
+    }
+
+    #[test]
+    fn producer_key_is_omitted_when_absent_and_written_when_present() {
+        let tmp = tempfile::tempfile().unwrap();
+        let mut log = WormLog::new(tmp, "seg".into(), GENESIS_HASH, 0);
+        log.append_event(&event(0)).unwrap();
+        let mut stamped = event(1);
+        stamped.producer = Some("web".into());
+        log.append_event(&stamped).unwrap();
+        log.writer.flush().unwrap();
+        let mut file = log.writer.into_inner().unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+        let mut buf = String::new();
+        file.read_to_string(&mut buf).unwrap();
+        let mut lines = buf.lines();
+        let first = lines.next().unwrap();
+        let second = lines.next().unwrap();
+        assert!(!first.contains("producer"));
+        assert!(second.contains("\"producer\":\"web\""));
+    }
+
+    /// A line written by the pre-`producer` serializer (no key at all) must
+    /// still verify, including its Ed25519 seal.
+    #[test]
+    fn legacy_segment_without_producer_still_verifies() {
+        #[derive(Serialize)]
+        struct LegacyCore {
+            seq: u64,
+            kind: String,
+            prev: String,
+            timestamp: u64,
+            event_type: Option<String>,
+            user_id: Option<String>,
+            session_id: Option<String>,
+            source_ip: Option<String>,
+            details: Option<String>,
+            sealed_head: Option<String>,
+            pubkey: Option<String>,
+            signature: Option<String>,
+        }
+        #[derive(Serialize)]
+        struct LegacyLine<T> {
+            #[serde(flatten)]
+            core: T,
+            hash: String,
+        }
+
+        let key = signing_key();
+        let event_core = LegacyCore {
+            seq: 0,
+            kind: KIND_EVENT.into(),
+            prev: hex32(&GENESIS_HASH),
+            timestamp: 10,
+            event_type: Some("AuthSuccess".into()),
+            user_id: None,
+            session_id: None,
+            source_ip: None,
+            details: Some("ok".into()),
+            sealed_head: None,
+            pubkey: None,
+            signature: None,
+        };
+        let event_canonical = serde_json::to_vec(&event_core).unwrap();
+        assert!(!event_canonical.windows(8).any(|w| w == b"producer"));
+        let event_hash = record_hash(&GENESIS_HASH, &event_canonical);
+        let event_line = serde_json::to_string(&LegacyLine {
+            core: event_core,
+            hash: hex32(&event_hash),
+        })
+        .unwrap();
+
+        let signature: Signature = key.sign(&event_hash);
+        let seal_core = LegacyCore {
+            seq: 1,
+            kind: KIND_SEAL.into(),
+            prev: hex32(&event_hash),
+            timestamp: 11,
+            event_type: None,
+            user_id: None,
+            session_id: None,
+            source_ip: None,
+            details: None,
+            sealed_head: Some(hex32(&event_hash)),
+            pubkey: Some(BASE64.encode(key.verifying_key().to_bytes())),
+            signature: Some(BASE64.encode(signature.to_bytes())),
+        };
+        let seal_canonical = serde_json::to_vec(&seal_core).unwrap();
+        let seal_hash = record_hash(&event_hash, &seal_canonical);
+        let seal_line = serde_json::to_string(&LegacyLine {
+            core: seal_core,
+            hash: hex32(&seal_hash),
+        })
+        .unwrap();
+
+        let segment = format!("{event_line}\n{seal_line}\n");
+        assert!(!segment.contains("producer"));
+        let report = verify_reader(Cursor::new(segment.into_bytes()), GENESIS_HASH, 0, &pin())
+            .expect("a pre-producer segment must still verify");
+        assert_eq!(report.events, 1);
+        assert_eq!(report.seals, 1);
+    }
+
+    #[test]
+    fn battle_two_producers_do_not_mix() {
+        use std::sync::{Arc, Barrier, Mutex};
+        use std::thread;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("seg.jsonl");
+        let file = std::fs::File::create(&path).unwrap();
+        let log = Arc::new(Mutex::new(WormLog::new(
+            file,
+            "seg".into(),
+            GENESIS_HASH,
+            0,
+        )));
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+        for producer in ["web", "proxy_ssh"] {
+            let log = Arc::clone(&log);
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                for i in 0..24u64 {
+                    let record = AuditRecord {
+                        timestamp: i,
+                        event_type: "AuthSuccess".into(),
+                        user_id: None,
+                        session_id: None,
+                        source_ip: None,
+                        details: format!("{producer}-{i}"),
+                        producer: Some(producer.into()),
+                    };
+                    log.lock()
+                        .expect("worm lock")
+                        .append_event(&record)
+                        .unwrap();
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        drop(log);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut web = 0;
+        let mut ssh = 0;
+        for line in text.lines().filter(|line| !line.is_empty()) {
+            let value: serde_json::Value = serde_json::from_str(line).unwrap();
+            let stamped = value["producer"].as_str().unwrap();
+            let details = value["details"].as_str().unwrap();
+            assert!(
+                details.starts_with(stamped),
+                "details {details} crossed producer {stamped}"
+            );
+            match stamped {
+                "web" => web += 1,
+                "proxy_ssh" => ssh += 1,
+                other => panic!("unexpected producer {other}"),
+            }
+        }
+        assert_eq!(web, 24);
+        assert_eq!(ssh, 24);
     }
 }

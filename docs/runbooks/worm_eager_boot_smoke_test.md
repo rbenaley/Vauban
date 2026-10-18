@@ -129,6 +129,14 @@ Restore the lab before continuing.
 | Bastion Watch / sessions list | No 5xx after MFA + session tests |
 | WORM segment file | Grows after MFA events; `vauban-audit verify --pubkey <signing_key.pub> <segment>` OK. Without `--pubkey` the CLI must exit 2. |
 
+### E. Producer label and event-type allowlist
+
+| # | Action | Pass | Fail |
+|---|--------|------|------|
+| E1 | After a web login and an SSH or RDP session, open the current `audit-*.jsonl` | Event lines carry `"producer":"web"` or `"producer":"proxy_ssh"` / `"proxy_rdp"`; `vauban-audit verify --pubkey <signing_key.pub> <segment>` still OK | Missing producer on a new event, or verify fails |
+| E2 | A segment sealed before this field (no `producer` key) | `verify --pubkey` still OK | Hash mismatch on an old segment |
+| E3 | (Lab) inject an `AuditEvent` whose type is `SessionStart` | Producer receives `AuditNack`; the line is not appended | The unknown type is sealed |
+
 ---
 
 ## Stop-ship signals

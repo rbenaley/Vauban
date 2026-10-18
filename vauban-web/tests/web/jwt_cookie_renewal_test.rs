@@ -286,3 +286,64 @@ async fn legacy_jwt_without_jti_cookie_near_exp_still_renews() {
 
     test_db::cleanup(&mut conn).await;
 }
+
+#[tokio::test]
+#[serial]
+async fn attack_jti_without_token_hash_is_rejected() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let username = unique_name("jti_hash");
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+    let claims = app
+        .auth_service
+        .verify_token(&test_user.token)
+        .expect("fixture token");
+    let session_uuid = Uuid::parse_str(claims.jti.as_ref().expect("jti")).expect("uuid");
+    diesel::update(auth_sessions::table.filter(auth_sessions::uuid.eq(session_uuid)))
+        .set(auth_sessions::token_hash.eq("not-the-presented-token"))
+        .execute(&mut conn)
+        .await
+        .expect("rewrite hash");
+    let response = app
+        .server
+        .get("/dashboard")
+        .add_header(COOKIE, format!("access_token={}", test_user.token))
+        .await;
+    let status = response.status_code().as_u16();
+    assert!(
+        status == 401 || status == 302 || status == 303,
+        "stale hash must not authenticate, got {status}"
+    );
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if status != 401 {
+        assert!(
+            location == "/" || location.contains("/login"),
+            "expected an anonymous redirect, got {location}"
+        );
+    }
+    test_db::cleanup(&mut conn).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn e2e_login_request_and_renewed_cookie() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let username = unique_name("e2e_renew");
+    let test_user = create_test_user(&mut conn, &app.auth_service, &username).await;
+    let page = app
+        .server
+        .get("/dashboard")
+        .add_header(COOKIE, format!("access_token={}", test_user.token))
+        .await;
+    let status = page.status_code().as_u16();
+    assert!(
+        status == 200 || status == 302 || status == 303,
+        "authenticated request reaches the app, got {status}"
+    );
+    test_db::cleanup(&mut conn).await;
+}

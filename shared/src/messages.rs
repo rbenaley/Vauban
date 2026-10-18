@@ -1191,22 +1191,19 @@ pub enum AccessRequest {
     ///
     /// - `IssueSessionToken` re-runs `CheckAccessByUuid` (user must
     ///   match an active access rule for the asset/protocol).
-    /// - `IssueDiagnosticToken` skips the access-rule re-check and
-    ///   gates ONLY on `caller_has_assets_manage = true`. Pre-issue
-    ///   #34 the host-key verify/fetch path used the session-token
-    ///   verb, which silently denied admins that did not happen to
-    ///   have an explicit access rule for the asset; the verify
-    ///   endpoint then fell back to a green "Verified" fragment based
-    ///   on the stored fingerprint, hiding the fact that nothing was
-    ///   live-verified. See `docs/technical/Vauban_AccessGuard_
-    ///   Architecture_EN(1.0).md` §3 for the contract.
-    ///
-    /// `caller_has_assets_manage` MUST be sourced from the request-
-    /// scoped `PermissionContext` (Casbin) on the vauban-web side; we
-    /// pass it explicitly because vauban-access does not own the
-    /// Casbin enforcer. A compromised vauban-web is contained by the
-    /// rest of the AccessGuard chain (TCP broker token check, proxy
-    /// `AccessGuard::authorize`).
+    /// - `IssueDiagnosticToken` skips the access-rule re-check.
+    ///   `ssh-fetch` / `rdp-fetch` / `mcp` require the asset host and
+    ///   port and a Casbin `assets:manage` decision recomputed from
+    ///   the user row. `ssh-probe` / `rdp-probe` require the asset
+    ///   port only; the host stays the address the caller supplied.
+    ///   Any other protocol is refused. The
+    ///   `caller_has_assets_manage` field is retained for wire
+    ///   compatibility and is not the decision.
+    ///   Pre-issue #34 the host-key verify/fetch path used the
+    ///   session-token verb, which silently denied admins that did
+    ///   not happen to have an explicit access rule for the asset.
+    ///   See `docs/technical/Vauban_AccessGuard_Architecture_EN(1.0).md`
+    ///   §3 for the contract.
     ///
     /// Wire compatibility: appended after `VerifySessionAccess`. New
     /// variants MUST keep being appended at the end.

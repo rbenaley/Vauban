@@ -24,6 +24,7 @@ fn battle_verify_reader_shared_pin() {
         session_id: None,
         source_ip: None,
         details: "x".to_string(),
+        producer: None,
     })
     .unwrap();
     log.seal(&key, 2).unwrap();

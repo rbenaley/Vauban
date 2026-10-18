@@ -1827,6 +1827,10 @@ mod tests {
              local-only check; running it first means a forged token \
              never costs us an IPC round-trip to vauban-access."
         );
+        let window = &handler[verify_idx..verify_idx + 400];
+        assert!(window.contains("\"ssh\""));
+        assert!(!window.contains("ssh-fetch"));
+        assert!(!window.contains("ssh-probe"));
     }
 
     #[test]

@@ -750,7 +750,14 @@ fn main_loop(ctx: MainLoopContext<'_>, _sealed: capsicum::Entered) -> Result<()>
             match rdp_ch.recv() {
                 Ok(msg) => {
                     let result = if matches!(msg, Message::AuditEvent { .. }) {
-                        route_audit_event(rdp_ch, channel, fd_passing_socket, state, msg)
+                        route_audit_event(
+                            rdp_ch,
+                            channel,
+                            fd_passing_socket,
+                            state,
+                            msg,
+                            "proxy_rdp",
+                        )
                     } else {
                         handle_recording_message(
                             state,
@@ -784,7 +791,14 @@ fn main_loop(ctx: MainLoopContext<'_>, _sealed: capsicum::Entered) -> Result<()>
             match ssh_ch.recv() {
                 Ok(msg) => {
                     let result = if matches!(msg, Message::AuditEvent { .. }) {
-                        route_audit_event(ssh_ch, channel, fd_passing_socket, state, msg)
+                        route_audit_event(
+                            ssh_ch,
+                            channel,
+                            fd_passing_socket,
+                            state,
+                            msg,
+                            "proxy_ssh",
+                        )
                     } else {
                         handle_ssh_recording_message(
                             state,
@@ -817,7 +831,14 @@ fn main_loop(ctx: MainLoopContext<'_>, _sealed: capsicum::Entered) -> Result<()>
             match iacs_ch.recv() {
                 Ok(msg) => {
                     let result = if matches!(msg, Message::AuditEvent { .. }) {
-                        route_audit_event(iacs_ch, channel, fd_passing_socket, state, msg)
+                        route_audit_event(
+                            iacs_ch,
+                            channel,
+                            fd_passing_socket,
+                            state,
+                            msg,
+                            "proxy_iacs",
+                        )
                     } else {
                         handle_iacs_recording_message(
                             IacsRecordingHandlerCtx {
@@ -856,7 +877,14 @@ fn main_loop(ctx: MainLoopContext<'_>, _sealed: capsicum::Entered) -> Result<()>
             match mcp_ch.recv() {
                 Ok(msg) => {
                     let result = if matches!(msg, Message::AuditEvent { .. }) {
-                        route_audit_event(mcp_ch, channel, fd_passing_socket, state, msg)
+                        route_audit_event(
+                            mcp_ch,
+                            channel,
+                            fd_passing_socket,
+                            state,
+                            msg,
+                            "proxy_mcp",
+                        )
                     } else {
                         warn!("unexpected message on Proxy-MCP audit channel");
                         state.requests_failed += 1;
@@ -904,9 +932,14 @@ fn drain_web_audit_channel(
         }
         match web_ch.recv() {
             Ok(msg) => {
-                if let Err(e) =
-                    route_audit_event(web_ch, supervisor_channel, fd_passing_socket, state, msg)
-                {
+                if let Err(e) = route_audit_event(
+                    web_ch,
+                    supervisor_channel,
+                    fd_passing_socket,
+                    state,
+                    msg,
+                    "web",
+                ) {
                     warn!("Error handling web audit message: {e}");
                     state.requests_failed += 1;
                 }
@@ -982,6 +1015,7 @@ fn handle_message(
                 session_id,
                 source_ip,
                 details,
+                "supervisor",
             )
         }
 
@@ -1023,6 +1057,91 @@ fn handle_message(
     }
 }
 
+/// Types emitted by production web / proxy code. A variant that is only in
+/// the catalogue (`SessionStart`, `SessionEnd`, `CommandExecuted`,
+/// `PolicyChange`, `MfaReset`) is rejected before any seal.
+fn audit_event_type_allowed(event_type: AuditEventType) -> bool {
+    matches!(
+        event_type,
+        AuditEventType::AuthSuccess
+            | AuditEventType::AuthFailure
+            | AuditEventType::AccessDenied
+            | AuditEventType::Logout
+            | AuditEventType::MfaEnrolled
+            | AuditEventType::MfaChallengePassed
+            | AuditEventType::MfaChallengeFailed
+            | AuditEventType::SessionRequested
+            | AuditEventType::SessionTerminated
+            | AuditEventType::UserCreated
+            | AuditEventType::UserUpdated
+            | AuditEventType::UserDeleted
+            | AuditEventType::UserActivated
+            | AuditEventType::UserDeactivated
+            | AuditEventType::RoleChanged
+            | AuditEventType::PasswordChanged
+            | AuditEventType::AccessRuleCreated
+            | AuditEventType::AccessRuleUpdated
+            | AuditEventType::AccessRuleDeleted
+            | AuditEventType::GroupCreated
+            | AuditEventType::GroupUpdated
+            | AuditEventType::GroupDeleted
+            | AuditEventType::GroupMemberAdded
+            | AuditEventType::GroupMemberRemoved
+            | AuditEventType::AssetGroupCreated
+            | AuditEventType::AssetGroupUpdated
+            | AuditEventType::AssetGroupDeleted
+            | AuditEventType::AssetGroupMemberAdded
+            | AuditEventType::AssetGroupMemberRemoved
+            | AuditEventType::AssetCreated
+            | AuditEventType::AssetUpdated
+            | AuditEventType::AssetDeleted
+            | AuditEventType::ApprovalRequested
+            | AuditEventType::ApprovalGranted
+            | AuditEventType::ApprovalDenied
+            | AuditEventType::ApprovalCancelled
+            | AuditEventType::MfaSecretGenerated
+            | AuditEventType::ApprovalRevoked
+            | AuditEventType::ApprovalDurationUpdated
+            | AuditEventType::VaultSecretCreated
+            | AuditEventType::VaultSecretUpdated
+            | AuditEventType::VaultSecretDeleted
+            | AuditEventType::VaultSecretRead
+            | AuditEventType::SecretGroupCreated
+            | AuditEventType::SecretGroupUpdated
+            | AuditEventType::SecretGroupDeleted
+            | AuditEventType::SecretGroupMemberAdded
+            | AuditEventType::SecretGroupMemberRemoved
+            | AuditEventType::SecretAccessRuleCreated
+            | AuditEventType::SecretAccessRuleUpdated
+            | AuditEventType::SecretAccessRuleDeleted
+            | AuditEventType::VaultProvenanceDenied
+            | AuditEventType::VaultHostIdentityMismatch
+            | AuditEventType::McpSessionOpened
+            | AuditEventType::McpToolCallAllowed
+            | AuditEventType::McpToolCallDenied
+            | AuditEventType::McpToolCallThrottled
+            | AuditEventType::McpPrivilegeEscalationAttempt
+            | AuditEventType::McpRecordingFinalized
+            | AuditEventType::McpEnvelopeThreshold
+            | AuditEventType::McpSessionSuspended
+            | AuditEventType::McpSessionResumed
+            | AuditEventType::McpHitlPending
+            | AuditEventType::McpHitlDecided
+            | AuditEventType::McpHitlExpired
+            | AuditEventType::McpClientinfoDrift
+            | AuditEventType::McpAccessDecision
+            | AuditEventType::McpContestationOpened
+            | AuditEventType::McpContestationResolved
+            | AuditEventType::ApiKeyRevoked
+            | AuditEventType::ApiKeyRotated
+            | AuditEventType::LdapAggregationReplaced
+            | AuditEventType::LdapAggregationEmptied
+            | AuditEventType::LdapAggregationPurgedFailsafe
+            | AuditEventType::McpToolCallUpstreamFailed
+            | AuditEventType::McpToolDefinitionDrift
+    )
+}
+
 /// Route an `AuditEvent` that arrived on a producer channel into the WORM log.
 ///
 /// `reply_channel` is the channel the event arrived on (where the
@@ -1034,6 +1153,7 @@ fn route_audit_event(
     fd_passing_socket: Option<RawFd>,
     state: &mut ServiceState,
     msg: Message,
+    producer: &'static str,
 ) -> Result<()> {
     if let Message::AuditEvent {
         timestamp,
@@ -1055,6 +1175,7 @@ fn route_audit_event(
             session_id,
             source_ip,
             details,
+            producer,
         )
     } else {
         debug!("Non-audit message on audit producer channel, ignoring");
@@ -1080,14 +1201,30 @@ fn handle_audit_event(
     session_id: Option<String>,
     source_ip: Option<IpAddr>,
     details: String,
+    producer: &'static str,
 ) -> Result<()> {
     info!(
         category = event_type.category(),
         ?event_type,
         user = ?user_id,
         session = ?session_id,
+        producer,
         "Audit event received"
     );
+
+    if !audit_event_type_allowed(event_type) {
+        state.events_failed += 1;
+        state.requests_failed += 1;
+        warn!(
+            ?event_type,
+            producer, "audit: event type is not allowlisted"
+        );
+        reply_channel.send(&Message::AuditNack {
+            timestamp,
+            error: format!("event type is not allowlisted: {event_type:?}"),
+        })?;
+        return Ok(());
+    }
 
     // Defense-in-depth: boot must have opened the segment; retry if None.
     if state.worm.is_none()
@@ -1110,6 +1247,7 @@ fn handle_audit_event(
         session_id,
         source_ip: source_ip.map(|ip| ip.to_string()),
         details,
+        producer: Some(producer.to_string()),
     };
 
     let append_result = match state.worm.as_mut() {
@@ -2105,6 +2243,7 @@ fn seal_on_lifecycle(state: &mut ServiceState, reason: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use shared::messages::AuditEventType;
     use std::net::{IpAddr, Ipv4Addr};
 
@@ -2199,7 +2338,7 @@ mod tests {
 
         let event = Message::AuditEvent {
             timestamp: 1706140800,
-            event_type: AuditEventType::SessionStart,
+            event_type: AuditEventType::AuthSuccess,
             user_id: Some("alice".to_string()),
             session_id: Some("sess123".to_string()),
             source_ip: Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
@@ -2271,6 +2410,7 @@ mod tests {
             None,
             None,
             "mfa ok".into(),
+            "web",
         )
         .unwrap();
         assert_eq!(state.events_persisted, 1);
@@ -2796,5 +2936,286 @@ mod tests {
             arm.contains("route_audit_event(mcp_ch"),
             "MCP AuditEvent must be sealed on the WORM path"
         );
+        assert!(
+            arm.contains("\"proxy_mcp\""),
+            "MCP channel must stamp the proxy_mcp producer"
+        );
+    }
+
+    #[test]
+    fn handle_audit_event_receives_channel_label() {
+        let source = prod_source();
+        let start = source
+            .find("fn handle_audit_event")
+            .expect("handle_audit_event");
+        let body = &source[start..];
+        assert!(
+            body.contains("producer: &'static str"),
+            "the handler must take the channel label"
+        );
+        assert!(
+            body.contains("producer: Some(producer.to_string())"),
+            "the label must be stored on the WORM record"
+        );
+        for label in ["proxy_rdp", "proxy_ssh", "proxy_iacs", "proxy_mcp", "web"] {
+            assert!(
+                source.contains(&format!("\"{label}\"")),
+                "route_audit_event must pass {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn forged_audit_event_type_is_rejected() {
+        let (client, service) = IpcChannel::pair().unwrap();
+        let mut state = ServiceState {
+            worm: Some(tempfile_worm()),
+            ..ServiceState::default()
+        };
+        handle_audit_event(
+            &service,
+            &service,
+            None,
+            &mut state,
+            7,
+            AuditEventType::SessionStart,
+            None,
+            None,
+            None,
+            "{}".into(),
+            "web",
+        )
+        .unwrap();
+        assert_eq!(state.events_persisted, 0);
+        assert_eq!(state.worm.as_ref().unwrap().records_in_segment(), 0);
+        assert!(
+            matches!(
+                client.recv().unwrap(),
+                Message::AuditNack { timestamp: 7, .. }
+            ),
+            "an off-list type must be nacked"
+        );
+    }
+
+    #[test]
+    fn e2e_web_and_proxy_events_remain_sealed() {
+        use std::io::Cursor;
+        use vauban_audit::worm::verify_reader;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("seg.jsonl");
+        let file = std::fs::File::create(&path).unwrap();
+        let key = SigningKey::from_bytes(&[9u8; 32]);
+        let mut state = ServiceState {
+            worm: Some(WormLog::new(file, "seg.jsonl".into(), GENESIS_HASH, 0)),
+            ..ServiceState::default()
+        };
+        let (client, service) = IpcChannel::pair().unwrap();
+        for (producer, event_type) in [
+            ("web", AuditEventType::AuthSuccess),
+            ("proxy_ssh", AuditEventType::AuthFailure),
+        ] {
+            handle_audit_event(
+                &service,
+                &service,
+                None,
+                &mut state,
+                42,
+                event_type,
+                None,
+                None,
+                None,
+                producer.into(),
+                producer,
+            )
+            .unwrap();
+            assert!(matches!(
+                client.recv().unwrap(),
+                Message::AuditAck { timestamp: 42 }
+            ));
+        }
+        state.worm.as_mut().unwrap().seal(&key, 43).unwrap();
+        drop(state.worm.take());
+        let bytes = std::fs::read(&path).unwrap();
+        let report = verify_reader(
+            Cursor::new(bytes.as_slice()),
+            GENESIS_HASH,
+            0,
+            &key.verifying_key(),
+        )
+        .expect("web and proxy events must still seal");
+        assert_eq!(report.events, 2);
+        assert_eq!(report.seals, 1);
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(text.contains("\"producer\":\"web\""));
+        assert!(text.contains("\"producer\":\"proxy_ssh\""));
+    }
+
+    #[test]
+    fn production_emitters_are_allowlisted() {
+        let found = production_audit_event_types();
+        assert!(
+            found.len() > 20,
+            "inventory walk found too few emitters: {found:?}"
+        );
+        assert!(
+            !found.contains("SessionStart"),
+            "SessionStart is the forged type and must stay off the production inventory"
+        );
+        let mut missing = Vec::new();
+        for name in &found {
+            let Some(event_type) = audit_event_type_from_name(name) else {
+                missing.push(name.clone());
+                continue;
+            };
+            if !audit_event_type_allowed(event_type) {
+                missing.push(name.clone());
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "production emitters missing from the allowlist: {missing:?}"
+        );
+    }
+
+    fn production_audit_event_types() -> std::collections::BTreeSet<String> {
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let roots = [
+            "vauban-web/src",
+            "vauban-proxy-ssh/src",
+            "vauban-proxy-rdp/src",
+            "vauban-proxy-iacs/src",
+            "vauban-proxy-mcp/src",
+            "vauban-access/src",
+            "vauban-vault/src",
+            "vauban-supervisor/src",
+        ];
+        let mut found = std::collections::BTreeSet::new();
+        for rel in roots {
+            let dir = workspace.join(rel);
+            assert!(dir.is_dir(), "missing emitter tree {}", dir.display());
+            walk_audit_types(&dir, &mut found);
+        }
+        found
+    }
+
+    fn walk_audit_types(dir: &std::path::Path, found: &mut std::collections::BTreeSet<String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_dir() {
+                walk_audit_types(&path, found);
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+                continue;
+            }
+            let Ok(src) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let src = strip_cfg_test(&src);
+            let needle = "AuditEventType::";
+            let mut rest = src.as_str();
+            while let Some(idx) = rest.find(needle) {
+                let after = &rest[idx + needle.len()..];
+                let name: String = after
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                if name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                    && name != "ALL"
+                    && name != "COUNT"
+                {
+                    found.insert(name);
+                }
+                rest = &rest[idx + needle.len()..];
+            }
+        }
+    }
+
+    fn strip_cfg_test(src: &str) -> String {
+        let mut out = String::with_capacity(src.len());
+        let mut i = 0;
+        let marker = "#[cfg(test)]";
+        while i < src.len() {
+            if src[i..].starts_with(marker)
+                && let Some(rel) = src[i + marker.len()..].find('{')
+                && !src[i + marker.len()..i + marker.len() + rel].contains(';')
+            {
+                let start = i + marker.len() + rel;
+                let bytes = src.as_bytes();
+                let mut depth = 0;
+                let mut j = start;
+                while j < bytes.len() {
+                    match bytes[j] {
+                        b'{' => depth += 1,
+                        b'}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                j += 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                i = j;
+                continue;
+            }
+            let ch = src[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+        out
+    }
+
+    fn audit_event_type_from_name(name: &str) -> Option<AuditEventType> {
+        AuditEventType::ALL
+            .iter()
+            .copied()
+            .find(|event| format!("{event:?}") == name)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(5))]
+
+        #[test]
+        fn proptest_off_list_event_types_are_nacked(idx in 0usize..5) {
+            use super::*;
+            let event_type = [
+                AuditEventType::SessionStart,
+                AuditEventType::SessionEnd,
+                AuditEventType::CommandExecuted,
+                AuditEventType::PolicyChange,
+                AuditEventType::MfaReset,
+            ][idx];
+            let (client, service) = IpcChannel::pair().unwrap();
+            let mut state = ServiceState {
+                worm: Some(tempfile_worm()),
+                ..ServiceState::default()
+            };
+            handle_audit_event(
+                &service,
+                &service,
+                None,
+                &mut state,
+                11,
+                event_type,
+                None,
+                None,
+                None,
+                "{}".into(),
+                "proxy_rdp",
+            )
+            .unwrap();
+            let nacked = matches!(
+                client.recv().unwrap(),
+                Message::AuditNack { timestamp: 11, .. }
+            );
+            prop_assert!(nacked);
+            prop_assert_eq!(state.events_persisted, 0);
+            prop_assert_eq!(state.worm.as_ref().unwrap().records_in_segment(), 0);
+        }
     }
 }

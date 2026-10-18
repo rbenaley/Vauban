@@ -975,6 +975,7 @@ pub async fn fetch_ssh_host_key(
         user_uuid: &auth_user.uuid,
         asset_uuid: &asset_uuid_str_for_token,
         caller_has_assets_manage: assets_manage,
+        probe: false,
     };
     let (host_key, fingerprint) = match proxy_client
         .fetch_host_key(
@@ -1240,6 +1241,7 @@ pub async fn push_ssh_public_key(
         user_uuid: &auth_user.uuid,
         asset_uuid: &asset_uuid_str_for_token,
         caller_has_assets_manage: perms.assets_manage,
+        probe: false,
     };
 
     if let Err(e) = proxy_client
@@ -1400,6 +1402,7 @@ pub async fn test_ssh_key_auth(
         user_uuid: &auth_user.uuid,
         asset_uuid: &asset_uuid_str_for_token,
         caller_has_assets_manage: perms.assets_manage,
+        probe: false,
     };
 
     if let Err(e) = proxy_client
@@ -1574,6 +1577,7 @@ pub async fn verify_ssh_host_key(
         user_uuid: &_auth_user.uuid,
         asset_uuid: &uuid_str_for_token,
         caller_has_assets_manage: assets_manage,
+        probe: false,
     };
     match proxy_client
         .fetch_host_key(

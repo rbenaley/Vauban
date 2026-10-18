@@ -673,6 +673,7 @@ pub async fn fetch_ssh_host_key_api(
         // bypasses the access-rule re-check (admins typically have
         // no explicit rule per asset).
         caller_has_assets_manage: perms.assets_manage,
+        probe: false,
     };
     let (host_key, fingerprint) = proxy_client
         .fetch_host_key(
@@ -882,6 +883,7 @@ pub async fn fetch_rdp_server_cert_api(
         user_uuid: &user.uuid,
         asset_uuid: &asset_uuid_str_for_token,
         caller_has_assets_manage: perms.assets_manage,
+        probe: false,
     };
     let (server_spki, fingerprint) = proxy_client
         .fetch_server_cert(

@@ -42,6 +42,89 @@ fn is_encrypted(value: &str) -> bool {
     is_encrypted_mfa_secret(value)
 }
 
+/// Per-user key for the login TOTP limiter. Distinct from `login:{ip}`
+/// so a pool of source addresses cannot spread one account's guesses.
+fn mfa_rate_key(user_uuid: &str) -> String {
+    format!("mfa:{user_uuid}")
+}
+
+/// Result of a login TOTP check that also classifies replay.
+enum LoginTotpOutcome {
+    Accepted { window: i64 },
+    Rejected,
+    VaultUnavailable,
+}
+
+/// Verify a login TOTP and name the window to persist.
+///
+/// Plaintext secrets go through [`AuthService::verify_and_consume_totp`].
+/// Vault envelopes are checked by `vault.mfa_verify`, then the same
+/// window rule is applied locally: the vault does not know
+/// `last_totp_used_window`.
+async fn evaluate_login_totp(
+    state: &AppState,
+    secret: &str,
+    code: &str,
+    last_window: Option<i64>,
+) -> AppResult<LoginTotpOutcome> {
+    use shared::totp::TOTP_STEP;
+
+    if is_encrypted(secret) {
+        let Some(vault) = state.vault_client.as_ref() else {
+            return Ok(LoginTotpOutcome::VaultUnavailable);
+        };
+        let valid = vault.mfa_verify(secret, code).await.unwrap_or(false);
+        if !valid {
+            return Ok(LoginTotpOutcome::Rejected);
+        }
+        let window = chrono::Utc::now().timestamp() / (TOTP_STEP as i64);
+        if last_window.is_some_and(|last| window <= last) {
+            return Ok(LoginTotpOutcome::Rejected);
+        }
+        return Ok(LoginTotpOutcome::Accepted { window });
+    }
+
+    Ok(
+        match AuthService::verify_and_consume_totp(secret, code, last_window) {
+            crate::services::auth::TotpVerification::Accepted { window } => {
+                LoginTotpOutcome::Accepted { window }
+            }
+            crate::services::auth::TotpVerification::Replayed
+            | crate::services::auth::TotpVerification::Invalid => LoginTotpOutcome::Rejected,
+        },
+    )
+}
+
+/// Record one failed login TOTP. At `max_failed_login_attempts` the
+/// account locks the same way a bad password does, and every auth
+/// session for that user is deleted so the intermediate cookie dies.
+async fn record_totp_failure(
+    conn: &mut crate::db::DbConnection,
+    user_id_val: i32,
+    failed_attempts: i32,
+    threshold: u32,
+) -> AppResult<bool> {
+    let new_failed_attempts = failed_attempts.saturating_add(1);
+    let locked_until_value = lockout_duration_for_attempts(new_failed_attempts, threshold)
+        .map(|duration| Utc::now() + duration);
+    let locked = locked_until_value.is_some();
+    diesel::update(users.find(user_id_val))
+        .set((
+            failed_login_attempts.eq(new_failed_attempts),
+            locked_until.eq(locked_until_value),
+        ))
+        .execute(conn)
+        .await
+        .map_err(AppError::Database)?;
+    if locked {
+        diesel::delete(auth_sessions::table.filter(auth_sessions::user_id.eq(user_id_val)))
+            .execute(conn)
+            .await
+            .map_err(AppError::Database)?;
+    }
+    Ok(locked)
+}
+
 // is_htmx_request deduplicated - use crate::error::is_htmx_request
 use crate::error::is_htmx_request;
 
@@ -330,14 +413,11 @@ pub async fn login(
     // MFA handling - for web (HTMX), redirect to MFA pages
     // For API (JSON), handle inline or return mfa_required
     if htmx {
-        // Web flow: always generate temporary token and redirect to MFA page
-        // Reset failed attempts first
+        // Web flow: temporary token, then /mfa/verify. Failed-attempt
+        // counters stay until the TOTP succeeds, so a correct password
+        // does not wipe a lockout that the second factor has not cleared.
         diesel::update(users.find(user.id))
-            .set((
-                failed_login_attempts.eq(0),
-                locked_until.eq(None::<chrono::DateTime<chrono::Utc>>),
-                last_login.eq(chrono::Utc::now()),
-            ))
+            .set(last_login.eq(chrono::Utc::now()))
             .execute(&mut conn)
             .await
             .map_err(AppError::Database)?;
@@ -475,8 +555,16 @@ pub async fn login(
     }
 
     // From here we know MFA is enabled. Verify the TOTP code.
-    let mfa_verified = if let Some(code) = request.mfa_code {
+    let accepted_window = if let Some(code) = request.mfa_code {
         if let Some(secret) = &user.mfa_secret {
+            let rate_key = mfa_rate_key(&user.uuid.to_string());
+            let rate_result = state
+                .rate_limiter
+                .check(&rate_key, state.config.security.rate_limit_per_minute)
+                .await?;
+            if !rate_result.allowed {
+                return rate_limit_response(false, rate_result.reset_in_secs);
+            }
             // Issue #11 hardening: refuse explicitly when the secret is
             // encrypted (vault envelope) but the vault IPC is not
             // available -- otherwise we would silently call
@@ -491,37 +579,50 @@ pub async fn login(
                     "MFA backend is temporarily unavailable.".to_string(),
                 ));
             }
-            // Verify TOTP via vault (encrypted secrets) or directly (plaintext, pre-migration)
-            let valid = if let Some(ref vault) = state.vault_client
-                && is_encrypted(secret)
+            match evaluate_login_totp(&state, secret, code.trim(), user.last_totp_used_window)
+                .await?
             {
-                vault
-                    .mfa_verify(secret, &code)
-                    .await
-                    .map_err(|e| AppError::Auth(format!("MFA verification error: {}", e)))?
-            } else {
-                // Direct verification: dev mode without vault, or plaintext secret (pre-migration)
-                AuthService::verify_totp(secret, &code)
-            };
-            if valid {
-                // Encrypt-on-read: progressively migrate plaintext MFA secrets
-                if let Some(ref vault) = state.vault_client
-                    && !is_encrypted(secret)
-                    && let Ok(encrypted) = vault.encrypt("mfa", secret).await
-                {
-                    diesel::update(users.find(user.id))
-                        .set(mfa_secret.eq(Some(&encrypted)))
-                        .execute(&mut conn)
-                        .await
-                        .ok(); // Best-effort migration
-                    tracing::info!(
-                        user_id = user.id,
-                        "Migrated plaintext MFA secret to encrypted (encrypt-on-read)"
-                    );
+                LoginTotpOutcome::VaultUnavailable => {
+                    return Err(AppError::Auth(
+                        "MFA backend is temporarily unavailable.".to_string(),
+                    ));
                 }
-                true
-            } else {
-                return Err(AppError::Auth("Invalid MFA code".to_string()));
+                LoginTotpOutcome::Rejected => {
+                    let locked = record_totp_failure(
+                        &mut conn,
+                        user.id,
+                        user.failed_login_attempts,
+                        state.config.security.max_failed_login_attempts,
+                    )
+                    .await?;
+                    emit_audit(
+                        &state,
+                        AuditEvent::new(AuditEventType::MfaChallengeFailed, "{}")
+                            .user(user.uuid.to_string())
+                            .ip(Some(client_addr.ip())),
+                    );
+                    if locked {
+                        return login_error_response(false, LoginErrorKind::InvalidCredentials);
+                    }
+                    return Err(AppError::Auth("Invalid MFA code".to_string()));
+                }
+                LoginTotpOutcome::Accepted { window } => {
+                    if let Some(ref vault) = state.vault_client
+                        && !is_encrypted(secret)
+                        && let Ok(encrypted) = vault.encrypt("mfa", secret).await
+                    {
+                        diesel::update(users.find(user.id))
+                            .set(mfa_secret.eq(Some(&encrypted)))
+                            .execute(&mut conn)
+                            .await
+                            .ok();
+                        tracing::info!(
+                            user_id = user.id,
+                            "Migrated plaintext MFA secret to encrypted (encrypt-on-read)"
+                        );
+                    }
+                    window
+                }
             }
         } else {
             // mfa_enabled=true but no secret -- corrupted state
@@ -549,7 +650,7 @@ pub async fn login(
     let access_token = state.auth_service.generate_access_token(
         &user.uuid.to_string(),
         &user.username,
-        mfa_verified,
+        true,
         // allow-role-gate: passed as JWT claim so the request-scoped Casbin subject mapping works on subsequent requests.
         user.is_superuser,
         // allow-role-gate: passed as JWT claim so the request-scoped Casbin subject mapping works on subsequent requests.
@@ -557,16 +658,27 @@ pub async fn login(
         Some(session_uuid),
     )?;
 
-    // Reset failed attempts and update last_login
-    diesel::update(users.find(user.id))
-        .set((
-            failed_login_attempts.eq(0),
-            locked_until.eq(None::<chrono::DateTime<chrono::Utc>>),
-            last_login.eq(chrono::Utc::now()),
-        ))
-        .execute(&mut conn)
-        .await
-        .map_err(AppError::Database)?;
+    // Consume the window and clear the lockout in one update. A second
+    // request that already passed the in-memory check updates zero rows.
+    let consumed = diesel::update(
+        users.filter(id.eq(user.id)).filter(
+            last_totp_used_window
+                .is_null()
+                .or(last_totp_used_window.lt(accepted_window)),
+        ),
+    )
+    .set((
+        failed_login_attempts.eq(0),
+        locked_until.eq(None::<chrono::DateTime<chrono::Utc>>),
+        last_login.eq(chrono::Utc::now()),
+        last_totp_used_window.eq(accepted_window),
+    ))
+    .execute(&mut conn)
+    .await
+    .map_err(AppError::Database)?;
+    if consumed == 0 {
+        return Err(AppError::Auth("Invalid MFA code".to_string()));
+    }
 
     // Create auth session record for session management
     let token_hash = hash_token(&access_token);
@@ -1781,28 +1893,37 @@ pub async fn mfa_verify_submit(
     let user_uuid = UuidType::parse_str(&claims.sub)
         .map_err(|_| AppError::Validation("Invalid user UUID".to_string()))?;
 
-    // Get user's MFA secret (includes user_id for encrypt-on-read migration)
-    let user_data: (i32, String, Option<String>, bool, bool) = users
+    let mfa_user: User = users
         .filter(uuid.eq(user_uuid))
         .filter(is_deleted.eq(false))
-        .select((
-            crate::schema::users::id,
-            crate::schema::users::username,
-            crate::schema::users::mfa_secret,
-            crate::schema::users::is_superuser,
-            crate::schema::users::is_staff,
-        ))
         .first(&mut conn)
         .await
         .map_err(AppError::Database)?;
 
-    let (user_id, user_username, secret_opt, is_super, is_staff_user) = user_data;
+    if mfa_user.is_locked() {
+        return Ok(flash_redirect(
+            flash.error("Account is temporarily locked. Please try again later."),
+            "/login",
+        ));
+    }
 
-    let secret =
-        secret_opt.ok_or_else(|| AppError::Internal(anyhow::anyhow!("MFA secret not found")))?;
+    let rate_key = mfa_rate_key(&claims.sub);
+    let rate_result = state
+        .rate_limiter
+        .check(&rate_key, state.config.security.rate_limit_per_minute)
+        .await?;
+    if !rate_result.allowed {
+        return Ok(flash_redirect(
+            flash.error("Too many verification attempts. Please wait and try again."),
+            "/mfa/verify",
+        ));
+    }
 
-    // Validate TOTP code
-    // Verify via vault when available (encrypted secrets), or directly (plaintext, pre-migration)
+    let secret = mfa_user
+        .mfa_secret
+        .clone()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("MFA secret not found")))?;
+
     let code = form.totp_code.trim();
     // Issue #11 hardening: same "encrypted secret + no vault" guard as in
     // the MFA setup flow above. Without this, an operator whose secret was
@@ -1810,7 +1931,7 @@ pub async fn mfa_verify_submit(
     // would be told indefinitely that their valid code is invalid.
     if is_encrypted(&secret) && state.vault_client.is_none() {
         tracing::error!(
-            user_id,
+            user_id = mfa_user.id,
             "mfa verify: secret is encrypted but vault client is not configured"
         );
         return Ok(flash_redirect(
@@ -1821,14 +1942,61 @@ pub async fn mfa_verify_submit(
             "/mfa/verify",
         ));
     }
-    let valid = if let Some(ref vault) = state.vault_client
-        && is_encrypted(&secret)
-    {
-        vault.mfa_verify(&secret, code).await.unwrap_or(false)
-    } else {
-        AuthService::verify_totp(&secret, code)
-    };
-    if !valid {
+    let accepted_window =
+        match evaluate_login_totp(&state, &secret, code, mfa_user.last_totp_used_window).await? {
+            LoginTotpOutcome::VaultUnavailable => {
+                return Ok(flash_redirect(
+                    flash.error(
+                        "MFA backend is temporarily unavailable. Please try again \
+                     in a moment, or contact an administrator if the problem persists.",
+                    ),
+                    "/mfa/verify",
+                ));
+            }
+            LoginTotpOutcome::Rejected => {
+                let locked = record_totp_failure(
+                    &mut conn,
+                    mfa_user.id,
+                    mfa_user.failed_login_attempts,
+                    state.config.security.max_failed_login_attempts,
+                )
+                .await?;
+                emit_audit(
+                    &state,
+                    AuditEvent::new(AuditEventType::MfaChallengeFailed, "{}").user(&claims.sub),
+                );
+                if locked {
+                    return Ok(flash_redirect(
+                        flash.error("Account is temporarily locked. Please try again later."),
+                        "/login",
+                    ));
+                }
+                return Ok(flash_redirect(
+                    flash.error("Invalid verification code. Please try again."),
+                    "/mfa/verify",
+                ));
+            }
+            LoginTotpOutcome::Accepted { window } => window,
+        };
+
+    let consumed = diesel::update(
+        users
+            .filter(crate::schema::users::id.eq(mfa_user.id))
+            .filter(
+                last_totp_used_window
+                    .is_null()
+                    .or(last_totp_used_window.lt(accepted_window)),
+            ),
+    )
+    .set((
+        last_totp_used_window.eq(accepted_window),
+        failed_login_attempts.eq(0),
+        locked_until.eq(None::<chrono::DateTime<chrono::Utc>>),
+    ))
+    .execute(&mut conn)
+    .await
+    .map_err(AppError::Database)?;
+    if consumed == 0 {
         emit_audit(
             &state,
             AuditEvent::new(AuditEventType::MfaChallengeFailed, "{}").user(&claims.sub),
@@ -1844,13 +2012,13 @@ pub async fn mfa_verify_submit(
         && !is_encrypted(&secret)
         && let Ok(encrypted) = vault.encrypt("mfa", &secret).await
     {
-        diesel::update(users.filter(crate::schema::users::id.eq(user_id)))
+        diesel::update(users.filter(crate::schema::users::id.eq(mfa_user.id)))
             .set(mfa_secret.eq(Some(&encrypted)))
             .execute(&mut conn)
             .await
             .ok(); // Best-effort migration
         tracing::info!(
-            user_id,
+            user_id = mfa_user.id,
             "Migrated plaintext MFA secret to encrypted (encrypt-on-read)"
         );
     }
@@ -1872,10 +2040,12 @@ pub async fn mfa_verify_submit(
     // Generate new JWT with mfa_verified = true
     let new_token = state.auth_service.generate_access_token(
         &claims.sub,
-        &user_username,
+        &mfa_user.username,
         true, // mfa_verified
-        is_super,
-        is_staff_user,
+        // allow-role-gate: passed as JWT claim so the request-scoped Casbin subject mapping works on subsequent requests.
+        mfa_user.is_superuser,
+        // allow-role-gate: passed as JWT claim so the request-scoped Casbin subject mapping works on subsequent requests.
+        mfa_user.is_staff,
         session_uuid,
     )?;
 
@@ -2695,5 +2865,93 @@ mod tests {
             "API login handler must not contain `}} else {{ true }}` on the \
              MFA path -- this was the historical bypass shape."
         );
+    }
+
+    #[test]
+    fn test_mfa_rate_key_is_per_user() {
+        assert_eq!(mfa_rate_key("abc"), "mfa:abc");
+        assert_ne!(mfa_rate_key("abc"), mfa_rate_key("def"));
+    }
+
+    #[test]
+    fn test_totp_failure_lockout_uses_password_threshold() {
+        assert!(lockout_duration_for_attempts(4, 5).is_none());
+        assert!(lockout_duration_for_attempts(5, 5).is_some());
+    }
+
+    #[test]
+    fn test_consumed_totp_window_is_replayed() {
+        let (secret, _) = AuthService::generate_totp_secret("pin", "VAUBAN").expect("secret");
+        let code = AuthService::get_current_totp(&secret).expect("code");
+        let first = AuthService::verify_and_consume_totp(&secret, &code, None);
+        let window = match first {
+            crate::services::auth::TotpVerification::Accepted { window } => window,
+            other => panic!("expected accept, got {other:?}"),
+        };
+        assert!(matches!(
+            AuthService::verify_and_consume_totp(&secret, &code, Some(window)),
+            crate::services::auth::TotpVerification::Replayed
+        ));
+    }
+
+    #[test]
+    fn mfa_verify_and_login_call_limiter_and_consume_totp() {
+        let src = include_str!("auth.rs");
+        let verify = src
+            .split("pub async fn mfa_verify_submit")
+            .nth(1)
+            .expect("mfa_verify_submit");
+        let verify = verify.split("pub async fn").next().unwrap_or(verify);
+        assert!(
+            verify.contains("mfa_rate_key"),
+            "mfa verify must rate-limit"
+        );
+        assert!(
+            verify.contains("evaluate_login_totp"),
+            "mfa verify must consume the window"
+        );
+        let login = src.split("pub async fn login(").nth(1).expect("login");
+        let login = login
+            .split("pub async fn login_web")
+            .next()
+            .unwrap_or(login);
+        assert!(
+            login.contains("mfa_rate_key"),
+            "API login MFA must rate-limit"
+        );
+        assert!(
+            login.contains("evaluate_login_totp"),
+            "API login MFA must consume the window"
+        );
+        assert!(
+            src.contains("verify_and_consume_totp"),
+            "plaintext path must call verify_and_consume_totp"
+        );
+        let web = src
+            .split("Web flow: temporary token")
+            .nth(1)
+            .expect("web mfa redirect");
+        let web = &web[..web.find("let session_uuid").unwrap_or(web.len())];
+        assert!(
+            !web.contains("failed_login_attempts"),
+            "web login must not clear the counter before the TOTP"
+        );
+    }
+
+    use proptest::prelude::*;
+
+    proptest::proptest! {
+        #[test]
+        fn proptest_off_window_totp_codes_are_rejected(code in "[0-9]{6}") {
+            let (secret, _) = AuthService::generate_totp_secret("prop", "VAUBAN")
+                .expect("secret");
+            let current = AuthService::get_current_totp(&secret).expect("code");
+            prop_assume!(code != current);
+            let outcome = AuthService::verify_and_consume_totp(&secret, &code, None);
+            prop_assert!(matches!(
+                outcome,
+                crate::services::auth::TotpVerification::Invalid
+            ));
+        }
     }
 }

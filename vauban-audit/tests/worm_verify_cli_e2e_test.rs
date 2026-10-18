@@ -25,6 +25,7 @@ fn write_sealed_segment(dir: &std::path::Path, seed: [u8; 32]) -> std::path::Pat
         session_id: None,
         source_ip: None,
         details: "cli".to_string(),
+        producer: None,
     })
     .unwrap();
     log.seal(&SigningKey::from_bytes(&seed), 2).unwrap();

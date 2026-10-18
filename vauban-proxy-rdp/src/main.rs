@@ -26,6 +26,7 @@ mod ipc;
 mod rdp_recording_writer;
 mod session;
 mod session_manager;
+mod vault;
 mod video_encoder;
 
 use anyhow::{Context, Result};
@@ -337,6 +338,25 @@ async fn run_service() -> Result<ServiceExit> {
     )?;
     info!("session-token MAC key loaded (BLAKE3-keyed)");
 
+    let vault_fds: Option<(RawFd, RawFd)> = {
+        let r: Option<RawFd> = std::env::var("VAUBAN_VAULT_IPC_READ")
+            .ok()
+            .and_then(|s| s.parse().ok());
+        let w: Option<RawFd> = std::env::var("VAUBAN_VAULT_IPC_WRITE")
+            .ok()
+            .and_then(|s| s.parse().ok());
+        match (r, w) {
+            (Some(r), Some(w)) => Some((r, w)),
+            _ => {
+                warn!(
+                    "Vault IPC channel not configured (VAUBAN_VAULT_IPC_READ/WRITE); \
+                     credential envelopes cannot be opened"
+                );
+                None
+            }
+        }
+    };
+
     // SAFETY: Single thread at this point, no concurrent env access.
     // Note: VAUBAN_ACCESS_IPC_READ / WRITE are consumed (and removed)
     // inside AccessGuard::from_env below.
@@ -350,6 +370,8 @@ async fn run_service() -> Result<ServiceExit> {
         std::env::remove_var("VAUBAN_RECORDING_ENABLED");
         std::env::remove_var("VAUBAN_AUDIT_IPC_READ");
         std::env::remove_var("VAUBAN_AUDIT_IPC_WRITE");
+        std::env::remove_var("VAUBAN_VAULT_IPC_READ");
+        std::env::remove_var("VAUBAN_VAULT_IPC_WRITE");
     }
 
     info!(
@@ -404,6 +426,23 @@ async fn run_service() -> Result<ServiceExit> {
     let access_guard = Arc::clone(&access_wiring.guard);
     info!("AccessGuard initialized (defense-in-depth RBAC re-check)");
 
+    let vault_client: Option<Arc<vault::VaultDecryptClient>> = match vault_fds {
+        Some((r, w)) => {
+            let ch = unsafe { IpcChannel::from_raw_fds(r, w) };
+            match vault::VaultDecryptClient::new(ch) {
+                Ok(client) => {
+                    info!("Vault decrypt-only IPC client initialized");
+                    Some(client)
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to initialize Vault IPC client");
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+
     let audit_channel = audit_fds.map(|(r, w)| {
         let ch = unsafe { IpcChannel::from_raw_fds(r, w) };
         info!("Audit IPC channel opened for session recording");
@@ -423,6 +462,10 @@ async fn run_service() -> Result<ServiceExit> {
         ipc_fds.push(r);
         ipc_fds.push(w);
     }
+    if let Some((r, w)) = vault_fds {
+        ipc_fds.push(r);
+        ipc_fds.push(w);
+    }
     let fd_receiver_fds: Option<Vec<RawFd>> = fd_passing_socket.map(|fd| vec![fd]);
 
     let sealed =
@@ -439,6 +482,10 @@ async fn run_service() -> Result<ServiceExit> {
     // shared module logs at error level when the dispatcher exits, so
     // operators can detect the degraded state without re-grepping logs.
     let _dispatcher_handle = access_guard.spawn_dispatcher();
+    if let Some(ref vc) = vault_client {
+        let vc = Arc::clone(vc);
+        tokio::spawn(vc.process_incoming());
+    }
 
     let (web_tx, web_rx) = mpsc::channel::<Message>(256);
     let (recording_lease_tx, recording_lease_rx) = mpsc::channel::<RecordingLeaseReq>(64);
@@ -469,6 +516,7 @@ async fn run_service() -> Result<ServiceExit> {
         audit_tx,
         (recording_lease_tx, recording_lease_rx),
         access_guard,
+        vault_client,
     )
     .await
 }
@@ -489,6 +537,7 @@ async fn main_loop(
         mpsc::Receiver<RecordingLeaseReq>,
     ),
     access_guard: Arc<AccessGuard>,
+    vault_client: Option<Arc<vault::VaultDecryptClient>>,
 ) -> Result<ServiceExit> {
     info!("Main event loop started");
 
@@ -618,6 +667,7 @@ async fn main_loop(
                             },
                             Arc::clone(&access_guard),
                             Arc::clone(&supervisor_relay),
+                            vault_client.clone(),
                         ).await {
                             warn!(error = %e, "Error handling web message");
                             state.increment_failed();
@@ -744,6 +794,7 @@ async fn handle_web_message(
     recording_lease_client: RecordingLeaseClient,
     access_guard: Arc<AccessGuard>,
     supervisor_relay: Arc<session::SupervisorRelay>,
+    vault_client: Option<Arc<vault::VaultDecryptClient>>,
 ) -> Result<()> {
     match msg {
         Message::RdpSessionOpen {
@@ -842,6 +893,28 @@ async fn handle_web_message(
                 debug!(session_id = %session_id, "Using pre-established TCP connection from supervisor");
             }
 
+            let password =
+                match vault::materialise_rdp_password(vault_client.as_ref(), password).await {
+                    Ok(password) => password,
+                    Err(error) => {
+                        warn!(
+                            session_id = %session_id,
+                            error = %error,
+                            "RDP session refused: credential envelope could not be opened"
+                        );
+                        let response = Message::RdpSessionOpened {
+                            request_id,
+                            session_id,
+                            success: false,
+                            desktop_width: 0,
+                            desktop_height: 0,
+                            error: Some("Failed to open target credentials".to_string()),
+                        };
+                        let _ = response_tx.send(response);
+                        return Ok(());
+                    }
+                };
+
             let config = SessionConfig {
                 session_id: session_id.clone(),
                 user_id,
@@ -849,7 +922,7 @@ async fn handle_web_message(
                 host: asset_host,
                 port: asset_port,
                 username,
-                password: password.map(|p| secrecy::SecretString::from(p.into_inner())),
+                password,
                 domain,
                 desktop_width,
                 desktop_height,
@@ -1533,6 +1606,10 @@ mod tests {
             "session_token_gate::verify_proxy MUST run BEFORE \
              AccessGuard.authorize."
         );
+        let window = &handler[verify_idx..verify_idx + 400];
+        assert!(window.contains("\"rdp\""));
+        assert!(!window.contains("rdp-fetch"));
+        assert!(!window.contains("rdp-probe"));
     }
 
     #[test]

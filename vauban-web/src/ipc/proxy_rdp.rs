@@ -70,6 +70,18 @@ pub struct CertFetchIdentity<'a> {
     /// per asset). When `false`, the legacy session-token verb keeps the
     /// caller gated by their access rule.
     pub caller_has_assets_manage: bool,
+    /// Provenance probes the caller's source address (`rdp-probe`).
+    pub probe: bool,
+}
+
+fn diagnostic_or_session_protocol(base: &str, probe: bool, manages_assets: bool) -> String {
+    if probe {
+        format!("{base}-probe")
+    } else if manages_assets {
+        format!("{base}-fetch")
+    } else {
+        base.to_string()
+    }
 }
 
 impl std::fmt::Debug for RdpSessionOpenRequest {
@@ -335,19 +347,24 @@ impl ProxyRdpClient {
                 )
             })?;
             let fetch_session_id = format!("fetch-rdpcert-{}", request_id);
+            let protocol = diagnostic_or_session_protocol(
+                "rdp",
+                identity.probe,
+                identity.caller_has_assets_manage,
+            );
             let token_params = shared::session_token::SessionTokenParams {
                 session_id: fetch_session_id.clone(),
                 user_uuid: identity.user_uuid.to_string(),
                 asset_uuid: identity.asset_uuid.to_string(),
-                protocol: "rdp".to_string(),
+                protocol: protocol.clone(),
                 host: host.to_string(),
                 port,
                 target_service: shared::messages::Service::ProxyRdp,
             };
-            let session_token = if identity.caller_has_assets_manage {
+            let session_token = if protocol != "rdp" {
                 identity
                     .access_client
-                    .issue_diagnostic_token(token_params, true)
+                    .issue_diagnostic_token(token_params, identity.caller_has_assets_manage)
                     .await?
             } else {
                 identity

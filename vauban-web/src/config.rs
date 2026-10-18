@@ -215,6 +215,22 @@ impl Environment {
     }
 }
 
+/// Placeholder shipped in the example config. Production must replace it.
+pub const PUBLIC_SECRET_KEY: &str = "CHANGE-ME-IN-PRODUCTION-32-CHARS!";
+
+/// Refuse the published placeholder when the process is production.
+/// Development and testing keep it so local boot and `just test` stay usable.
+pub fn reject_public_secret_key(environment: Environment, secret: &str) -> Result<(), String> {
+    if environment.is_production() && secret == PUBLIC_SECRET_KEY {
+        return Err(
+            "secret_key is the public placeholder. Set a unique value via VAUBAN_SECRET_KEY \
+             or config/vauban.conf before starting in production."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// Application configuration.
 /// All values must be defined in TOML files.
 #[derive(Clone, Deserialize)]
@@ -1794,6 +1810,11 @@ impl Config {
                     .to_string(),
             ));
         }
+        if let Err(reason) =
+            reject_public_secret_key(config.environment, config.secret_key.expose_secret())
+        {
+            return Err(crate::error::AppError::Config(reason));
+        }
 
         // Validate recording hydrator knobs (e.g. cron hour must be 0..=23).
         config
@@ -2843,6 +2864,33 @@ mod tests {
             source.contains("use zeroize::Zeroize"),
             "config.rs must import zeroize::Zeroize"
         );
+    }
+
+    #[test]
+    fn attack_default_secret_key_is_rejected() {
+        assert!(reject_public_secret_key(Environment::Production, PUBLIC_SECRET_KEY).is_err());
+        assert!(reject_public_secret_key(Environment::Development, PUBLIC_SECRET_KEY).is_ok());
+        assert!(reject_public_secret_key(Environment::Testing, PUBLIC_SECRET_KEY).is_ok());
+        assert!(
+            reject_public_secret_key(Environment::Production, "unique-production-secret-value!!")
+                .is_ok()
+        );
+    }
+
+    use proptest::prelude::*;
+
+    proptest::proptest! {
+        #[test]
+        fn proptest_public_secret_refused_only_in_production(secret in ".*") {
+            let production = reject_public_secret_key(Environment::Production, &secret);
+            let development = reject_public_secret_key(Environment::Development, &secret);
+            if secret == PUBLIC_SECRET_KEY {
+                prop_assert!(production.is_err());
+            } else {
+                prop_assert!(production.is_ok());
+            }
+            prop_assert!(development.is_ok());
+        }
     }
 
     // ==================== VAUBAN_SECRET_KEY env-var clearing Tests ====================

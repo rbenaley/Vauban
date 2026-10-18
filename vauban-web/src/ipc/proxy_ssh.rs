@@ -97,6 +97,20 @@ pub struct HostKeyFetchIdentity<'a> {
     /// verb, which silently denied the admin path and made the verify
     /// endpoint fall back to a green "Verified" fragment.
     pub caller_has_assets_manage: bool,
+    /// Provenance probes the caller's source address. The signed
+    /// protocol is `ssh-probe` and the host is not rewritten to the
+    /// asset hostname.
+    pub probe: bool,
+}
+
+fn diagnostic_or_session_protocol(base: &str, probe: bool, manages_assets: bool) -> String {
+    if probe {
+        format!("{base}-probe")
+    } else if manages_assets {
+        format!("{base}-fetch")
+    } else {
+        base.to_string()
+    }
 }
 
 /// Response from opening an SSH session.
@@ -350,19 +364,24 @@ impl ProxySshClient {
             // "Verified" fragment that hid the missing live check).
             // Non-admin callers stay on the legacy verb so they remain
             // gated by their access rule.
+            let protocol = diagnostic_or_session_protocol(
+                "ssh",
+                identity.probe,
+                identity.caller_has_assets_manage,
+            );
             let token_params = shared::session_token::SessionTokenParams {
                 session_id: fetch_session_id.clone(),
                 user_uuid: identity.user_uuid.to_string(),
                 asset_uuid: identity.asset_uuid.to_string(),
-                protocol: "ssh".to_string(),
+                protocol: protocol.clone(),
                 host: host.to_string(),
                 port,
                 target_service: shared::messages::Service::ProxySsh,
             };
-            let session_token = if identity.caller_has_assets_manage {
+            let session_token = if protocol != "ssh" {
                 identity
                     .access_client
-                    .issue_diagnostic_token(token_params, true)
+                    .issue_diagnostic_token(token_params, identity.caller_has_assets_manage)
                     .await?
             } else {
                 identity
@@ -473,11 +492,16 @@ impl ProxySshClient {
                     .to_string(),
             )
         })?;
+        let protocol = diagnostic_or_session_protocol(
+            "ssh",
+            identity.probe,
+            identity.caller_has_assets_manage,
+        );
         let token_params = shared::session_token::SessionTokenParams {
             session_id: session_id.to_string(),
             user_uuid: identity.user_uuid.to_string(),
             asset_uuid: identity.asset_uuid.to_string(),
-            protocol: "ssh".to_string(),
+            protocol,
             host: host.to_string(),
             port,
             target_service: shared::messages::Service::ProxySsh,
@@ -486,10 +510,10 @@ impl ProxySshClient {
         // caller normally has no per-asset access rule -- mint a
         // diagnostic token that bypasses the rule re-check (same
         // reasoning as the host-key fetch path, issue #34).
-        let session_token = if identity.caller_has_assets_manage {
+        let session_token = if identity.caller_has_assets_manage || identity.probe {
             identity
                 .access_client
-                .issue_diagnostic_token(token_params, true)
+                .issue_diagnostic_token(token_params, identity.caller_has_assets_manage)
                 .await?
         } else {
             identity

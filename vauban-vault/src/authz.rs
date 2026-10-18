@@ -23,7 +23,7 @@
 //!
 //! Only the couples below are allowed; everything else is DENIED:
 //!
-//! - `web`: Encrypt{credentials, mfa, secrets}, Decrypt{credentials, secrets},
+//! - `web`: Encrypt{credentials, mfa, secrets}, Decrypt{secrets},
 //!   MfaGenerate, MfaVerify, MfaGetSecret. The `secrets` domain protects the
 //!   organisational vault-secrets store (user-facing M2M retrieval API);
 //!   only web ever touches it.
@@ -152,9 +152,7 @@ pub fn is_authorized(peer: VaultPeer, msg: &Message) -> bool {
         (VaultPeer::Web, Message::VaultEncrypt { domain, .. }) => {
             domain == DOMAIN_CREDENTIALS || domain == DOMAIN_MFA || domain == DOMAIN_SECRETS
         }
-        (VaultPeer::Web, Message::VaultDecrypt { domain, .. }) => {
-            domain == DOMAIN_CREDENTIALS || domain == DOMAIN_SECRETS
-        }
+        (VaultPeer::Web, Message::VaultDecrypt { domain, .. }) => domain == DOMAIN_SECRETS,
         (VaultPeer::Web, Message::VaultMfaGenerate { .. }) => true,
         (VaultPeer::Web, Message::VaultMfaVerify { .. }) => true,
         (VaultPeer::Web, Message::VaultMfaGetSecret { .. }) => true,
@@ -281,7 +279,7 @@ mod tests {
         match peer {
             VaultPeer::Web => match verb {
                 "Encrypt" => domain == "credentials" || domain == "mfa" || domain == "secrets",
-                "Decrypt" => domain == "credentials" || domain == "secrets",
+                "Decrypt" => domain == "secrets",
                 "MfaGenerate" | "MfaVerify" | "MfaGetSecret" => true,
                 _ => false,
             },
@@ -342,7 +340,7 @@ mod tests {
         assert!(is_authorized(VaultPeer::Web, &encrypt("credentials")));
         assert!(is_authorized(VaultPeer::Web, &encrypt("mfa")));
         assert!(is_authorized(VaultPeer::Web, &encrypt("secrets")));
-        assert!(is_authorized(VaultPeer::Web, &decrypt("credentials")));
+        assert!(!is_authorized(VaultPeer::Web, &decrypt("credentials")));
         assert!(is_authorized(VaultPeer::Web, &decrypt("secrets")));
         assert!(is_authorized(VaultPeer::Web, &mfa_generate()));
         assert!(is_authorized(VaultPeer::Web, &mfa_verify()));
@@ -371,6 +369,13 @@ mod tests {
                 "peer {peer:?} must not encrypt on the secrets domain"
             );
         }
+    }
+
+    #[test]
+    fn attack_web_decrypt_credentials_is_rejected() {
+        assert!(!is_authorized(VaultPeer::Web, &decrypt("credentials")));
+        assert!(is_authorized(VaultPeer::Web, &encrypt("credentials")));
+        assert!(is_authorized(VaultPeer::ProxyRdp, &decrypt("credentials")));
     }
 
     /// SECURITY: even web cannot decrypt the raw MFA secret via VaultDecrypt;

@@ -379,6 +379,7 @@ async fn verify_session_with_timeouts(
         let row: Option<(bool, bool)> = auth_sessions::table
             .inner_join(users::table.on(users::id.eq(auth_sessions::user_id)))
             .filter(auth_sessions::uuid.eq(session_uuid))
+            .filter(auth_sessions::token_hash.eq(&token_hash))
             .filter(users::uuid.eq(user_uuid))
             .filter(users::is_active.eq(true))
             .filter(users::is_deleted.eq(false))
@@ -614,6 +615,21 @@ mod tests {
     use super::*;
     use axum::http::{Request as HttpRequest, StatusCode};
     use axum::response::IntoResponse;
+
+    #[test]
+    fn jti_lookup_also_filters_token_hash() {
+        let src = include_str!("auth.rs");
+        let start = src.find("if let Some(ref jti_str)").expect("jti branch");
+        let rest = &src[start..];
+        let end = rest
+            .find("let user_uuid = Uuid::parse_str")
+            .expect("fallback branch");
+        let branch = &rest[..end];
+        assert!(
+            branch.contains("auth_sessions::token_hash"),
+            "the jti lookup must also match the presented token hash"
+        );
+    }
 
     // ==================== AuthUser Tests ====================
 

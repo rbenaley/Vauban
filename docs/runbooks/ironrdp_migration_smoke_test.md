@@ -104,6 +104,17 @@ Checklist:
    mode: the historical NTLM path must work unchanged against the same
    target.
 
+## Credential envelope (web does not decrypt)
+
+The web viewer forwards the stored password (vault envelope or historical
+plaintext) in `RdpSessionOpen.password`. The proxy opens a `credentials`
+envelope through its vault pipe and refuses a truncated envelope. A
+plaintext value is used as-is when no vault is configured (local dev).
+
+Pass: a session against a vault-enrolled asset opens, and the web process
+log contains no `VaultDecrypt` for domain `credentials`. A stored value
+of `v1:` (no payload) is refused before any RDP handshake.
+
 ## Known-good reference
 
 | Stack | Validated on | By |

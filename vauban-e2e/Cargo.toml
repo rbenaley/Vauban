@@ -1,6 +1,6 @@
 [package]
 name = "vauban-e2e"
-version = "0.9.45"
+version = "0.9.48"
 edition = "2024"
 rust-version = "1.98"
 publish = false

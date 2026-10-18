@@ -97,11 +97,26 @@ Pass: modal without INSERT; approved path reaches AccessGuard.
 ## D — Adjacent regressions
 
 1. MFA login still fail-closed (WORM Ack / HOL budget unchanged).
-2. SSH asset **without** pinned host key: refuse with
+2. SSH asset **without** pinned host key: the web refuses with
    `No SSH host key pinned` **after** policy mint deny-or-allow
-   (user without rule still hears `No access rule` first).
+   (user without rule still hears `No access rule` first). The proxy
+   also refuses `check_server_key` when the pin is missing or blank.
+   Host-key fetch remains the path that captures a key.
 3. Diagnostic host-key fetch (`assets:manage`) still works via
    `IssueDiagnosticToken` (inert constraints).
+
+## Host binding and diagnostic protocols
+
+`IssueSessionToken` refuses a host or port that differs from the asset
+row. Admin fetch tokens are signed `ssh-fetch` / `rdp-fetch` and require
+`assets:manage` recomputed by vauban-access. Provenance probes are
+`ssh-probe` / `rdp-probe`: the port must match the asset, the host stays
+the source address. A fetch or probe token does not open an SSH or RDP
+session.
+
+Pass: an SSH session to the asset hostname opens. The same user with a
+rewritten host is denied. A host-key fetch still completes for an
+operator who holds `assets:manage`.
 
 ## What *not* to re-litigate
 

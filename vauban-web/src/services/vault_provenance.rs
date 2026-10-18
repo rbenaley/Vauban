@@ -124,7 +124,8 @@ impl HostIdentityVerifier for ProxyHostIdentityVerifier {
                         // System-bounded diagnostic action (see struct doc):
                         // the diagnostic-token verb skips the access-rule
                         // re-check, which cannot exist for an M2M machine.
-                        caller_has_assets_manage: true,
+                        caller_has_assets_manage: false,
+                        probe: true,
                     };
                     let (_host_key, fingerprint) = proxy
                         .fetch_host_key(
@@ -147,7 +148,8 @@ impl HostIdentityVerifier for ProxyHostIdentityVerifier {
                         access_client: state.access_client.as_ref(),
                         user_uuid: probe.user_uuid,
                         asset_uuid: probe.asset_uuid,
-                        caller_has_assets_manage: true,
+                        caller_has_assets_manage: false,
+                        probe: true,
                     };
                     let (_spki, fingerprint) = proxy
                         .fetch_server_cert(

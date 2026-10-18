@@ -29,7 +29,7 @@ exclude = ["vauban-proxy-rdp", "vauban-e2e"]
 default-members = ["vauban-supervisor"]
 
 [workspace.package]
-version = "0.9.47"
+version = "0.9.48"
 edition = "2024"
 rust-version = "1.98"
 authors = ["Richard Ben Aleya"]

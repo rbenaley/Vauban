@@ -141,26 +141,9 @@ pub async fn connect_rdp(
         .filter(|s| !s.trim().is_empty())
         .unwrap_or(stored_username);
 
-    // Decrypt password if encrypted (vault integration)
-    let password = if let Some(ref pwd) = stored_password {
-        if super::is_encrypted(pwd) {
-            if let Some(ref vault) = state.vault_client {
-                match vault.decrypt("credentials", pwd).await {
-                    Ok(decrypted) => Some(secrecy::SecretString::from(decrypted.into_inner())),
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to decrypt RDP password");
-                        return htmx_error_response("Failed to decrypt credentials");
-                    }
-                }
-            } else {
-                Some(secrecy::SecretString::from(pwd.clone()))
-            }
-        } else {
-            Some(secrecy::SecretString::from(pwd.clone()))
-        }
-    } else {
-        None
-    };
+    // The stored value is either a vault envelope or a historical
+    // plaintext. The proxy decrypts envelopes. The web process does not.
+    let password = stored_password.map(secrecy::SecretString::from);
 
     // Generate session UUID
     let session_uuid = uuid::Uuid::new_v4();
@@ -763,6 +746,7 @@ pub async fn fetch_rdp_server_cert(
         user_uuid: &auth_user.uuid,
         asset_uuid: &asset_uuid_str_for_token,
         caller_has_assets_manage: assets_manage,
+        probe: false,
     };
     let (server_spki, fingerprint) = match proxy_client
         .fetch_server_cert(
@@ -972,6 +956,7 @@ pub async fn verify_rdp_server_cert(
         user_uuid: &auth_user.uuid,
         asset_uuid: &uuid_str_for_token,
         caller_has_assets_manage: assets_manage,
+        probe: false,
     };
     match proxy_client
         .fetch_server_cert(
@@ -1215,6 +1200,19 @@ mod tests {
         assert!(
             handler_body.contains("if let Some(ref supervisor) = state.supervisor"),
             "TCP brokering must be conditional on supervisor availability (non-sandboxed = no supervisor)"
+        );
+    }
+
+    #[test]
+    fn connect_rdp_does_not_decrypt_credentials() {
+        let source = include_str!("rdp.rs");
+        let handler_start = source
+            .find("pub async fn connect_rdp")
+            .expect("connect_rdp");
+        let handler_body = &source[handler_start..];
+        assert!(
+            !handler_body.contains("decrypt(\"credentials\""),
+            "connect_rdp must forward the stored secret; the proxy decrypts it"
         );
     }
 }

@@ -76,6 +76,7 @@ fn battle_append_with_preopened_worm_progresses_while_other_thread_ticks() {
                 session_id: None,
                 source_ip: None,
                 details: format!("n{i}"),
+                producer: None,
             };
             worm.append_event(&record).unwrap();
         }

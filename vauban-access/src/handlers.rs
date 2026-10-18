@@ -837,6 +837,83 @@ pub(crate) fn mcp_appliance_ttl_secs_from(raw: Option<&str>) -> u64 {
         .unwrap_or(TOKEN_TTL_SECONDS_MCP)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DiagnosticKind {
+    Fetch,
+    Probe,
+}
+
+async fn asset_endpoint_matches(
+    conn: &mut DbConnection,
+    asset_uuid: &str,
+    host: &str,
+    port: u16,
+    bind_host: bool,
+) -> bool {
+    let Ok(parsed) = Uuid::parse_str(asset_uuid) else {
+        return false;
+    };
+    let Ok((hostname, asset_port)): Result<(String, i32), _> = assets::table
+        .filter(assets::uuid.eq(parsed))
+        .filter(assets::is_deleted.eq(false))
+        .select((assets::hostname, assets::port))
+        .first(conn)
+        .await
+    else {
+        return false;
+    };
+    requested_endpoint_matches(host, port, &hostname, asset_port, bind_host)
+}
+
+fn requested_endpoint_matches(
+    host: &str,
+    port: u16,
+    hostname: &str,
+    asset_port: i32,
+    bind_host: bool,
+) -> bool {
+    if i32::from(port) != asset_port {
+        return false;
+    }
+    !bind_host || host == hostname
+}
+
+async fn caller_manages_assets(
+    conn: &mut DbConnection,
+    enforcer: Option<&casbin::Enforcer>,
+    user_uuid: &str,
+) -> bool {
+    use casbin::CoreApi;
+    let Some(enforcer) = enforcer else {
+        return false;
+    };
+    let Ok(parsed) = Uuid::parse_str(user_uuid) else {
+        return false;
+    };
+    let Ok((is_superuser, is_staff)): Result<(bool, bool), _> = users::table
+        .filter(users::uuid.eq(parsed))
+        .select((users::is_superuser, users::is_staff))
+        .first(conn)
+        .await
+    else {
+        return false;
+    };
+    let subject = if is_superuser {
+        "role:superuser"
+    } else if is_staff {
+        "role:staff"
+    } else {
+        "role:user"
+    };
+    enforcer
+        .enforce(vec![
+            subject.to_string(),
+            "assets".to_string(),
+            "manage".to_string(),
+        ])
+        .unwrap_or(false)
+}
+
 pub async fn handle_issue_session_token(
     pool: &DbPool,
     key: &TokenKey,
@@ -910,6 +987,25 @@ pub async fn handle_issue_session_token(
         None
     };
 
+    if !asset_endpoint_matches(
+        &mut conn,
+        &params.asset_uuid,
+        &params.host,
+        params.port,
+        true,
+    )
+    .await
+    {
+        info!(
+            user_uuid = %params.user_uuid,
+            asset_uuid = %params.asset_uuid,
+            host = %params.host,
+            port = params.port,
+            "IssueSessionToken denied: host or port differs from the asset row"
+        );
+        return AccessResponse::SessionTokenDenied;
+    }
+
     let ttl_override = if params.protocol == "mcp" {
         let appliance = mcp_appliance_ttl_secs();
         let from_rule = max_session_duration
@@ -958,16 +1054,52 @@ pub async fn handle_issue_session_token(
 /// `IssueSessionToken` denial so a probe cannot fingerprint which
 /// path was used.
 pub async fn handle_issue_diagnostic_token(
+    pool: &DbPool,
+    enforcer: Option<&casbin::Enforcer>,
     key: &TokenKey,
     params: SessionTokenParams,
-    caller_has_assets_manage: bool,
 ) -> AccessResponse {
-    if !caller_has_assets_manage {
+    let mut conn = match pool.get().await {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = %e, "IssueDiagnosticToken: DB connection error, deny");
+            return AccessResponse::SessionTokenDenied;
+        }
+    };
+    let kind = match params.protocol.as_str() {
+        "ssh-fetch" | "rdp-fetch" | "mcp" => DiagnosticKind::Fetch,
+        "ssh-probe" | "rdp-probe" => DiagnosticKind::Probe,
+        _ => {
+            info!(
+                protocol = %params.protocol,
+                "IssueDiagnosticToken denied: protocol is not a fetch or a probe"
+            );
+            return AccessResponse::SessionTokenDenied;
+        }
+    };
+    let bind_host = matches!(kind, DiagnosticKind::Fetch);
+    if !asset_endpoint_matches(
+        &mut conn,
+        &params.asset_uuid,
+        &params.host,
+        params.port,
+        bind_host,
+    )
+    .await
+    {
         info!(
-            user_uuid = %params.user_uuid,
             asset_uuid = %params.asset_uuid,
             protocol = %params.protocol,
-            session_id = %params.session_id,
+            "IssueDiagnosticToken denied: endpoint differs from the asset row"
+        );
+        return AccessResponse::SessionTokenDenied;
+    }
+    if kind == DiagnosticKind::Fetch
+        && !caller_manages_assets(&mut conn, enforcer, &params.user_uuid).await
+    {
+        info!(
+            user_uuid = %params.user_uuid,
+            protocol = %params.protocol,
             "IssueDiagnosticToken denied: caller lacks assets:manage"
         );
         return AccessResponse::SessionTokenDenied;
@@ -7143,7 +7275,7 @@ mod tests {
             user_uuid: user_uuid.to_string(),
             asset_uuid: asset_uuid.to_string(),
             protocol: protocol.to_string(),
-            host: "10.0.0.1".to_string(),
+            host: "iacs.test.local".to_string(),
             port: 22,
             target_service: shared::messages::Service::ProxySsh,
         }
@@ -7264,9 +7396,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_issue_diagnostic_token_constraints_are_inert() {
+    async fn forged_diagnostic_flag_is_rejected() {
+        let pool = test_pool().await;
         let key = TokenKey::generate();
         let issued = handle_issue_diagnostic_token(
+            &pool,
+            None,
             &key,
             mint_params(
                 &Uuid::new_v4().to_string(),
@@ -7274,9 +7409,25 @@ mod tests {
                 "ssh",
                 "sess-diag",
             ),
-            true,
         )
         .await;
+        assert!(
+            matches!(issued, AccessResponse::SessionTokenDenied),
+            "a session protocol on the diagnostic verb is refused, got {issued:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_issue_diagnostic_token_constraints_are_inert() {
+        let pool = test_pool().await;
+        let key = TokenKey::generate();
+        let user_id = insert_test_user(&pool, &unique_name("probe_usr")).await;
+        let user_uuid_str = user_uuid(&pool, user_id).await;
+        let (asset_id, asset_uuid_str) =
+            insert_test_asset(&pool, &unique_name("probe_asset")).await;
+        let mut params = mint_params(&user_uuid_str, &asset_uuid_str, "ssh-probe", "sess-probe");
+        params.host = "203.0.113.10".to_string();
+        let issued = handle_issue_diagnostic_token(&pool, None, &key, params).await;
         match issued {
             AccessResponse::SessionTokenIssued {
                 token,
@@ -7292,6 +7443,116 @@ mod tests {
                 assert!(max_session_duration.is_none());
             }
             other => panic!("expected SessionTokenIssued, got {other:?}"),
+        }
+        cleanup_asset(&pool, asset_id).await;
+    }
+
+    #[tokio::test]
+    async fn attack_session_token_wrong_host_is_rejected() {
+        let pool = test_pool().await;
+        let key = TokenKey::generate();
+        let user_id = insert_test_user(&pool, &unique_name("host_usr")).await;
+        let user_uuid_str = user_uuid(&pool, user_id).await;
+        let ug = create_test_vauban_group(&pool, &unique_name("ug_host")).await;
+        let ag = create_test_asset_group(&pool, &unique_name("ag_host")).await;
+        handle_access_request(
+            &pool,
+            AccessRequest::AddGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
+        )
+        .await;
+        let (asset_id, asset_uuid_str) = insert_test_asset(&pool, &unique_name("host_asset")).await;
+        link_asset_to_group(&pool, asset_id, ag.id).await;
+        let rule = create_test_rule_with_constraints(
+            &pool,
+            RuleConstraints {
+                name: &unique_name("host_rule"),
+                ug_id: ug.id,
+                ag_id: ag.id,
+                protocols: vec!["ssh"],
+                require_mfa: false,
+                require_approval: false,
+                max_session_duration: None,
+            },
+        )
+        .await;
+        let mut params = mint_params(&user_uuid_str, &asset_uuid_str, "ssh", "sess-wrong-host");
+        params.host = "10.0.0.1".to_string();
+        let issued = handle_issue_session_token(&pool, &key, params).await;
+        assert!(matches!(issued, AccessResponse::SessionTokenDenied));
+        cleanup_asset(&pool, asset_id).await;
+        cleanup_rule(&pool, &rule.uuid).await;
+        cleanup_asset_group(&pool, &ag.uuid).await;
+        cleanup_vauban_group(&pool, &ug.uuid).await;
+    }
+
+    #[tokio::test]
+    async fn attack_fetch_token_rejected_as_session() {
+        let pool = test_pool().await;
+        let key = TokenKey::generate();
+        let user_id = insert_test_user(&pool, &unique_name("fetch_usr")).await;
+        let user_uuid_str = user_uuid(&pool, user_id).await;
+        let ug = create_test_vauban_group(&pool, &unique_name("ug_fetch")).await;
+        let ag = create_test_asset_group(&pool, &unique_name("ag_fetch")).await;
+        handle_access_request(
+            &pool,
+            AccessRequest::AddGroupMember {
+                group_id: ug.id,
+                user_id,
+            },
+        )
+        .await;
+        let (asset_id, asset_uuid_str) =
+            insert_test_asset(&pool, &unique_name("fetch_asset")).await;
+        link_asset_to_group(&pool, asset_id, ag.id).await;
+        let rule = create_test_rule_with_constraints(
+            &pool,
+            RuleConstraints {
+                name: &unique_name("fetch_rule"),
+                ug_id: ug.id,
+                ag_id: ag.id,
+                protocols: vec!["ssh"],
+                require_mfa: false,
+                require_approval: false,
+                max_session_duration: None,
+            },
+        )
+        .await;
+        let issued = handle_issue_session_token(
+            &pool,
+            &key,
+            mint_params(
+                &user_uuid_str,
+                &asset_uuid_str,
+                "ssh-fetch",
+                "sess-fetch-as-open",
+            ),
+        )
+        .await;
+        assert!(
+            matches!(issued, AccessResponse::SessionTokenDenied),
+            "ssh-fetch is not an access-rule protocol"
+        );
+        cleanup_asset(&pool, asset_id).await;
+        cleanup_rule(&pool, &rule.uuid).await;
+        cleanup_asset_group(&pool, &ag.uuid).await;
+        cleanup_vauban_group(&pool, &ug.uuid).await;
+    }
+
+    use proptest::prelude::*;
+
+    proptest::proptest! {
+        #[test]
+        fn proptest_divergent_hosts_and_ports_are_rejected(
+            host in "[a-z]{1,12}",
+            port in 1u16..1024,
+        ) {
+            prop_assume!(host != "asset");
+            prop_assert!(!super::requested_endpoint_matches(&host, 22, "asset", 22, true));
+            prop_assume!(port != 22);
+            prop_assert!(!super::requested_endpoint_matches("asset", port, "asset", 22, true));
         }
     }
 

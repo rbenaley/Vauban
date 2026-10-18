@@ -5,7 +5,9 @@ use axum::http::header::{self, COOKIE};
 use serial_test::serial;
 
 use crate::common::{TestApp, assertions::*, test_db};
-use crate::fixtures::{create_mfa_user, create_test_user, unique_name};
+use crate::fixtures::{
+    create_mfa_user, create_test_user, create_test_user_with_mfa, current_totp_for, unique_name,
+};
 
 // =============================================================================
 // MFA Setup Page Tests (/mfa/setup)
@@ -456,5 +458,220 @@ async fn test_login_redirects_to_mfa_verify() {
     }
 
     // Cleanup
+    test_db::cleanup(&mut conn).await;
+}
+
+fn access_token_cookie(response: &axum_test::TestResponse) -> Option<String> {
+    response
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|h| h.to_str().ok())
+        .find_map(|line| {
+            let first = line.split(';').next()?.trim();
+            let value = first.strip_prefix("access_token=")?;
+            Some(value.to_string())
+        })
+}
+
+/// API: a wrong TOTP is refused, then the current code is accepted once.
+#[tokio::test]
+#[serial]
+async fn e2e_api_login_rejects_bad_totp_then_accepts_good() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let username = unique_name("mfa_api_round");
+    let test_user = create_test_user_with_mfa(&mut conn, &app.auth_service, &username).await;
+
+    let bad = app
+        .server
+        .post("/api/v1/auth/login")
+        .json(&serde_json::json!({
+            "username": username,
+            "password": test_user.password,
+            "mfa_code": "000000",
+        }))
+        .await;
+    assert_status(&bad, 401);
+
+    let good = app
+        .server
+        .post("/api/v1/auth/login")
+        .json(&serde_json::json!({
+            "username": username,
+            "password": test_user.password,
+            "mfa_code": current_totp_for(&test_user.mfa_secret),
+        }))
+        .await;
+    assert_status(&good, 200);
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Web: password then a wrong TOTP, then the current code.
+#[tokio::test]
+#[serial]
+async fn e2e_web_login_rejects_bad_totp_then_accepts_good() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let username = unique_name("mfa_web_round");
+    let test_user = create_test_user_with_mfa(&mut conn, &app.auth_service, &username).await;
+    let csrf = app.generate_csrf_token();
+
+    let login = app
+        .server
+        .post("/auth/login")
+        .add_header(header::COOKIE, format!("__vauban_csrf={csrf}"))
+        .add_header("HX-Request", "true")
+        .json(&serde_json::json!({
+            "username": username,
+            "password": test_user.password,
+            "csrf_token": csrf,
+        }))
+        .await;
+    assert_status(&login, 200);
+    let token = access_token_cookie(&login).expect("intermediate session cookie");
+    let hx = login
+        .headers()
+        .get("hx-redirect")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        hx.contains("/mfa/verify"),
+        "expected MFA redirect, got {hx}"
+    );
+
+    let bad = app
+        .server
+        .post("/mfa/verify")
+        .add_header(
+            header::COOKIE,
+            format!("access_token={token}; __vauban_csrf={csrf}"),
+        )
+        .form(&[("totp_code", "000000"), ("csrf_token", csrf.as_str())])
+        .await;
+    let bad_status = bad.status_code().as_u16();
+    assert!(
+        bad_status == 303 || bad_status == 302,
+        "bad TOTP redirects, got {bad_status}"
+    );
+
+    let good = app
+        .server
+        .post("/mfa/verify")
+        .add_header(
+            header::COOKIE,
+            format!("access_token={token}; __vauban_csrf={csrf}"),
+        )
+        .form(&[
+            (
+                "totp_code",
+                current_totp_for(&test_user.mfa_secret).as_str(),
+            ),
+            ("csrf_token", csrf.as_str()),
+        ])
+        .await;
+    let good_status = good.status_code().as_u16();
+    assert!(
+        good_status == 303 || good_status == 302,
+        "good TOTP redirects, got {good_status}"
+    );
+    test_db::cleanup(&mut conn).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn attack_repeated_totp_is_rejected() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let username = unique_name("mfa_lock");
+    let test_user = create_test_user_with_mfa(&mut conn, &app.auth_service, &username).await;
+    {
+        use diesel::{ExpressionMethods, QueryDsl};
+        use diesel_async::RunQueryDsl;
+        use vauban_web::schema::users;
+        diesel::update(users::table.filter(users::id.eq(test_user.user.id)))
+            .set(users::failed_login_attempts.eq(100))
+            .execute(&mut conn)
+            .await
+            .expect("prime counter");
+    }
+    let response = app
+        .server
+        .post("/api/v1/auth/login")
+        .json(&serde_json::json!({
+            "username": username,
+            "password": test_user.password,
+            "mfa_code": "111111",
+        }))
+        .await;
+    assert_status(&response, 401);
+
+    let after = app
+        .server
+        .post("/api/v1/auth/login")
+        .json(&serde_json::json!({
+            "username": username,
+            "password": test_user.password,
+            "mfa_code": current_totp_for(&test_user.mfa_secret),
+        }))
+        .await;
+    assert_status(&after, 401);
+    test_db::cleanup(&mut conn).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn attack_consumed_totp_window_is_rejected() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let username = unique_name("mfa_replay");
+    let test_user = create_test_user_with_mfa(&mut conn, &app.auth_service, &username).await;
+    let code = current_totp_for(&test_user.mfa_secret);
+    let first = app
+        .server
+        .post("/api/v1/auth/login")
+        .json(&serde_json::json!({
+            "username": username,
+            "password": test_user.password,
+            "mfa_code": code,
+        }))
+        .await;
+    assert_status(&first, 200);
+    let second = app
+        .server
+        .post("/api/v1/auth/login")
+        .json(&serde_json::json!({
+            "username": username,
+            "password": test_user.password,
+            "mfa_code": code,
+        }))
+        .await;
+    assert_status(&second, 401);
+    test_db::cleanup(&mut conn).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn battle_concurrent_totp_window_accepts_one() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let username = unique_name("mfa_battle");
+    let test_user = create_test_user_with_mfa(&mut conn, &app.auth_service, &username).await;
+    let code = current_totp_for(&test_user.mfa_secret);
+    let body = serde_json::json!({
+        "username": username,
+        "password": test_user.password,
+        "mfa_code": code,
+    });
+    let (left, right) = tokio::join!(
+        app.server.post("/api/v1/auth/login").json(&body),
+        app.server.post("/api/v1/auth/login").json(&body),
+    );
+    let statuses = [left.status_code().as_u16(), right.status_code().as_u16()];
+    assert_eq!(
+        statuses.iter().filter(|s| **s == 200).count(),
+        1,
+        "exactly one concurrent window wins, got {statuses:?}"
+    );
     test_db::cleanup(&mut conn).await;
 }

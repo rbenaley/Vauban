@@ -27,6 +27,7 @@ proptest! {
                 session_id: None,
                 source_ip: None,
                 details: format!("d{i}"),
+                producer: None,
             };
             worm.append_event(&record).unwrap();
         }

@@ -612,9 +612,11 @@ fn handle_message(channel: &IpcChannel, state: &mut ServiceState, msg: Message) 
                         port,
                         target_service,
                         session_id,
-                        caller_has_assets_manage,
+                        caller_has_assets_manage: _,
                     } => match &state.session_token_key {
                         Some(key) => rt.block_on(handlers::handle_issue_diagnostic_token(
+                            pool,
+                            state.enforcer.as_ref(),
                             key,
                             shared::session_token::SessionTokenParams {
                                 session_id,
@@ -625,7 +627,6 @@ fn handle_message(channel: &IpcChannel, state: &mut ServiceState, msg: Message) 
                                 port,
                                 target_service,
                             },
-                            caller_has_assets_manage,
                         )),
                         None => {
                             warn!(
