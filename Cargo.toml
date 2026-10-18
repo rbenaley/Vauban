@@ -31,7 +31,7 @@ default-members = ["vauban-supervisor"]
 [workspace.package]
 version = "0.9.47"
 edition = "2024"
-rust-version = "1.93"
+rust-version = "1.98"
 authors = ["Richard Ben Aleya"]
 license = "BSD-2-Clause"
 

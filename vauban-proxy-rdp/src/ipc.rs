@@ -70,7 +70,10 @@ impl AsyncIpcChannel {
     pub fn new(channel: IpcChannel) -> io::Result<Self> {
         let read_fd = channel.read_fd();
         set_nonblocking(read_fd)?;
-        let read_async_fd = AsyncFd::new(read_fd)?;
+        // SAFETY: `read_fd` is the read end owned by `channel`. `RawFd::as_raw_fd`
+        // returns that same integer for the whole `AsyncFd` lifetime, and this
+        // field is dropped before `inner`, so the descriptor stays open.
+        let read_async_fd = unsafe { AsyncFd::register(read_fd)? };
         Ok(Self {
             inner: channel,
             read_async_fd,

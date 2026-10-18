@@ -41,7 +41,7 @@ rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target-r
 
 ## Lab prerequisites
 
-- Binaries built with Rust **>= 1.93** (MSRV).
+- Binaries built with Rust **>= 1.98** (MSRV).
 - Staging appliance with recording enabled and an aged / reaped path
   available (or ability to plant files under `recordings/`).
 - Ability to open SSH or RDP and read proxy / supervisor logs.
@@ -98,6 +98,6 @@ in `rate_limit.rs` / `pending_mfa.rs`.
 - Reverting only the sidecar path to `with_extension("mp4.blake3")` +
   `format!("{}.blake3")` reintroduces the dual-path workaround and
   fails the source-pin invariant.
-- Do not lower `rust-version` below **1.93** without removing
-  `with_added_extension` / `pop_front_if` / `Duration::from_hours`
-  call sites.
+- Do not lower `rust-version` below **1.98**. The 1.93 APIs
+  (`with_added_extension`, `pop_front_if`, `Duration::from_hours`)
+  sit inside that floor.

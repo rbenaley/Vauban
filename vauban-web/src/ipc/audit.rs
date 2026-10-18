@@ -141,11 +141,8 @@ impl AuditClient {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
         // Bump past the last value so concurrent emissions stay unique.
-        // `try_update` is 1.95; MSRV is 1.93. `fetch_update` is the same
-        // function, renamed in 1.99.
-        #[allow(deprecated)]
         self.last_ts
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |prev| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |prev| {
                 Some(now.max(prev + 1))
             })
             .unwrap_or(now)

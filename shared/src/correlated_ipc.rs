@@ -95,7 +95,10 @@ impl CorrelatedIpcCore {
     pub fn from_fds(read_fd: RawFd, write_fd: RawFd) -> io::Result<Self> {
         let channel = Arc::new(unsafe { IpcChannel::from_raw_fds(read_fd, write_fd) });
         set_nonblocking(read_fd)?;
-        let read_async_fd = AsyncFd::new(read_fd)?;
+        // SAFETY: `read_fd` is the read end owned by `channel`. `RawFd::as_raw_fd`
+        // returns that same integer for the whole `AsyncFd` lifetime, and this
+        // field is dropped before `channel`, so the descriptor stays open.
+        let read_async_fd = unsafe { AsyncFd::register(read_fd)? };
         Ok(Self {
             channel,
             read_async_fd,

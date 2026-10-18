@@ -129,15 +129,20 @@ pub async fn wait_for_tick_or_control(
         return;
     }
 
-    let async_fd = match tokio::io::unix::AsyncFd::new(BorrowedRawFd(supervisor.read_fd())) {
-        Ok(fd) => fd,
-        Err(e) => {
-            warn!(error = %e, "Failed to wrap supervisor fd; falling back to short sleep");
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            poll_supervisor_control(supervisor, shutdown);
-            return;
-        }
-    };
+    // SAFETY: `BorrowedRawFd` watches the supervisor pipe without owning it.
+    // `as_raw_fd` returns that same integer, and `supervisor` outlives `async_fd`.
+    let async_fd =
+        match unsafe { tokio::io::unix::AsyncFd::register(BorrowedRawFd(supervisor.read_fd())) }
+            .map_err(std::io::Error::from)
+        {
+            Ok(fd) => fd,
+            Err(e) => {
+                warn!(error = %e, "Failed to wrap supervisor fd; falling back to short sleep");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                poll_supervisor_control(supervisor, shutdown);
+                return;
+            }
+        };
 
     loop {
         if AtomicBool::load(shutdown, Ordering::SeqCst) || Instant::now() >= next_tick {

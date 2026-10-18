@@ -3,7 +3,7 @@ name = "vauban-proxy-rdp"
 description = "Vauban - RDP proxy service (IronRDP)"
 version = "0.9.46"
 edition = "2024"
-rust-version = "1.93"
+rust-version = "1.98"
 authors = ["Richard Ben Aleya"]
 license = "BSD-2-Clause"
 

@@ -296,7 +296,7 @@ pub enum AccessGuardError {
     #[error("invalid env var {0}: {1}")]
     InvalidEnvVar(&'static str, String),
 
-    /// `AsyncFd::new` or `set_nonblocking` failed.
+    /// `AsyncFd::register` or `set_nonblocking` failed.
     #[error("io error wiring access pipe: {0}")]
     Io(#[from] io::Error),
 }

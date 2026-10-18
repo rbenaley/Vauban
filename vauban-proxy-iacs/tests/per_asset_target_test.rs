@@ -288,8 +288,8 @@ fn channel_open_direct_tcpip_uses_bounded_counter_not_single_shot_atomicbool() {
          slot per failed open until the SSH login ends."
     );
     assert!(
-        src.contains("live_channels\n            .fetch_update(")
-            || src.contains("live_channels.fetch_update("),
+        src.contains("live_channels\n            .try_update(")
+            || src.contains("live_channels.try_update("),
         "the relay teardown MUST decrement live_channels (saturating) \
          so the closed channel returns its slot to the pool. Without \
          it the bug would silently re-emerge as a slow leak per closed \

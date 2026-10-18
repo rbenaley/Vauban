@@ -2,7 +2,7 @@
 name = "vauban-e2e"
 version = "0.9.45"
 edition = "2024"
-rust-version = "1.93"
+rust-version = "1.98"
 publish = false
 description = "Full-stack tests: real supervisor + every service + a real browser. Never part of the product build."
 
