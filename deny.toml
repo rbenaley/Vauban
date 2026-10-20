@@ -21,4 +21,8 @@ ignore = [
     "RUSTSEC-2026-0249",
     # atomic-polyfill via ironrdp/sspi (vauban-proxy-rdp lockfile).
     "RUSTSEC-2023-0089",
+    # 2026-10-21: basic-toml is archived. askama 0.15 still parses
+    # vauban-web/askama.toml with it. Askama's master uses toml, but
+    # no release does yet, and 0.16.1 still depends on basic-toml.
+    "RUSTSEC-2026-0374",
 ]
