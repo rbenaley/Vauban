@@ -2932,8 +2932,10 @@ mod tests {
             .find("let mcp_poll_idx")
             .expect("MCP audit channel must be polled");
         let arm = &source[poll..];
+        // rustfmt splits the call once the producer label is an argument.
+        let compact: String = arm.chars().filter(|c| !c.is_whitespace()).collect();
         assert!(
-            arm.contains("route_audit_event(mcp_ch"),
+            compact.contains("route_audit_event(mcp_ch,"),
             "MCP AuditEvent must be sealed on the WORM path"
         );
         assert!(
