@@ -32,16 +32,20 @@ deadpool = { version = "0.12", features = ["managed"] }
 # Templates
 askama = { version = "0.15", features = ["serde_json"] }
 
-# Authentication
-jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+# Authentication. HS256 session cookies only. aws-lc-rs, not rust_crypto:
+# the RustCrypto backend still depends on p256 0.13 / crypto-bigint 0.5
+# (RUSTSEC-2026-0387). aws-lc-rs is already the process TLS provider.
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 argon2 = "0.5"
 totp-rs = { version = "5.6", features = ["qr", "gen_secret"] }
 secrecy = { version = "0.10", features = ["serde"] }
 zeroize = { version = "1.8", features = ["derive"] }
 
-# OAuth2 / OpenID Connect
+# OAuth2 client. openidconnect is not declared: 4.0 pulls p256 0.13 /
+# crypto-bigint 0.5 (RUSTSEC-2026-0387), and 4.1 needs ed25519-dalek
+# 3.0.0, which Cargo will not resolve next to russh 0.61's exact
+# 3.0.0-rc pin.
 oauth2 = "5"
-openidconnect = "4"
 
 # Sessions
 tower-sessions = "0.14"
@@ -151,7 +155,7 @@ once_cell = "1.19"
 insta = { version = "1.40", features = ["yaml"] }
 tokio-tungstenite = "0.28"
 serde_urlencoded = "0.7.1"
-jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 # VAU-010: `ServiceExt::oneshot` for the in-crate CORS layer E2E tests.
 tower = { version = "0.5", features = ["util"] }
 # BAC hardening: property-based invariants on the require_* route-layer
