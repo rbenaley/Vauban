@@ -54,6 +54,7 @@ This is the failure mode the runbook below addresses.
 | `Access denied` for **every** user in the web UI, no DB writes       | Same as #1 above (look one layer up in the relevant proxy)    |
 | Burst of `Web connection closed` (pre-0.9.43)                        | Must not exist on 0.9.43+: EOF is sticky and the proxy exits 100 |
 | Isolated `Web IPC pipe closed, exiting for linked respawn` then restart | Expected: proxy/web asked for a linked respawn               |
+| `vauban-web` exits at boot: `VAUBAN_AUTH_IPC_READ is not set` or `must be a valid file descriptor` | Auth IPC channel missing or not a descriptor. Web refuses to start and does not hash passwords locally. See [auth_ipc_fail_closed_smoke_test.md](auth_ipc_fail_closed_smoke_test.md). |
 
 ---
 
@@ -207,6 +208,7 @@ bootstrap rule, or do it manually as above.
 - `shared/src/pipe_store.rs`                          - supervisor-owned live pipes
 - `vauban-supervisor/src/main.rs::respawn_linked_group` - linked-restart pipe handling
 - [linked_restart_smoke_test.md](linked_restart_smoke_test.md) - staging A/B/C after a double web kill
+- [auth_ipc_fail_closed_smoke_test.md](auth_ipc_fail_closed_smoke_test.md) - web refuses to start without the auth channel
 - `vauban-access/src/main.rs::run_service`            - peer binding + boot check
 - `vauban-access/src/handlers.rs::handle_check_access_by_uuid` - server-side authoritative RBAC (no superuser bypass)
 - `vauban-web/src/handlers/web/ssh.rs::connect_ssh`   - web-side gate (no superuser bypass either)

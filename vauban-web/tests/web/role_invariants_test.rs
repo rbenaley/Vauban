@@ -700,8 +700,16 @@ async fn cannot_deactivate_last_active_superuser_via_web() {
 }
 
 /// API equivalent: PUT `/api/v1/accounts/{lone_super}` with
-/// `{"is_active": false}` from another superuser must be 403 with the
-/// stable last-superuser-deactivate message.
+/// `{"is_active": false}` must be 403 and leave the row untouched.
+///
+/// The only operator that can drive this request while `target` is the
+/// sole active superuser is a non-superuser (the API key owner must stay
+/// active, INV-2). Such an operator holds `users:write` but not
+/// `users:manage_admins`, so the superuser-target fence
+/// (`check_superuser_target_edit`) refuses the call before the
+/// last-active-superuser fence is consulted. The latter still guards the
+/// transaction: it is asserted directly below via
+/// `assert_deactivate_fence_fires`.
 #[tokio::test]
 #[serial]
 async fn cannot_deactivate_last_active_superuser_via_api() {
@@ -745,10 +753,14 @@ async fn cannot_deactivate_last_active_superuser_via_api() {
     );
     let body = response.text();
     assert!(
-        body.contains(RoleViolation::LastActiveSuperuserDeactivate.flash_message()),
-        "API error body must surface LastActiveSuperuserDeactivate; got: {}",
+        body.contains("users:manage_admins"),
+        "API error body must name the missing users:manage_admins capability; got: {}",
         body
     );
+
+    // Defense in depth: the in-transaction fence still refuses the
+    // deactivation of the sole active superuser.
+    assert_deactivate_fence_fires(app, target_id).await;
 
     let after = snapshot_via_pool(app, target_id).await;
     assert_eq!(after, before, "target must remain active");

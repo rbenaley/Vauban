@@ -591,25 +591,18 @@ pub async fn create_user_web(
         );
     }
 
-    let password_hash = if let Some(ref client) = state.auth_ipc_client {
-        match client.hash_password(&form.password).await {
-            Ok(hash) => hash,
-            Err(_) => {
-                return flash_redirect(
-                    flash.error("Failed to process password. Please try again."),
-                    "/accounts/users/new",
-                );
-            }
-        }
-    } else {
-        match state.auth_service.hash_password(&form.password) {
-            Ok(hash) => hash,
-            Err(_) => {
-                return flash_redirect(
-                    flash.error("Failed to process password. Please try again."),
-                    "/accounts/users/new",
-                );
-            }
+    let password_hash = match crate::services::auth::hash_password_via_auth(
+        state.auth_ipc_client.as_ref(),
+        &form.password,
+    )
+    .await
+    {
+        Ok(hash) => hash,
+        Err(_) => {
+            return flash_redirect(
+                flash.error("Failed to process password. Please try again."),
+                "/accounts/users/new",
+            );
         }
     };
 
@@ -1082,11 +1075,11 @@ pub async fn update_user_web(
                 return flash_redirect(flash.error(err.flash_message()), &edit_url);
             }
 
-            let h = if let Some(ref client) = state.auth_ipc_client {
-                client.hash_password(password).await
-            } else {
-                state.auth_service.hash_password(password)
-            };
+            let h = crate::services::auth::hash_password_via_auth(
+                state.auth_ipc_client.as_ref(),
+                password,
+            )
+            .await;
             match h {
                 Ok(hash) => Some(hash),
                 Err(_) => {
@@ -1812,14 +1805,13 @@ pub async fn change_own_password_web(
         return flash_redirect(flash.error(err.flash_message()), profile_url);
     }
 
-    // Hash through the auth-IPC client when configured (production path:
-    // Argon2 work happens out-of-process so the web tier stays responsive),
-    // otherwise fall back to the in-process AuthService used in tests.
-    let new_hash = if let Some(ref client) = state.auth_ipc_client {
-        client.hash_password(&form.new_password).await
-    } else {
-        state.auth_service.hash_password(&form.new_password)
-    };
+    // Hash in vauban-auth. A missing client is an internal error and
+    // surfaces as the same flash as any other hash failure.
+    let new_hash = crate::services::auth::hash_password_via_auth(
+        state.auth_ipc_client.as_ref(),
+        &form.new_password,
+    )
+    .await;
     let new_hash = match new_hash {
         Ok(h) => h,
         Err(_) => {

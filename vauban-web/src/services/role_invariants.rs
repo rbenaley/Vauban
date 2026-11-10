@@ -72,6 +72,9 @@ pub enum RoleViolation {
     LastActiveSuperuserDeactivate,
     /// Soft-deleting `target` would leave zero active superusers.
     LastActiveSuperuserDelete,
+    /// Operator without `users:manage_admins` tried to mutate an
+    /// existing superuser row.
+    SuperuserEditRequiresManageAdmins,
 }
 
 impl RoleViolation {
@@ -87,6 +90,9 @@ impl RoleViolation {
             Self::LastActiveSuperuserDemote => "Cannot demote the last active superuser",
             Self::LastActiveSuperuserDeactivate => "Cannot deactivate the last active superuser",
             Self::LastActiveSuperuserDelete => "Cannot delete the last active superuser",
+            Self::SuperuserEditRequiresManageAdmins => {
+                "Only a superuser can edit superuser accounts"
+            }
         }
     }
 }
@@ -130,6 +136,29 @@ pub fn check_self_change(
         return Err(RoleViolation::SelfDeactivate);
     }
 
+    Ok(())
+}
+
+/// Pure check (no DB): mutating an existing superuser row requires the
+/// `users:manage_admins` capability on top of `users:write`.
+///
+/// `before` is the current state of the **target** row;
+/// `can_manage_admins` is the caller's Casbin-backed
+/// `PermissionContext::users_manage_admins` flag (never a raw
+/// `is_superuser` read). A non-superuser target is always editable at
+/// this layer: the caller's `users:write` gate has already run.
+///
+/// Call it twice on a mutation path: once on the pre-transaction
+/// snapshot (cheap refusal) and once on the snapshot re-read inside the
+/// SERIALIZABLE transaction that owns the `UPDATE`, so a concurrent
+/// promotion of the target between the two reads is still refused.
+pub fn check_superuser_target_edit(
+    before: &RoleSnapshot,
+    can_manage_admins: bool,
+) -> Result<(), RoleViolation> {
+    if before.is_superuser && !can_manage_admins {
+        return Err(RoleViolation::SuperuserEditRequiresManageAdmins);
+    }
     Ok(())
 }
 
@@ -443,5 +472,50 @@ mod tests {
             RoleViolation::LastActiveSuperuserDelete.flash_message(),
             "Cannot delete the last active superuser"
         );
+        assert_eq!(
+            RoleViolation::SuperuserEditRequiresManageAdmins.flash_message(),
+            "Only a superuser can edit superuser accounts"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // check_superuser_target_edit -- users:manage_admins fence
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn superuser_target_edit_without_manage_admins_is_rejected() {
+        let before = snap(true, true, true, false);
+        assert_eq!(
+            check_superuser_target_edit(&before, false),
+            Err(RoleViolation::SuperuserEditRequiresManageAdmins)
+        );
+    }
+
+    #[test]
+    fn inactive_superuser_target_edit_without_manage_admins_is_rejected() {
+        // Reactivating a parked superuser is as sensitive as editing a
+        // live one: the fence keys on the role, not on `is_active`.
+        let before = snap(true, false, false, false);
+        assert_eq!(
+            check_superuser_target_edit(&before, false),
+            Err(RoleViolation::SuperuserEditRequiresManageAdmins)
+        );
+    }
+
+    #[test]
+    fn superuser_target_edit_with_manage_admins_is_allowed() {
+        let before = snap(true, true, true, false);
+        assert!(check_superuser_target_edit(&before, true).is_ok());
+    }
+
+    #[test]
+    fn non_superuser_target_edit_is_allowed_without_manage_admins() {
+        for before in [
+            snap(false, true, true, false),
+            snap(false, false, true, false),
+            snap(false, false, false, false),
+        ] {
+            assert!(check_superuser_target_edit(&before, false).is_ok());
+        }
     }
 }

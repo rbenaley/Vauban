@@ -221,7 +221,22 @@ pub async fn get_session(
     Ok(Json(session))
 }
 
-/// Create session handler.
+/// Create session handler: records a JIT access request.
+///
+/// The inserted `proxy_sessions` row is in status `pending`, i.e. it is
+/// an approval request listed under `/sessions/approvals`, exactly like
+/// the one produced by the web form (`submit_access_request`). The two
+/// surfaces share `services::access_request` and
+/// `announce_access_request`, so the row carries the same guarantees:
+///
+/// * `max_session_duration` is copied from the access-rule evaluation
+///   (the approval derives `expires_at` from it);
+/// * the credential columns hold the `pending` placeholder. The
+///   `credential_id` field of the payload is ignored;
+/// * the justification is mandatory, length-checked and tag-stripped;
+/// * `client_ip` / `client_user_agent` describe the real caller;
+/// * the `ApprovalRequested` audit event, the approver notification and
+///   the approver emails are emitted.
 ///
 /// Holders of `sessions:bypass_access_rules` (superuser only) skip the
 /// per-asset access rule check. Staff and regular users must have a
@@ -229,16 +244,22 @@ pub async fn get_session(
 /// for the requested protocol.
 pub async fn create_session(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: AuthUser,
     perms: PermissionContext,
+    client_addr: crate::middleware::ClientAddr,
     Json(request): Json<CreateSessionRequest>,
 ) -> AppResult<Json<ProxySession>> {
+    use crate::handlers::web::{AccessRequestNotice, announce_access_request};
+    use crate::services::access_request::{
+        JUSTIFICATION_REQUIRED_MESSAGE, PENDING_CREDENTIAL, normalize_justification,
+    };
+
     // NOTE: We do NOT gate on `perms.sessions_write` here. Regular users do
     // not hold that permission, yet they MUST be able to open sessions on
     // assets for which they have a valid access rule. The fine-grained gate
     // below (`perms.sessions_bypass_access_rules`) determines whether the
     // user can skip the per-asset access rule check.
-    let _ = &user;
 
     validator::Validate::validate(&request)
         .map_err(|e| AppError::Validation(format!("Validation failed: {:?}", e)))?;
@@ -259,24 +280,27 @@ pub async fn create_session(
         .await
         .map_err(|_| AppError::Authorization("User not found".to_string()))?;
 
-    // Resolve the asset's internal ID
-    let asset_internal_id: i32 = crate::schema::assets::table
-        .filter(crate::schema::assets::uuid.eq(request.asset_id))
-        .filter(crate::schema::assets::is_deleted.eq(false))
-        .select(crate::schema::assets::id)
-        .first(&mut conn)
-        .await
-        .map_err(|e| match e {
-            diesel::result::Error::NotFound => AppError::NotFound("Asset not found".to_string()),
-            _ => AppError::Database(e),
-        })?;
+    // Resolve the asset (internal ID, type, display name)
+    let (asset_internal_id, asset_type, asset_name): (i32, String, String) =
+        crate::schema::assets::table
+            .filter(crate::schema::assets::uuid.eq(request.asset_id))
+            .filter(crate::schema::assets::is_deleted.eq(false))
+            .select((
+                crate::schema::assets::id,
+                crate::schema::assets::asset_type,
+                crate::schema::assets::name,
+            ))
+            .first(&mut conn)
+            .await
+            .map_err(|e| match e {
+                diesel::result::Error::NotFound => {
+                    AppError::NotFound("Asset not found".to_string())
+                }
+                _ => AppError::Database(e),
+            })?;
 
-    let asset_type: String = crate::schema::assets::table
-        .filter(crate::schema::assets::id.eq(asset_internal_id))
-        .select(crate::schema::assets::asset_type)
-        .first(&mut conn)
-        .await
-        .map_err(AppError::Database)?;
+    // An MCP visit is not a `proxy_sessions` row and never streams: it
+    // is opened on its own surface, which returns the visit ticket.
     if asset_type == "mcp" {
         return Err(AppError::Validation(
             "MCP visits are opened with POST /api/v1/mcp/sessions".to_string(),
@@ -285,36 +309,40 @@ pub async fn create_session(
 
     let protocol = request.session_type.as_str();
 
-    if !perms.sessions_bypass_access_rules {
-        let access_result = crate::services::access::can_access_asset(
-            &state.access_client,
-            &mut conn,
-            user_internal_id,
-            asset_internal_id,
-            protocol,
-        )
-        .await?;
+    // The rule evaluation always runs, so that a matching rule's
+    // `max_session_duration` is copied on the request even for a caller
+    // who may bypass the access decision. A bypass caller with NO
+    // matching rule gets no cap (there is no rule to take it from).
+    let access_result = crate::services::access::can_access_asset(
+        &state.access_client,
+        &mut conn,
+        user_internal_id,
+        asset_internal_id,
+        protocol,
+    )
+    .await?;
 
+    // Access rule enforcement: holders of sessions:bypass_access_rules
+    // (superuser only by default) skip this check. Regular users and staff
+    // must have a valid rule.
+    if !perms.sessions_bypass_access_rules {
         if !access_result.allowed {
             return Err(AppError::Authorization(
                 "No access rule grants you access to this asset".to_string(),
             ));
         }
 
+        // Enforce require_mfa: the session token must be MFA-verified
         if access_result.require_mfa && !user.mfa_verified {
             return Err(AppError::Authorization(
                 "MFA verification required for this asset".to_string(),
             ));
         }
-
-        if access_result.require_approval && request.justification.is_none() {
-            return Err(AppError::Validation(
-                "Justification is required for this asset".to_string(),
-            ));
-        }
     }
 
-    // After the access decision so a denied caller learns nothing about the asset type.
+    // Final guard, AFTER authorization so it cannot become an oracle:
+    // the requested stream must exist on this asset type (`ssh` on an
+    // RDP asset is refused), whatever the rules or the bypass say.
     let asset_kind = crate::models::asset::AssetType::try_parse(&asset_type);
     if !asset_kind.is_some_and(|t| request.session_type.matches_asset(t)) {
         return Err(AppError::Validation(format!(
@@ -323,29 +351,36 @@ pub async fn create_session(
         )));
     }
 
-    // TODO: Get real client IP from request headers
-    // SAFETY: "127.0.0.1" is a valid IP address literal, parsing cannot fail
-    #[allow(clippy::unwrap_used)]
-    let client_ip_network: ipnetwork::IpNetwork = "127.0.0.1"
-        .parse::<std::net::IpAddr>()
-        .map(ipnetwork::IpNetwork::from)
-        .unwrap();
+    // Same rule as the web form: a request without a reviewable
+    // justification is refused. Checked AFTER authorization and the
+    // protocol guard so a caller without access learns nothing from it.
+    // Locals are prefixed `req_` because the `proxy_sessions::dsl::*` glob
+    // at the top of this file brings the column tokens into scope.
+    let req_justification = normalize_justification(request.justification.as_deref())
+        .ok_or_else(|| AppError::Validation(JUSTIFICATION_REQUIRED_MESSAGE.to_string()))?;
+
+    let trusted = state.config.security.parsed_trusted_proxies();
+    let req_client_ip =
+        crate::middleware::extract_client_ip(&headers, client_addr.addr(), &trusted);
 
     let new_session = NewProxySession {
         uuid: Uuid::new_v4(),
         user_id: user_internal_id,
         asset_id: asset_internal_id,
-        credential_id: request.credential_id,
-        credential_username: String::new(), // TODO: Get from vault
+        credential_id: PENDING_CREDENTIAL.to_string(),
+        credential_username: PENDING_CREDENTIAL.to_string(),
         session_type: request.session_type,
         status: "pending".to_string(),
-        client_ip: client_ip_network,
-        client_user_agent: None,
+        client_ip: req_client_ip,
+        client_user_agent: headers
+            .get(axum::http::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from),
         proxy_instance: None,
-        justification: request.justification,
+        justification: Some(req_justification),
         is_recorded: true,
         metadata: serde_json::json!({}),
-        max_session_duration: None,
+        max_session_duration: access_result.max_session_duration,
         industrial_protocol: None,
         ews_uuid: None,
         tunnel_target_addr: None,
@@ -357,6 +392,19 @@ pub async fn create_session(
         .values(&new_session)
         .get_result(&mut conn)
         .await?;
+    drop(conn);
+
+    announce_access_request(
+        &state,
+        &AccessRequestNotice {
+            session_uuid: session.uuid,
+            requester_uuid: &user.uuid,
+            requester_username: &user.username,
+            asset_name: &asset_name,
+            protocol,
+        },
+    )
+    .await;
 
     Ok(Json(session))
 }

@@ -184,3 +184,4 @@ treated as a security incident:
 - [AccessGuard Architecture](../technical/Vauban_AccessGuard_Architecture_EN(1.0).md)
 - [Virtual asset group runbook](virtual_asset_group.md)
 - [IPC topology debugging](ipc_topology_debugging.md)
+- [Authorization gaps smoke test](authz_gaps_smoke_test.md) - API access requests carry the rule duration, credential placeholder, and audit event

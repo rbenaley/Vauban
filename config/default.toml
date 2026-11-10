@@ -170,6 +170,11 @@ allowed_client_networks = []
 # Set to false to allow direct connections without justification.
 require_justification = true
 
+# Production password hashing is performed by vauban-auth. The supervisor
+# injects VAUBAN_ARGON2_* from [auth] (defaults 19456 KiB / 2 / 1). This
+# section is not the production cost knob: vauban-web refuses to hash or
+# verify passwords in-process. Tests that mint fixture hashes through
+# AuthService still read these values (testing.toml overrides them).
 [security.argon2]
 memory_size_kb = 65536
 iterations = 3

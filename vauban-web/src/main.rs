@@ -319,45 +319,56 @@ fn init_access_client() -> anyhow::Result<Arc<AccessIpcClient>> {
     Ok(client)
 }
 
-/// Initialize the auth IPC client if running under supervisor.
+/// Initialize the auth IPC client.
 ///
-/// Returns Some(Arc<AuthIpcClient>) if VAUBAN_AUTH_IPC_READ and VAUBAN_AUTH_IPC_WRITE
-/// environment variables are set (running under supervisor), None otherwise.
-fn init_auth_client() -> Option<Arc<AuthIpcClient>> {
-    use std::os::unix::io::RawFd;
+/// Returns `Ok(Arc<AuthIpcClient>)` when both `VAUBAN_AUTH_IPC_READ` and
+/// `VAUBAN_AUTH_IPC_WRITE` are set by the supervisor. Password hashing and
+/// LDAPS have no in-process fallback: if the channel is missing or the
+/// descriptor does not parse, vauban-web refuses to start.
+fn init_auth_client() -> anyhow::Result<Arc<AuthIpcClient>> {
+    let read_fd = required_auth_fd("VAUBAN_AUTH_IPC_READ")?;
+    let write_fd = required_auth_fd("VAUBAN_AUTH_IPC_WRITE")?;
 
-    let read_fd: RawFd = match std::env::var("VAUBAN_AUTH_IPC_READ") {
-        Ok(val) => match val.parse() {
-            Ok(fd) => fd,
-            Err(_) => return None,
-        },
-        Err(_) => return None,
-    };
-
-    let write_fd: RawFd = match std::env::var("VAUBAN_AUTH_IPC_WRITE") {
-        Ok(val) => match val.parse() {
-            Ok(fd) => fd,
-            Err(_) => return None,
-        },
-        Err(_) => return None,
-    };
-
-    // SAFETY: We are early in startup, before spawning async tasks
+    // SAFETY: We are early in startup, before spawning async tasks.
+    // Both descriptors are parsed before either variable is removed, so a
+    // parse error leaves the environment intact for the process exit path.
     unsafe {
         std::env::remove_var("VAUBAN_AUTH_IPC_READ");
         std::env::remove_var("VAUBAN_AUTH_IPC_WRITE");
     }
 
-    match AuthIpcClient::new(read_fd, write_fd) {
-        Ok(client) => {
-            tracing::info!("Auth IPC client initialized (running under supervisor)");
-            Some(client)
+    let client = AuthIpcClient::new(read_fd, write_fd).map_err(|e| {
+        let err = anyhow::anyhow!("Failed to initialize Auth IPC client: {e}");
+        tracing::error!("{err:#}");
+        err
+    })?;
+    tracing::info!("Auth IPC client initialized (running under supervisor)");
+    Ok(client)
+}
+
+/// Read one supervisor-injected auth IPC descriptor.
+fn required_auth_fd(var: &str) -> anyhow::Result<std::os::unix::io::RawFd> {
+    let raw = match std::env::var(var) {
+        Ok(raw) => raw,
+        Err(_) => {
+            let err = anyhow::anyhow!(
+                "{var} is not set. vauban-web must be launched under vauban-supervisor \
+                 with vauban-auth wired up; standalone execution is not supported."
+            );
+            tracing::error!("{err:#}");
+            return Err(err);
         }
-        Err(e) => {
-            tracing::warn!("Failed to initialize Auth IPC client: {}", e);
-            None
-        }
-    }
+    };
+    parse_raw_fd(&raw).map_err(|e| {
+        let err = anyhow::anyhow!("{var} must be a valid file descriptor: {e}");
+        tracing::error!("{err:#}");
+        err
+    })
+}
+
+/// Parse a raw file descriptor. Non-numeric input is rejected.
+fn parse_raw_fd(raw: &str) -> Result<std::os::unix::io::RawFd, std::num::ParseIntError> {
+    raw.parse()
 }
 
 /// Initialize the vault crypto client if running under supervisor.
@@ -765,19 +776,6 @@ async fn async_main() -> Result<bool, Box<dyn std::error::Error>> {
         tracing::info!(networks = client_acl.len(), "client IP ACL enabled");
     }
 
-    // 5b. Sacrifice Argon2 hash for login timing equalization: minted with
-    // the production parameters from a random throwaway password, so a
-    // login failure that skips the real credential check (unknown user,
-    // ACL-denied IP) can pay the exact same verification cost (SEC-04/05).
-    let login_timing_sacrifice_hash = Arc::new(
-        auth_service
-            .hash_password(&uuid::Uuid::new_v4().to_string())
-            .map_err(|e| {
-                eprintln!("Failed to mint login timing sacrifice hash: {}", e);
-                e
-            })?,
-    );
-
     // 6. Create other services (no file access needed)
     let broadcast = BroadcastService::new();
     tracing::debug!("Broadcast service initialized");
@@ -903,11 +901,11 @@ async fn async_main() -> Result<bool, Box<dyn std::error::Error>> {
         tracing::info!("Access IPC processing task started");
     }
 
-    // Create Auth IPC client if running under supervisor
-    let auth_ipc_client = init_auth_client();
+    // Auth IPC is mandatory. Password hashing and LDAPS have no local fallback.
+    let auth_ipc_client = init_auth_client()?;
 
-    if let Some(ref client) = auth_ipc_client {
-        let client_clone = Arc::clone(client);
+    {
+        let client_clone = Arc::clone(&auth_ipc_client);
         spawn_ipc_pump(
             "auth",
             async move { client_clone.process_incoming().await },
@@ -915,6 +913,21 @@ async fn async_main() -> Result<bool, Box<dyn std::error::Error>> {
         );
         tracing::info!("Auth IPC processing task started");
     }
+
+    // Sacrifice Argon2 hash for login timing equalization. Minted by
+    // vauban-auth (after the pump is running) from a random throwaway
+    // password, so the PHC parameters match stored user hashes. A login
+    // failure that skips the real credential check (unknown user,
+    // ACL-denied IP) then pays the same verification cost (SEC-04/05).
+    let login_timing_sacrifice_hash = Arc::new(
+        auth_ipc_client
+            .hash_password(&uuid::Uuid::new_v4().to_string())
+            .await
+            .map_err(|e| {
+                eprintln!("Failed to mint login timing sacrifice hash via auth IPC: {e}");
+                e
+            })?,
+    );
 
     // Build mailer (Issue #10). The dispatcher task owns the same
     // Notify; HTTP handlers fire `notify_one()` after a successful
@@ -972,7 +985,7 @@ async fn async_main() -> Result<bool, Box<dyn std::error::Error>> {
         vault_client,
         audit_client,
         access_client,
-        auth_ipc_client,
+        auth_ipc_client: Some(auth_ipc_client),
         mailer,
         http_rate,
         live_session_history,
@@ -1505,6 +1518,16 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
     let session_guard =
         axum::middleware::from_fn_with_state(state.clone(), handlers::websocket::ws_session_guard);
 
+    // Interactive data plane (`/ws/terminal`, `/ws/rdp`): the session
+    // owner ONLY. These sockets relay input to the target, their output
+    // channel is single-consumer and their teardown closes the proxy
+    // session, so `sessions:supervise` is not honored here. Supervisors
+    // observe through the `/ws/session/{id}` push feed above.
+    let session_owner_guard = axum::middleware::from_fn_with_state(
+        state.clone(),
+        handlers::websocket::ws_session_owner_guard,
+    );
+
     // ws_connection_limit middleware enforces per-user WebSocket connection limit
     // on ALL WS routes. Every current and future handler added to ws_routes is
     // automatically protected.
@@ -1537,7 +1560,7 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         // Session-specific routes get the ownership guard middleware
         .route(
             "/ws/session/{id}",
-            get(handlers::websocket::session_ws).layer(session_guard.clone()),
+            get(handlers::websocket::session_ws).layer(session_guard),
         )
         .route(
             "/ws/notifications",
@@ -1553,11 +1576,11 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         )
         .route(
             "/ws/terminal/{session_id}",
-            get(handlers::websocket::terminal_ws).layer(session_guard.clone()),
+            get(handlers::websocket::terminal_ws).layer(session_owner_guard.clone()),
         )
         .route(
             "/ws/rdp/{session_id}",
-            get(handlers::websocket::rdp_ws).layer(session_guard),
+            get(handlers::websocket::rdp_ws).layer(session_owner_guard),
         )
         // Apply per-user connection limit to ALL WebSocket routes
         .layer(ws_limit_layer);
@@ -3035,5 +3058,139 @@ mod tests {
         assert!(result.is_ok(), "Must serve asciinema init JS");
         let response = result.unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::OK);
+    }
+}
+
+#[cfg(test)]
+mod auth_ipc_boot_tests {
+    use super::{init_auth_client, parse_raw_fd};
+
+    fn with_auth_ipc_env<T>(
+        read: Option<&str>,
+        write: Option<&str>,
+        body: impl FnOnce() -> T,
+    ) -> T {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let prev_read = std::env::var("VAUBAN_AUTH_IPC_READ").ok();
+        let prev_write = std::env::var("VAUBAN_AUTH_IPC_WRITE").ok();
+        apply_env("VAUBAN_AUTH_IPC_READ", read);
+        apply_env("VAUBAN_AUTH_IPC_WRITE", write);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+        restore_env("VAUBAN_AUTH_IPC_READ", prev_read);
+        restore_env("VAUBAN_AUTH_IPC_WRITE", prev_write);
+        match result {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    fn apply_env(var: &str, value: Option<&str>) {
+        // SAFETY: `with_auth_ipc_env` holds the env lock and restores the
+        // previous values before releasing it.
+        match value {
+            Some(value) => unsafe { std::env::set_var(var, value) },
+            None => unsafe { std::env::remove_var(var) },
+        }
+    }
+
+    fn restore_env(var: &str, value: Option<String>) {
+        // SAFETY: `with_auth_ipc_env` holds the env lock and restores the
+        // previous values before releasing it.
+        match value {
+            Some(value) => unsafe { std::env::set_var(var, value) },
+            None => unsafe { std::env::remove_var(var) },
+        }
+    }
+
+    fn expect_init_err() -> anyhow::Error {
+        match init_auth_client() {
+            Ok(_) => panic!("init_auth_client succeeded"),
+            Err(err) => err,
+        }
+    }
+
+    #[test]
+    fn init_auth_client_missing_var_is_rejected() {
+        let err = with_auth_ipc_env(None, None, expect_init_err);
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("VAUBAN_AUTH_IPC_READ is not set"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn init_auth_client_non_numeric_fd_is_rejected() {
+        let err = with_auth_ipc_env(Some("abc"), Some("4"), expect_init_err);
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("VAUBAN_AUTH_IPC_READ must be a valid file descriptor"),
+            "{message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn init_auth_client_unopenable_fd_is_rejected() {
+        // A directory is a live descriptor that cannot carry the IPC pump.
+        // A closed integer aborts in `OwnedFd`'s drop (EBADF close), so this
+        // test uses an open but unusable fd and still expects `new` to fail.
+        use std::os::fd::IntoRawFd;
+        let read = std::fs::File::open("/")
+            .expect("open /")
+            .into_raw_fd()
+            .to_string();
+        let write = std::fs::File::open("/")
+            .expect("open /")
+            .into_raw_fd()
+            .to_string();
+        let err = with_auth_ipc_env(Some(&read), Some(&write), expect_init_err);
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("Failed to initialize Auth IPC client"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn parse_raw_fd_rejects_sign_and_whitespace() {
+        assert!(parse_raw_fd("4").is_ok());
+        assert!(parse_raw_fd("-1").is_ok());
+        assert!(parse_raw_fd("+4").is_ok());
+        for raw in ["", "abc", "++4", " 4", "4 ", "4.0", "0x4"] {
+            assert!(parse_raw_fd(raw).is_err(), "{raw}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod auth_ipc_fd_proptest {
+    use proptest::prelude::*;
+
+    use super::parse_raw_fd;
+
+    fn non_numeric_fd(raw: &str) -> bool {
+        let digits = raw
+            .strip_prefix('+')
+            .or_else(|| raw.strip_prefix('-'))
+            .unwrap_or(raw);
+        digits.is_empty() || digits.chars().any(|c| !c.is_ascii_digit())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn non_numeric_fd_is_rejected(raw in "\\PC{0,24}") {
+            if non_numeric_fd(&raw) {
+                prop_assert!(parse_raw_fd(&raw).is_err());
+            }
+        }
+
+        #[test]
+        fn overlong_digit_fd_is_rejected(n in 11usize..24) {
+            let raw = "9".repeat(n);
+            prop_assert!(parse_raw_fd(&raw).is_err());
+        }
     }
 }

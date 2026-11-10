@@ -6,6 +6,10 @@
 pub mod access_rule_recheck_test;
 pub mod api_key_invariants_test;
 pub mod auth_test;
+pub mod authz_gaps_battle_test;
+pub mod authz_gaps_e2e_test;
+pub mod authz_gaps_invariants_test;
+pub mod authz_gaps_proptest;
 pub mod hybrid_pqc_battle_test;
 pub mod hybrid_pqc_e2e_test;
 pub mod hybrid_pqc_proptest;

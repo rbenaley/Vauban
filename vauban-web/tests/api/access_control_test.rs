@@ -763,7 +763,8 @@ async fn test_session_creation_with_valid_access_rule() {
         .json(&json!({
             "asset_id": asset_uuid.to_string(),
             "credential_id": "cred-test",
-            "session_type": "ssh"
+            "session_type": "ssh",
+            "justification": "Routine maintenance window"
         }))
         .await;
 
@@ -870,7 +871,8 @@ async fn test_session_creation_superuser_bypass() {
         .json(&json!({
             "asset_id": asset_uuid.to_string(),
             "credential_id": "cred-test",
-            "session_type": "ssh"
+            "session_type": "ssh",
+            "justification": "Routine maintenance window"
         }))
         .await;
 

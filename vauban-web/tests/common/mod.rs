@@ -195,6 +195,13 @@ pub struct TestApp {
 /// Global test app instance (lazy initialization).
 static TEST_APP: OnceCell<TestApp> = OnceCell::const_new();
 
+/// Turn on the directory for an LDAP-specific [`TestApp`]. The auth stub
+/// alone does not do this.
+fn enable_test_ldap(config: &mut Config) {
+    config.auth.ldaps.enabled = true;
+    config.auth.ldaps.order = vec!["local".to_string(), "ldap".to_string()];
+}
+
 impl TestApp {
     /// Create a new test application.
     pub async fn spawn() -> &'static TestApp {
@@ -203,8 +210,10 @@ impl TestApp {
             .await
     }
 
-    /// Shared Auth IPC stub for every LDAP-wired [`TestApp`] variant so the
-    /// bind-attempt counter and pipe topology stay singular per test binary.
+    /// Shared Auth IPC stub for every [`TestApp`] that hashes or verifies
+    /// passwords. One process-wide pipe keeps the bind-attempt counter and
+    /// the stub threads singular per test binary. LDAP stays disabled
+    /// unless the caller turns it on.
     async fn shared_ldap_auth_client() -> std::sync::Arc<vauban_web::ipc::AuthIpcClient> {
         static AUTH_SERVICE: OnceCell<auth_ipc_test_service::InProcessAuthService> =
             OnceCell::const_new();
@@ -224,7 +233,7 @@ impl TestApp {
         LDAP_APP
             .get_or_init(|| async {
                 let auth_client = Self::shared_ldap_auth_client().await;
-                Self::create_inner(Some(auth_client)).await
+                Self::create_inner_with(Some(auth_client), enable_test_ldap).await
             })
             .await
     }
@@ -238,6 +247,7 @@ impl TestApp {
             .get_or_init(|| async {
                 let auth_client = Self::shared_ldap_auth_client().await;
                 Self::create_inner_with(Some(auth_client), |config| {
+                    enable_test_ldap(config);
                     config.auth.ldaps.login_password_min_length = 20;
                 })
                 .await
@@ -255,7 +265,8 @@ impl TestApp {
         static IP_ACL_APP: OnceCell<TestApp> = OnceCell::const_new();
         IP_ACL_APP
             .get_or_init(|| async {
-                Self::create_inner_with(None, |config| {
+                let auth_client = Self::shared_ldap_auth_client().await;
+                Self::create_inner_with(Some(auth_client), |config| {
                     config.security.trusted_proxies =
                         vec!["127.0.0.1".to_string(), "::1".to_string()];
                     config.security.allowed_client_networks =
@@ -275,7 +286,8 @@ impl TestApp {
         static IP_ACL_UNTRUSTED_APP: OnceCell<TestApp> = OnceCell::const_new();
         IP_ACL_UNTRUSTED_APP
             .get_or_init(|| async {
-                Self::create_inner_with(None, |config| {
+                let auth_client = Self::shared_ldap_auth_client().await;
+                Self::create_inner_with(Some(auth_client), |config| {
                     config.security.trusted_proxies = vec![];
                     config.security.allowed_client_networks = vec!["10.0.0.0/8".to_string()];
                 })
@@ -293,7 +305,8 @@ impl TestApp {
         static VAULT_PROVENANCE_APP: OnceCell<TestApp> = OnceCell::const_new();
         VAULT_PROVENANCE_APP
             .get_or_init(|| async {
-                Self::create_inner_with(None, |config| {
+                let auth_client = Self::shared_ldap_auth_client().await;
+                Self::create_inner_with(Some(auth_client), |config| {
                     config.security.trusted_proxies =
                         vec!["127.0.0.1".to_string(), "::1".to_string()];
                 })
@@ -310,14 +323,23 @@ impl TestApp {
             .join("config")
     }
 
-    /// Create test app (internal, default shape: no Auth IPC, LDAP disabled).
+    /// Create the default test app: auth IPC stub attached, LDAP disabled.
     async fn create() -> Self {
-        Self::create_inner(None).await
+        let auth_client = Self::shared_ldap_auth_client().await;
+        Self::create_inner(Some(auth_client)).await
     }
 
-    /// Create test app with an optional Auth IPC client. When a client is
-    /// supplied, `[auth.ldaps]` is enabled with order `["local", "ldap"]` so the
-    /// login routing tests can exercise the directory path.
+    /// App whose `auth_ipc_client` is `None`. Login of an existing local
+    /// user must fail closed instead of hashing in-process.
+    pub async fn spawn_without_auth_ipc() -> &'static TestApp {
+        static NO_AUTH_APP: OnceCell<TestApp> = OnceCell::const_new();
+        NO_AUTH_APP
+            .get_or_init(|| async { Self::create_inner(None).await })
+            .await
+    }
+
+    /// Create test app with an optional Auth IPC client. LDAP stays off
+    /// unless the caller passes [`enable_test_ldap`].
     async fn create_inner(
         auth_ipc_client: Option<std::sync::Arc<vauban_web::ipc::AuthIpcClient>>,
     ) -> Self {
@@ -339,7 +361,8 @@ impl TestApp {
                     )
                     .expect("test aggregation mapping"),
                 );
-                Self::create_inner_with_mapping(Some(auth_client), |_| {}, Some(mapping)).await
+                Self::create_inner_with_mapping(Some(auth_client), enable_test_ldap, Some(mapping))
+                    .await
             })
             .await
     }
@@ -368,13 +391,10 @@ impl TestApp {
             Environment::Testing
         ));
 
-        // When an Auth IPC client is present, this is the LDAP-enabled variant.
-        if auth_ipc_client.is_some() {
-            config.auth.ldaps.enabled = true;
-            config.auth.ldaps.order = vec!["local".to_string(), "ldap".to_string()];
-        }
-
-        // Per-variant config overrides (IP ACL, trusted proxies, ...).
+        // Per-variant config overrides (IP ACL, trusted proxies, LDAP, ...).
+        // Presence of the auth stub does not enable LDAP: every TestApp
+        // that hashes passwords attaches the stub, and only the LDAP
+        // variants turn the directory on.
         mutate_config(&mut config);
 
         // Create async database pool
@@ -495,8 +515,8 @@ impl TestApp {
             client_acl: std::sync::Arc::new(unwrap_ok!(shared::client_acl::ClientAcl::parse(
                 &config.security.allowed_client_networks
             ))),
-            // Cheap testing.toml Argon2 params: minting one sacrifice hash
-            // per TestApp is fast and mirrors the production boot.
+            // Production mints this hash through auth IPC. Tests stay on the
+            // cheap testing.toml parameters; the stub verifies the PHC as stored.
             login_timing_sacrifice_hash: std::sync::Arc::new(unwrap_ok!(
                 auth_service.hash_password(&uuid::Uuid::new_v4().to_string())
             )),
@@ -723,6 +743,13 @@ pub fn build_test_router(state: AppState) -> Router {
     let session_guard =
         axum::middleware::from_fn_with_state(state.clone(), handlers::websocket::ws_session_guard);
 
+    // Owner-only guard for the interactive data plane (mirrors
+    // `vauban-web/src/main.rs`): `/ws/terminal` and `/ws/rdp`.
+    let session_owner_guard = axum::middleware::from_fn_with_state(
+        state.clone(),
+        handlers::websocket::ws_session_owner_guard,
+    );
+
     // Per-user WS connection limit middleware
     let ws_limit_layer = axum::middleware::from_fn_with_state(
         state.clone(),
@@ -745,7 +772,7 @@ pub fn build_test_router(state: AppState) -> Router {
         )
         .route(
             "/ws/session/{id}",
-            get(handlers::websocket::session_ws).layer(session_guard.clone()),
+            get(handlers::websocket::session_ws).layer(session_guard),
         )
         .route(
             "/ws/notifications",
@@ -1394,10 +1421,15 @@ pub fn build_test_router(state: AppState) -> Router {
             "/sessions/terminal/{session_id}",
             get(handlers::web::terminal_page),
         )
-        // Terminal WebSocket (with session ownership guard)
+        // Terminal WebSocket (owner-only guard)
         .route(
             "/ws/terminal/{session_id}",
-            get(handlers::websocket::terminal_ws).layer(session_guard),
+            get(handlers::websocket::terminal_ws).layer(session_owner_guard.clone()),
+        )
+        // RDP WebSocket (owner-only guard)
+        .route(
+            "/ws/rdp/{session_id}",
+            get(handlers::websocket::rdp_ws).layer(session_owner_guard),
         )
         // ----------------------------------------------------------------
         // IACS / EWS user-zone routes (palier 6). Mirrors production
@@ -1890,9 +1922,17 @@ pub mod auth_ipc_test_service {
         LDAP_BIND_ATTEMPTS.store(0, Ordering::SeqCst);
     }
 
+    /// Argon2id parameters from `config/testing.toml` (1024 KiB / 1 / 1).
+    /// `Argon2::default()` is 19 MiB and would stall every handler that
+    /// hashes through this stub.
+    fn testing_argon2() -> Argon2<'static> {
+        let params = argon2::Params::new(1024, 1, 1, Some(32)).expect("testing argon2 params");
+        Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)
+    }
+
     fn verify_argon2(password: &str, hash: &str) -> bool {
         match PasswordHash::new(hash) {
-            Ok(parsed) => Argon2::default()
+            Ok(parsed) => testing_argon2()
                 .verify_password(password.as_bytes(), &parsed)
                 .is_ok(),
             Err(_) => false,
@@ -1901,7 +1941,7 @@ pub mod auth_ipc_test_service {
 
     fn hash_argon2(password: &str) -> Result<String, String> {
         let salt = SaltString::generate(&mut OsRng);
-        Argon2::default()
+        testing_argon2()
             .hash_password(password.as_bytes(), &salt)
             .map(|h| h.to_string())
             .map_err(|e| e.to_string())

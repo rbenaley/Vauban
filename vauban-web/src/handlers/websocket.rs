@@ -271,17 +271,65 @@ pub(crate) async fn verify_session_ownership(
     }
 }
 
-/// Middleware guard for session-specific WebSocket routes.
+/// Which callers a session-bound WebSocket route admits.
+///
+/// The split exists because the two families of routes are different
+/// objects:
+///
+/// * `/ws/session/{id}` is a broadcast push feed. It carries no input
+///   and fans out to any number of subscribers, so a holder of
+///   `sessions:supervise` may watch it.
+/// * `/ws/terminal/{id}` and `/ws/rdp/{id}` are the interactive data
+///   plane of ONE proxy session. Every frame received is relayed to the
+///   target as keystrokes / pointer events, the output channel is
+///   single-consumer (a second subscriber replaces the first), and the
+///   socket teardown closes the proxy session. They are owner-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WsSessionAudience {
+    /// The session owner, or a holder of `sessions:supervise`.
+    OwnerOrSupervisor,
+    /// The session owner only. `sessions:supervise` is ignored.
+    OwnerOnly,
+}
+
+impl WsSessionAudience {
+    /// Whether the Casbin `sessions:supervise` OR-override is honored
+    /// for this audience. `holds_supervise` is the caller's
+    /// `PermissionContext::sessions_supervise` flag.
+    pub const fn honors_supervise(self, holds_supervise: bool) -> bool {
+        match self {
+            Self::OwnerOrSupervisor => holds_supervise,
+            Self::OwnerOnly => false,
+        }
+    }
+}
+
+/// Middleware guard for the session push feed (`/ws/session/{id}`).
 ///
 /// Extracts the session ID from the last URI path segment and verifies
-/// that the authenticated user owns the session (or is staff/superuser).
+/// that the authenticated user owns the session or holds
+/// `sessions:supervise`.
 ///
 /// This middleware MUST run before the WebSocket handler so that
 /// ownership is checked before the WebSocket upgrade extractor.
+///
+/// Do NOT mount it on an interactive route: use
+/// [`ws_session_owner_guard`] for `/ws/terminal/{id}` and
+/// `/ws/rdp/{id}`.
 pub async fn ws_session_guard(
     State(state): State<AppState>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
+) -> axum::response::Response {
+    guard_session_ws(state, request, next, WsSessionAudience::OwnerOrSupervisor).await
+}
+
+/// Shared body of [`ws_session_guard`] and [`ws_session_owner_guard`].
+async fn guard_session_ws(
+    state: AppState,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+    audience: WsSessionAudience,
 ) -> axum::response::Response {
     // Extract AuthUser from request extensions (set by auth middleware)
     let user = match request.extensions().get::<AuthUser>() {
@@ -307,18 +355,20 @@ pub async fn ws_session_guard(
         return axum::http::StatusCode::FORBIDDEN.into_response();
     }
 
-    // The PermissionContext middleware runs before this guard, so the
-    // request scope already holds a fully-loaded context. Falling back to
-    // the fail-closed default keeps `can_supervise = false` for an
-    // unauthenticated request that somehow slips through.
-    let can_supervise = request
+    // The supervise capability comes from the request-scoped
+    // PermissionContext (Casbin), never from `is_staff || is_superuser`.
+    // A missing context is treated as "no supervise" (fail-closed). The
+    // audience then decides whether the capability counts at all: on
+    // the interactive data plane it never does.
+    let holds_supervise = request
         .extensions()
         .get::<crate::auth::PermissionContext>()
         .map(|p| p.sessions_supervise)
         .unwrap_or(false);
+    let can_supervise = audience.honors_supervise(holds_supervise);
 
     // Extract session ID from the last path segment
-    // Routes: /ws/terminal/{session_id} and /ws/session/{id}
+    // (e.g., /ws/terminal/{session_id} or /ws/session/{id})
     let path = request.uri().path().to_string();
     let session_id = path.rsplit('/').next().unwrap_or("");
 
@@ -326,6 +376,29 @@ pub async fn ws_session_guard(
         Err(status) => status.into_response(),
         Ok(()) => next.run(request).await,
     }
+}
+
+/// Middleware guard for the interactive data plane (`/ws/terminal/{id}`
+/// and `/ws/rdp/{id}`): the session owner only.
+///
+/// Same checks as [`ws_session_guard`] (authentication, MFA, the
+/// `services::session_access` seam with intent `ConsumeWs`), except
+/// that `sessions:supervise` is NOT honored. A supervisor who is not
+/// the owner gets the same collapsed 404 as any other non-owner, so the
+/// route is not an oracle for session existence either.
+///
+/// Rationale: these sockets relay every received frame to the target as
+/// input, their output channel is single-consumer, and their teardown
+/// closes the proxy session and marks the row `disconnected`. Admitting
+/// a second principal would let it type as the owner, take the output
+/// stream away from the owner, and end the session by leaving.
+/// Supervisors observe through `/ws/session/{id}` instead.
+pub async fn ws_session_owner_guard(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    guard_session_ws(state, request, next, WsSessionAudience::OwnerOnly).await
 }
 
 /// Terminal control commands received from the frontend.
@@ -1708,7 +1781,13 @@ pub(crate) async fn fetch_session_list_data(
 ///
 /// Sets `connected_at` to now and computes `expires_at` from `max_session_duration`
 /// when present, enabling the cleanup task to enforce session time limits.
-async fn activate_proxy_session(state: &AppState, session_id: &str) {
+///
+/// The `UPDATE` is filtered on `status = 'connecting'`, so it applies
+/// exactly once per session. A later socket on an already `active` row
+/// (second tab, reconnect) leaves `connected_at` and `expires_at`
+/// untouched: the duration horizon is anchored on the first connection
+/// and is not pushed back by reconnecting.
+pub async fn activate_proxy_session(state: &AppState, session_id: &str) {
     use diesel::prelude::*;
     use diesel_async::RunQueryDsl;
 
@@ -1738,15 +1817,19 @@ async fn activate_proxy_session(state: &AppState, session_id: &str) {
 
     let expires = max_dur.map(|secs| now + chrono::Duration::seconds(secs as i64));
 
-    match diesel::update(dsl::proxy_sessions.filter(dsl::uuid.eq(session_uuid)))
-        .set((
-            dsl::status.eq("active"),
-            dsl::connected_at.eq(now),
-            dsl::expires_at.eq(expires),
-            dsl::updated_at.eq(now),
-        ))
-        .execute(&mut conn)
-        .await
+    match diesel::update(
+        dsl::proxy_sessions
+            .filter(dsl::uuid.eq(session_uuid))
+            .filter(dsl::status.eq("connecting")),
+    )
+    .set((
+        dsl::status.eq("active"),
+        dsl::connected_at.eq(now),
+        dsl::expires_at.eq(expires),
+        dsl::updated_at.eq(now),
+    ))
+    .execute(&mut conn)
+    .await
     {
         Ok(1) => {
             if let Some(exp) = expires {
@@ -1755,7 +1838,10 @@ async fn activate_proxy_session(state: &AppState, session_id: &str) {
                 info!(session_id = %session_id, "Session activated (no duration limit)");
             }
         }
-        Ok(_) => warn!(session_id = %session_id, "Session not found during activation"),
+        Ok(_) => debug!(
+            session_id = %session_id,
+            "Session not in `connecting` state; activation skipped"
+        ),
         Err(e) => warn!(session_id = %session_id, error = %e, "Failed to activate session"),
     }
 }
@@ -1766,9 +1852,9 @@ async fn activate_proxy_session(state: &AppState, session_id: &str) {
 /// Receives terminal input from client, forwards to SSH proxy.
 /// Receives SSH output from proxy, forwards to client.
 ///
-/// Security: Session ownership is verified by the `ws_session_guard` middleware
-/// before this handler is called. Only the session owner or staff/superuser
-/// users can reach this handler.
+/// Security: mounted behind [`ws_session_owner_guard`]. Only the session
+/// owner reaches this handler; `sessions:supervise` is not honored on
+/// the interactive data plane (supervisors use `/ws/session/{id}`).
 pub async fn terminal_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -2215,6 +2301,10 @@ enum RdpCommand {
 /// Handle RDP WebSocket upgrade.
 ///
 /// GET /ws/rdp/{session_id}
+///
+/// Security: mounted behind [`ws_session_owner_guard`]. Only the session
+/// owner reaches this handler; `sessions:supervise` is not honored on
+/// the interactive data plane (supervisors use `/ws/session/{id}`).
 pub async fn rdp_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,

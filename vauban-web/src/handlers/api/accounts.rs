@@ -137,11 +137,11 @@ pub async fn create_user(
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("DB error: {}", e)))?;
 
-    let hashed_password = if let Some(ref client) = state.auth_ipc_client {
-        client.hash_password(&request.password).await?
-    } else {
-        state.auth_service.hash_password(&request.password)?
-    };
+    let hashed_password = crate::services::auth::hash_password_via_auth(
+        state.auth_ipc_client.as_ref(),
+        &request.password,
+    )
+    .await?;
 
     // Sanitize text fields to prevent XSS
     let sanitized_first_name = sanitize_text(request.first_name);
@@ -185,6 +185,12 @@ pub async fn create_user(
 ///   is structurally impossible here, but `is_active=false` on the
 ///   operator's own row would be an instant lock-out and is rejected
 ///   with HTTP 403.
+/// * **Superuser target** requires `users:manage_admins` on top of
+///   `users:write` (parity with `update_user_web`). Checked on the
+///   pre-transaction snapshot and again on the in-transaction re-read
+///   via [`check_superuser_target_edit`].
+/// * **Soft-deleted rows** are invisible: every read and the `UPDATE`
+///   filter `is_deleted = false`, so the call answers 404.
 /// * **Last-active-superuser deactivate** is enforced inside a
 ///   SERIALIZABLE transaction wrapping the in-tx snapshot read,
 ///   [`check_last_active_superuser`] and the `UPDATE`. Two concurrent
@@ -199,7 +205,7 @@ pub async fn update_user(
 ) -> AppResult<Json<UserDto>> {
     use crate::services::role_invariants::{
         ChangeIntent, CheckError, RoleSnapshot, check_last_active_superuser, check_self_change,
-        run_serializable,
+        check_superuser_target_edit, run_serializable,
     };
 
     if !perms.users_write {
@@ -230,6 +236,7 @@ pub async fn update_user(
     let (target_user_id, old_is_super, old_is_staff, old_is_active): (i32, bool, bool, bool) =
         users
             .filter(uuid.eq(user_uuid))
+            .filter(is_deleted.eq(false))
             .select((
                 crate::schema::users::id,
                 crate::schema::users::is_superuser,
@@ -263,6 +270,20 @@ pub async fn update_user(
         is_active: new_is_active.unwrap_or(old_is_active),
         is_deleted: false,
     };
+    // Superuser-target fence: `users:write` alone never reaches a
+    // superuser row. Runs before the self-change check so a denied
+    // caller learns nothing about the target beyond "forbidden".
+    let can_manage_admins = perms.users_manage_admins;
+    if let Err(violation) = check_superuser_target_edit(&before, can_manage_admins) {
+        tracing::warn!(
+            operator = %auth_user.uuid,
+            target = %user_uuid_str,
+            violation = ?violation,
+            "api::update_user: refused superuser edit without users:manage_admins"
+        );
+        return Err(AppError::forbidden("users:manage_admins"));
+    }
+
     if let Err(violation) = check_self_change(operator_uuid, user_uuid, &before, &after, false) {
         tracing::info!(
             operator = %auth_user.uuid,
@@ -303,6 +324,7 @@ pub async fn update_user(
             // Re-read the target inside the SERIALIZABLE snapshot.
             let row: Option<(i32, bool, bool, bool)> = users
                 .filter(uuid.eq(user_uuid))
+                .filter(is_deleted.eq(false))
                 .select((
                     crate::schema::users::id,
                     crate::schema::users::is_superuser,
@@ -326,6 +348,12 @@ pub async fn update_user(
                 is_deleted: false,
             };
 
+            // Re-assert the superuser-target fence on the in-tx
+            // snapshot: the target may have been promoted between the
+            // pre-tx read and this transaction.
+            check_superuser_target_edit(&in_tx_before, can_manage_admins)
+                .map_err(CheckError::Violation)?;
+
             // Last-active-superuser fence on `is_active=false` only.
             // The API does not flip `is_superuser`, so `Deactivate` is
             // the only relevant intent here.
@@ -347,11 +375,15 @@ pub async fn update_user(
                 updated_at: chrono::Utc::now(),
             };
 
-            let updated: User = diesel::update(users.filter(uuid.eq(user_uuid)))
-                .set(&update_data)
-                .get_result(c)
-                .await
-                .map_err(CheckError::Db)?;
+            let updated: User = diesel::update(
+                users
+                    .filter(uuid.eq(user_uuid))
+                    .filter(is_deleted.eq(false)),
+            )
+            .set(&update_data)
+            .get_result(c)
+            .await
+            .map_err(CheckError::Db)?;
             Ok(updated)
         })
     })

@@ -9,6 +9,7 @@
 pub mod access;
 pub mod access_contestation;
 pub mod access_decision;
+pub mod access_request;
 pub mod anomalies;
 pub mod api_key_lifecycle;
 pub mod api_response_invariants;

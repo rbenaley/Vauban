@@ -472,11 +472,20 @@ impl ProxySession {
     }
 }
 
-/// Session creation request.
+/// Session creation request (`POST /api/v1/sessions`).
+///
+/// The call records a JIT access request (a `pending` row), exactly like
+/// the web form. `justification` is mandatory in practice: the handler
+/// refuses a missing or too-short value.
 #[derive(Debug, Clone, Deserialize, validator::Validate)]
 pub struct CreateSessionRequest {
     pub asset_id: Uuid,
-    pub credential_id: String,
+    /// Accepted for wire compatibility and IGNORED. A pending request
+    /// never carries a caller-chosen credential: the row stores the
+    /// `pending` placeholder and the credential is resolved when the
+    /// approved grant is consumed.
+    #[serde(default)]
+    pub credential_id: Option<String>,
     pub session_type: SessionType,
     pub justification: Option<String>,
 }
@@ -993,7 +1002,7 @@ mod tests {
     fn test_create_session_request_debug() {
         let request = CreateSessionRequest {
             asset_id: Uuid::new_v4(),
-            credential_id: "cred-debug".to_string(),
+            credential_id: Some("cred-debug".to_string()),
             session_type: SessionType::Ssh,
             justification: Some("Debug session".to_string()),
         };
@@ -1006,7 +1015,7 @@ mod tests {
     fn test_create_session_request_clone() {
         let request = CreateSessionRequest {
             asset_id: Uuid::new_v4(),
-            credential_id: "cred-clone".to_string(),
+            credential_id: Some("cred-clone".to_string()),
             session_type: SessionType::Rdp,
             justification: None,
         };
@@ -1021,7 +1030,7 @@ mod tests {
 
         let request = CreateSessionRequest {
             asset_id: Uuid::new_v4(),
-            credential_id: "cred-valid".to_string(),
+            credential_id: Some("cred-valid".to_string()),
             session_type: SessionType::Ssh,
             justification: Some("Valid request".to_string()),
         };

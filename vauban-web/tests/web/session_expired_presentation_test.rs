@@ -9,7 +9,7 @@ use diesel_async::RunQueryDsl;
 use crate::common::{TestApp, assertions::assert_status, unwrap_ok};
 use crate::fixtures::{
     add_user_to_vauban_group, create_simple_admin_user, create_simple_user,
-    create_test_access_rule_with_constraints, create_test_asset_group, create_test_asset_in_group,
+    create_test_access_rule_with_constraints, create_test_asset_group,
     create_test_vauban_group, get_asset_uuid, unique_name,
 };
 
@@ -68,7 +68,21 @@ async fn expired_ssh_and_rdp_requests_keep_requester_and_created_time_without_se
         )
         .await;
         let asset_name = unique_name(&format!("expired_ui_{protocol}_asset"));
-        let asset_id = create_test_asset_in_group(&mut conn, &asset_name, admin_id, &ag).await;
+        // The asset type must match the requested protocol: the request
+        // form refuses `rdp` on an SSH asset.
+        let asset_type = if protocol == "rdp" {
+            vauban_web::models::asset::AssetType::Rdp
+        } else {
+            vauban_web::models::asset::AssetType::Ssh
+        };
+        let asset_id = crate::fixtures::create_test_asset_in_group_with_type(
+            &mut conn,
+            &asset_name,
+            admin_id,
+            &ag,
+            asset_type,
+        )
+        .await;
         let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
         create_test_access_rule_with_constraints(
             &mut conn,

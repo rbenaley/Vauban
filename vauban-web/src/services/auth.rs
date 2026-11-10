@@ -45,11 +45,10 @@ pub fn is_encrypted_mfa_secret(value: &str) -> bool {
 /// LDAP JIT path, client IP denied by the global ACL).
 ///
 /// Runs a dummy verification of a wrong password against the sacrifice
-/// hash minted at boot (`AppState::login_timing_sacrifice_hash`), through
-/// the SAME path as a real login (auth IPC when supervised, local Argon2
-/// otherwise). Without this, an attacker could time `POST /login` to
-/// enumerate valid usernames or detect the presence of the IP ACL
-/// (SEC-04/05 anti-enumeration).
+/// hash minted at boot (`AppState::login_timing_sacrifice_hash`) through
+/// vauban-auth. Production always has the client; a missing client is an
+/// internal error, logged here so the caller can still return the generic
+/// credential failure (SEC-04/05 anti-enumeration).
 pub async fn equalize_login_timing(state: &crate::AppState) {
     // Any constant is fine: the verification must FAIL, we only pay for
     // its duration. The sacrifice hash was minted from a random UUID at
@@ -57,13 +56,12 @@ pub async fn equalize_login_timing(state: &crate::AppState) {
     const WRONG_PASSWORD: &str = "vauban-login-timing-equalizer";
     let sacrifice_hash = state.login_timing_sacrifice_hash.as_str();
 
-    let outcome = if let Some(ref client) = state.auth_ipc_client {
-        client.verify_password(WRONG_PASSWORD, sacrifice_hash).await
-    } else {
-        state
-            .auth_service
-            .verify_password(WRONG_PASSWORD, sacrifice_hash)
-    };
+    let outcome = verify_password_via_auth(
+        state.auth_ipc_client.as_ref(),
+        WRONG_PASSWORD,
+        sacrifice_hash,
+    )
+    .await;
 
     match outcome {
         Ok(false) => {}
@@ -75,6 +73,39 @@ pub async fn equalize_login_timing(state: &crate::AppState) {
             tracing::warn!(error = %e, "login timing equalizer verification errored");
         }
     }
+}
+
+/// Hash `password` in vauban-auth.
+///
+/// Without a client this returns [`AppError::Internal`]. It never hashes
+/// in the web process.
+pub async fn hash_password_via_auth(
+    client: Option<&std::sync::Arc<crate::ipc::AuthIpcClient>>,
+    password: &str,
+) -> AppResult<String> {
+    let Some(client) = client else {
+        return Err(AppError::Internal(anyhow!(
+            "auth IPC client is not configured"
+        )));
+    };
+    client.hash_password(password).await
+}
+
+/// Verify `password` against `password_hash` in vauban-auth.
+///
+/// Without a client this returns [`AppError::Internal`]. It never verifies
+/// in the web process.
+pub async fn verify_password_via_auth(
+    client: Option<&std::sync::Arc<crate::ipc::AuthIpcClient>>,
+    password: &str,
+    password_hash: &str,
+) -> AppResult<bool> {
+    let Some(client) = client else {
+        return Err(AppError::Internal(anyhow!(
+            "auth IPC client is not configured"
+        )));
+    };
+    client.verify_password(password, password_hash).await
 }
 
 /// Outcome of a step-up TOTP verification with replay classification.
@@ -146,7 +177,12 @@ impl AuthService {
         self.config.jwt.access_token_lifetime_minutes
     }
 
-    /// Hash password using Argon2id.
+    /// Hash a password with the in-process Argon2id parameters from
+    /// `[security.argon2]`.
+    ///
+    /// Production request paths do not call this. They go through
+    /// [`hash_password_via_auth`], which refuses to run when the auth IPC
+    /// client is absent. Fixture setup and unit tests still use this method.
     pub fn hash_password(&self, password: &str) -> AppResult<String> {
         let salt = SaltString::generate(&mut OsRng);
         let params = Params::new(
@@ -1093,5 +1129,62 @@ mod tests {
 
         let auth_service = unwrap_ok!(AuthService::new(config));
         assert_eq!(auth_service.access_token_lifetime_minutes(), 60);
+    }
+
+    #[tokio::test]
+    async fn hash_password_via_auth_without_client_is_rejected() {
+        let err = hash_password_via_auth(None, "TestPassword123!").await;
+        match err {
+            Err(AppError::Internal(inner)) => {
+                assert!(
+                    inner
+                        .to_string()
+                        .contains("auth IPC client is not configured")
+                );
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_password_via_auth_without_client_is_rejected() {
+        let err = verify_password_via_auth(None, "TestPassword123!", "$argon2id$unused").await;
+        match err {
+            Err(AppError::Internal(inner)) => {
+                assert!(
+                    inner
+                        .to_string()
+                        .contains("auth IPC client is not configured")
+                );
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn battle_verify_without_client_is_rejected() {
+        const WORKERS: usize = 8;
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(WORKERS));
+        let mut handles = Vec::with_capacity(WORKERS);
+        for _ in 0..WORKERS {
+            let barrier = std::sync::Arc::clone(&barrier);
+            handles.push(tokio::spawn(async move {
+                barrier.wait().await;
+                verify_password_via_auth(None, "password", "$argon2id$not-a-real-hash").await
+            }));
+        }
+        for handle in handles {
+            let outcome = unwrap_ok!(handle.await);
+            match outcome {
+                Err(AppError::Internal(inner)) => {
+                    assert!(
+                        inner
+                            .to_string()
+                            .contains("auth IPC client is not configured")
+                    );
+                }
+                other => panic!("expected Internal, got {other:?}"),
+            }
+        }
     }
 }

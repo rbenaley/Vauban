@@ -54,14 +54,6 @@ test *ARGS:
     cargo test --all-features -p vauban-web -p vauban-access -p vauban-supervisor {{ARGS}} -- --test-threads=1
     cargo test {{rdp_manifest}} {{ARGS}}
 
-# Full-stack tests (vauban-e2e, outside the workspace): real supervisor and
-# every service on a throw-away `vauban_e2e` database, driven by headless
-# Chrome. Mandatory after every merge. ARGS filter scenarios (`auth::`).
-# VAUBAN_E2E_HEADED=1 shows the browser, VAUBAN_E2E_KEEP=1 keeps the tree.
-test-full-stack *ARGS: build
-    VAUBAN_E2E_CHROMEDRIVER="$(bash vauban-e2e/scripts/chromedriver.sh)" \
-        cargo test --manifest-path vauban-e2e/Cargo.toml --target-dir target --test full_stack -- {{ARGS}}
-
 # Coverage gate for the MCP security fixes (MCP Arch §13.1):
 # 100 % on the fix modules, diff coverage on every other changed line.
 # Needs cargo-llvm-cov. MCP_FIX_BASE overrides the diff base.

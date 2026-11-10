@@ -1053,11 +1053,13 @@ Only two services maintain direct database connections. All other services opera
 | `vauban-web` | **Direct** (Diesel, connection pool) | Manages users, assets, sessions, groups |
 | `vauban-access` | **Direct** (Diesel, optional) | Manages access rules, groups, asset groups |
 | `vauban-supervisor` | **Direct** (Diesel, admin commands only) | CLI operations: create-superuser, seed-data, migrate-secrets |
-| `vauban-auth` | None | Password hashing and MFA via IPC (Web -> Auth) |
+| `vauban-auth` | None | Password hashing and LDAPS via a mandatory IPC channel (Web -> Auth). TOTP and JWT stay in vauban-web. |
 | `vauban-vault` | None | Key management in memory, no DB, no network |
 | `vauban-audit` | None | Recording files via FD passing from supervisor |
 
 All services share a single PostgreSQL user (`vauban`) and the `public` schema. A single `[database]` section in the configuration provides the connection URL.
+
+vauban-web refuses to start unless the IPC channel to vauban-auth is present. Password hashing and LDAPS binds run in vauban-auth. TOTP and JWT stay in vauban-web.
 
 ### 6.2 Connection Resilience
 

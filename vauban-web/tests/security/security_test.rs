@@ -3329,10 +3329,19 @@ async fn test_session_ws_allowed_for_owner() {
     );
 }
 
-/// Regression: An admin/staff user can access another user's terminal WebSocket.
+/// SECURITY: an admin / staff user who is NOT the owner is refused on the
+/// terminal WebSocket, even though it holds `sessions:supervise`.
+///
+/// `/ws/terminal/{id}` is the interactive data plane of one proxy
+/// session: it relays input to the target, its output channel is
+/// single-consumer and its teardown closes the session. It is mounted
+/// behind `ws_session_owner_guard`, which does not honor the supervise
+/// override. Supervisors observe through `/ws/session/{id}` (see
+/// `test_session_ws_allowed_for_admin`). This test used to pin the
+/// opposite behavior (`test_terminal_ws_allowed_for_admin`).
 #[tokio::test]
 #[serial]
-async fn test_terminal_ws_allowed_for_admin() {
+async fn attack_terminal_ws_admin_non_owner_is_rejected() {
     let app = TestApp::spawn().await;
     let mut conn = app.get_conn().await;
 
@@ -3351,14 +3360,13 @@ async fn test_terminal_ws_allowed_for_admin() {
 
     drop(conn);
 
-    // Admin accesses another user's terminal -> middleware passes, handler returns 400
-    // (no WebSocket upgrade headers) instead of 403/404 (rejected by guard).
+    // Admin probes another user's terminal -> the owner-only guard refuses
+    // with the same collapsed 404 as any other non-owner.
     let response = ws_terminal_request(app, &session_uuid.to_string(), &admin.token).await;
-    let status = response.status_code().as_u16();
-    assert!(
-        status != 403 && status != 404,
-        "Admin should pass ownership check, got {} (expected 400 or 426)",
-        status
+    assert_eq!(
+        response.status_code().as_u16(),
+        404,
+        "a non-owner admin must be refused (collapsed 404) on the terminal data plane"
     );
 }
 

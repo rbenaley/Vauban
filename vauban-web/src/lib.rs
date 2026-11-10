@@ -107,8 +107,12 @@ pub struct AppState {
     /// and has no fallback path (no role:superuser / role:staff hardcoded
     /// short-circuit).
     pub access_client: Arc<AccessIpcClient>,
-    /// Auth IPC client for password hashing/verification via vauban-auth (Argon2id).
-    /// None if not running under supervisor (development mode).
+    /// Auth IPC client for password hashing and LDAPS via vauban-auth.
+    ///
+    /// Production refuses to start without this channel (`init_auth_client`
+    /// in `main`). The field stays `Option` so tests can build an
+    /// `AppState` without going through `main`; `None` is not a supported
+    /// production mode and the hash/verify helpers fail closed on it.
     pub auth_ipc_client: Option<Arc<AuthIpcClient>>,
     /// Email notification mailer (Issue #10). Owns the dispatcher's
     /// `Notify` handle. `Mailer::queue` is called from handlers in

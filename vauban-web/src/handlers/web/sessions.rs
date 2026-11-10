@@ -1505,12 +1505,14 @@ pub async fn submit_access_request(
     };
 
     // Justification is always required for JIT access requests
-    let justification = match form.justification.as_deref() {
-        Some(j) if j.trim().len() >= 10 => Some(sanitize(j.trim())),
-        _ => {
+    let justification = match crate::services::access_request::normalize_justification(
+        form.justification.as_deref(),
+    ) {
+        Some(j) => Some(j),
+        None => {
             return htmx_or_redirect(
                 is_htmx,
-                "Justification is required (minimum 10 characters)",
+                crate::services::access_request::JUSTIFICATION_REQUIRED_MESSAGE,
                 &format!("/assets/{}", form.asset_uuid),
             );
         }
@@ -1545,6 +1547,21 @@ pub async fn submit_access_request(
         }
         result
     };
+
+    // Protocol coherence, AFTER authorization so it is not an oracle:
+    // the requested stream must exist on this asset type (parity with
+    // the M2M API). Otherwise a caller could request `rdp` on an SSH
+    // asset and have the request carry the constraints (duration cap,
+    // MFA) of a rule written for another protocol.
+    let protocol_matches = SessionType::try_parse(&form.session_type)
+        .is_some_and(|requested| requested.matches_asset(asset.asset_type));
+    if !protocol_matches {
+        return htmx_or_redirect(
+            is_htmx,
+            "The requested protocol does not match this asset",
+            &format!("/assets/{}", form.asset_uuid),
+        );
+    }
 
     // MFA verification (if required)
     if access_result.require_mfa {
@@ -1614,8 +1631,8 @@ pub async fn submit_access_request(
         uuid: session_uuid,
         user_id,
         asset_id: asset.id,
-        credential_id: "pending".to_string(),
-        credential_username: "pending".to_string(),
+        credential_id: crate::services::access_request::PENDING_CREDENTIAL.to_string(),
+        credential_username: crate::services::access_request::PENDING_CREDENTIAL.to_string(),
         session_type: SessionType::parse(&form.session_type),
         status: "pending".to_string(),
         client_ip,
@@ -1644,62 +1661,18 @@ pub async fn submit_access_request(
         return htmx_or_redirect(is_htmx, "Failed to submit access request", "/assets");
     }
 
-    tracing::info!(
-        session_uuid = %session_uuid,
-        user = %auth_user.username,
-        asset = %asset.name,
-        "JIT access request submitted"
-    );
-
-    crate::services::emit_audit(
-        &state,
-        crate::ipc::AuditEvent::new(
-            shared::messages::AuditEventType::ApprovalRequested,
-            format!(r#"{{"asset":"{}"}}"#, asset.name),
-        )
-        .user(auth_user.uuid.to_string())
-        .session(session_uuid.to_string()),
-    );
-
-    // Notify admins via BroadcastService
-    let _ = state
-        .broadcast
-        .send(
-            &crate::services::broadcast::WsChannel::Notifications,
-            crate::services::broadcast::WsMessage::new(
-                "jit-notification",
-                format!(
-                    r#"{{"type":"access_request","user":"{}","asset":"{}","uuid":"{}"}}"#,
-                    auth_user.username, asset.name, session_uuid
-                ),
-            ),
-        )
-        .await;
-
-    broadcast_approval_badge(&state).await;
-
-    // Issue #10: queue an email to every active staff/superuser. The
-    // pure WebSocket badge is great for live admins, but Vauban does
-    // not assume the admin is online -- email is the primary
-    // out-of-band channel for "a new access request needs your
-    // attention". One row per recipient (UNIQUE(event_id) provides
-    // idempotence on a double-submit retry).
     let session_type_str = form.session_type.to_string();
-    if let Err(e) = queue_submitted_emails(
+    announce_access_request(
         &state,
-        session_uuid,
-        &auth_user.username,
-        &asset.name,
-        &session_type_str,
+        &AccessRequestNotice {
+            session_uuid,
+            requester_uuid: &auth_user.uuid,
+            requester_username: &auth_user.username,
+            asset_name: &asset.name,
+            protocol: &session_type_str,
+        },
     )
-    .await
-    {
-        tracing::warn!(
-            session_uuid = %session_uuid,
-            error = %e,
-            "Failed to queue access_request.submitted emails (request itself was recorded)"
-        );
-    }
+    .await;
 
     if is_htmx {
         let trigger_json = r#"{"showToast": {"message": "Access request submitted. An administrator will review your request.", "type": "success"}}"#.to_string();
@@ -2390,6 +2363,85 @@ async fn dispatch_approval_decision(
             );
             Ok(ApprovalOutcome::Denied(reason))
         }
+    }
+}
+
+/// What the approvers need to know about a freshly recorded request.
+pub(crate) struct AccessRequestNotice<'a> {
+    pub session_uuid: ::uuid::Uuid,
+    pub requester_uuid: &'a str,
+    pub requester_username: &'a str,
+    pub asset_name: &'a str,
+    pub protocol: &'a str,
+}
+
+/// Announce a freshly recorded `pending` access request: audit trail
+/// (`ApprovalRequested`), live notification, sidebar badge, and one
+/// queued email per approver.
+///
+/// Single seam shared by the web form (`submit_access_request`) and the
+/// M2M API (`handlers::api::sessions::create_session`), so a request is
+/// equally visible to approvers and auditors whichever surface created
+/// it. Every step is best-effort: the row is already committed, and a
+/// failed notification must not turn the submission into an error.
+pub(crate) async fn announce_access_request(state: &AppState, notice: &AccessRequestNotice<'_>) {
+    tracing::info!(
+        session_uuid = %notice.session_uuid,
+        user = %notice.requester_username,
+        asset = %notice.asset_name,
+        "JIT access request submitted"
+    );
+
+    crate::services::emit_audit(
+        state,
+        crate::ipc::AuditEvent::new(
+            shared::messages::AuditEventType::ApprovalRequested,
+            serde_json::json!({ "asset": notice.asset_name }).to_string(),
+        )
+        .user(notice.requester_uuid.to_string())
+        .session(notice.session_uuid.to_string()),
+    );
+
+    // Notify admins via BroadcastService
+    let _ = state
+        .broadcast
+        .send(
+            &crate::services::broadcast::WsChannel::Notifications,
+            crate::services::broadcast::WsMessage::new(
+                "jit-notification",
+                serde_json::json!({
+                    "type": "access_request",
+                    "user": notice.requester_username,
+                    "asset": notice.asset_name,
+                    "uuid": notice.session_uuid.to_string(),
+                })
+                .to_string(),
+            ),
+        )
+        .await;
+
+    broadcast_approval_badge(state).await;
+
+    // Issue #10: queue an email to every active staff/superuser. The
+    // pure WebSocket badge is great for live admins, but Vauban does
+    // not assume the admin is online -- email is the primary
+    // out-of-band channel for "a new access request needs your
+    // attention". One row per recipient (UNIQUE(event_id) provides
+    // idempotence on a double-submit retry).
+    if let Err(e) = queue_submitted_emails(
+        state,
+        notice.session_uuid,
+        notice.requester_username,
+        notice.asset_name,
+        notice.protocol,
+    )
+    .await
+    {
+        tracing::warn!(
+            session_uuid = %notice.session_uuid,
+            error = %e,
+            "Failed to queue access_request.submitted emails (request itself was recorded)"
+        );
     }
 }
 
@@ -5357,9 +5409,23 @@ mod tests {
             .map(|p| submit_fn + p)
             .unwrap_or(source.len());
         let body = &source[submit_fn..next_fn];
+        // The badge refresh lives in the shared announcer so the M2M API
+        // (`handlers::api::sessions::create_session`) triggers it too.
+        // Verify the call chain: submit -> announce -> broadcast.
         assert!(
-            body.contains("broadcast_approval_badge"),
-            "submit_access_request must call broadcast_approval_badge"
+            body.contains("announce_access_request("),
+            "submit_access_request must call announce_access_request"
+        );
+        let announce_fn = source
+            .find("async fn announce_access_request")
+            .expect("announce_access_request must exist");
+        let announce_end = source[announce_fn..]
+            .find("\nasync fn ")
+            .map(|p| announce_fn + p)
+            .unwrap_or(source.len());
+        assert!(
+            source[announce_fn..announce_end].contains("broadcast_approval_badge(state)"),
+            "announce_access_request must call broadcast_approval_badge"
         );
     }
 

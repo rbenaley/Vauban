@@ -124,7 +124,7 @@ fn run_service() -> Result<()> {
         .parse()
         .context("Invalid VAUBAN_IPC_WRITE")?;
 
-    let argon2_params = load_argon2_params();
+    let argon2_params = load_argon2_params()?;
 
     let web_channel = parse_topology_channel("WEB");
 
@@ -299,24 +299,24 @@ fn parse_topology_channel(service_suffix: &str) -> Option<IpcChannel> {
     Some(unsafe { IpcChannel::from_raw_fds(read_fd, write_fd) })
 }
 
-fn load_argon2_params() -> Argon2Params {
-    let memory_kb = std::env::var("VAUBAN_ARGON2_MEMORY_KB")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(19456);
-    let iterations = std::env::var("VAUBAN_ARGON2_ITERATIONS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(2);
-    let parallelism = std::env::var("VAUBAN_ARGON2_PARALLELISM")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1);
-    Argon2Params {
-        memory_kb,
-        iterations,
-        parallelism,
-    }
+fn load_argon2_params() -> Result<Argon2Params> {
+    Ok(Argon2Params {
+        memory_kb: required_u32_env("VAUBAN_ARGON2_MEMORY_KB")?,
+        iterations: required_u32_env("VAUBAN_ARGON2_ITERATIONS")?,
+        parallelism: required_u32_env("VAUBAN_ARGON2_PARALLELISM")?,
+    })
+}
+
+/// Read one Argon2 parameter. A missing or non-integer value is fatal:
+/// silent defaults would mint hashes the supervisor did not configure.
+fn required_u32_env(var: &str) -> Result<u32> {
+    let raw = std::env::var(var).map_err(|_| anyhow::anyhow!("{var} is not set"))?;
+    parse_u32_strict(&raw).map_err(|_| anyhow::anyhow!("{var} must be an integer"))
+}
+
+/// Parse a base-10 `u32`. Whitespace, a leading minus, and a second sign are rejected.
+fn parse_u32_strict(raw: &str) -> Result<u32, std::num::ParseIntError> {
+    raw.parse()
 }
 
 fn main_loop(
@@ -1223,5 +1223,128 @@ mod tests {
             !source.contains("success: true"),
             "production code must never return MfaVerifyResponse with success=true"
         );
+    }
+
+    fn with_argon2_env<T>(
+        memory: Option<&str>,
+        iterations: Option<&str>,
+        parallelism: Option<&str>,
+        body: impl FnOnce() -> T,
+    ) -> T {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let prev_memory = std::env::var("VAUBAN_ARGON2_MEMORY_KB").ok();
+        let prev_iterations = std::env::var("VAUBAN_ARGON2_ITERATIONS").ok();
+        let prev_parallelism = std::env::var("VAUBAN_ARGON2_PARALLELISM").ok();
+        apply_env("VAUBAN_ARGON2_MEMORY_KB", memory);
+        apply_env("VAUBAN_ARGON2_ITERATIONS", iterations);
+        apply_env("VAUBAN_ARGON2_PARALLELISM", parallelism);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+        restore_env("VAUBAN_ARGON2_MEMORY_KB", prev_memory);
+        restore_env("VAUBAN_ARGON2_ITERATIONS", prev_iterations);
+        restore_env("VAUBAN_ARGON2_PARALLELISM", prev_parallelism);
+        match result {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    fn apply_env(var: &str, value: Option<&str>) {
+        // SAFETY: `with_argon2_env` holds the env lock and restores the
+        // previous values before releasing it.
+        match value {
+            Some(value) => unsafe { std::env::set_var(var, value) },
+            None => unsafe { std::env::remove_var(var) },
+        }
+    }
+
+    fn restore_env(var: &str, value: Option<String>) {
+        // SAFETY: `with_argon2_env` holds the env lock and restores the
+        // previous values before releasing it.
+        match value {
+            Some(value) => unsafe { std::env::set_var(var, value) },
+            None => unsafe { std::env::remove_var(var) },
+        }
+    }
+
+    fn expect_load_err() -> anyhow::Error {
+        match load_argon2_params() {
+            Ok(_) => panic!("load_argon2_params succeeded"),
+            Err(err) => err,
+        }
+    }
+
+    fn expect_load_ok() -> Argon2Params {
+        match load_argon2_params() {
+            Ok(params) => params,
+            Err(err) => panic!("load_argon2_params failed: {err:#}"),
+        }
+    }
+
+    #[test]
+    fn load_argon2_params_missing_var_is_rejected() {
+        let err = with_argon2_env(None, Some("2"), Some("1"), expect_load_err);
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("VAUBAN_ARGON2_MEMORY_KB is not set"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn load_argon2_params_non_numeric_is_rejected() {
+        let err = with_argon2_env(Some("abc"), Some("2"), Some("1"), expect_load_err);
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("VAUBAN_ARGON2_MEMORY_KB must be an integer"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn load_argon2_params_reads_all_three() {
+        let params = with_argon2_env(Some("1024"), Some("1"), Some("1"), expect_load_ok);
+        assert_eq!(params.memory_kb, 1024);
+        assert_eq!(params.iterations, 1);
+        assert_eq!(params.parallelism, 1);
+    }
+
+    #[test]
+    fn parse_u32_strict_rejects_sign_whitespace_and_overflow() {
+        assert_eq!(parse_u32_strict("19456").unwrap(), 19456);
+        assert_eq!(parse_u32_strict("0").unwrap(), 0);
+        assert_eq!(parse_u32_strict("+1").unwrap(), 1);
+        for raw in ["", "abc", "-1", "++1", " 1", "1 ", "1.5", "4294967296"] {
+            assert!(parse_u32_strict(raw).is_err(), "{raw}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod argon2_param_proptest {
+    use proptest::prelude::*;
+
+    use super::parse_u32_strict;
+
+    fn non_numeric_u32(raw: &str) -> bool {
+        let digits = raw.strip_prefix('+').unwrap_or(raw);
+        digits.is_empty() || digits.chars().any(|c| !c.is_ascii_digit())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn non_numeric_argon2_field_is_rejected(raw in "\\PC{0,24}") {
+            if non_numeric_u32(&raw) {
+                prop_assert!(parse_u32_strict(&raw).is_err());
+            }
+        }
+
+        #[test]
+        fn overlong_digit_argon2_field_is_rejected(n in 10usize..24) {
+            let raw = "9".repeat(n);
+            prop_assert!(parse_u32_strict(&raw).is_err());
+        }
     }
 }

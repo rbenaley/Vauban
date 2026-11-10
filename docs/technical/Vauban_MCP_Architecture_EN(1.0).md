@@ -1105,9 +1105,8 @@ up with the other crate tests. `vauban-web`, `vauban-access`, and
 second invocation with `--test-threads=1`. The other crates use
 Cargo's default parallelism. `just validate` is lint, clippy, and
 that test pass. `shared/scripts/check_just_lint_wired.sh` fails if
-`just test` drops `--all-features`. Smoke (13.7) is manual and Full
-Stack (13.8) runs with `just test-full-stack mcp`. `just test gwt_`
-is the acceptance filter. The proxy is a binary crate, so its pyramid tests live in-tree
+`just test` drops `--all-features`. Smoke (13.7) is manual.
+`just test gwt_` is the acceptance filter. The proxy is a binary crate, so its pyramid tests live in-tree
 (`vauban-proxy-mcp/src/*_tests.rs`) and drive the real `handle_mcp`
 (direct ingress) against `test_upstream::FakeUpstream` over pinned TLS.
 
@@ -1194,22 +1193,11 @@ is the acceptance filter. The proxy is a binary crate, so its pyramid tests live
 
 ### 13.8 Full Stack
 
-Every layer above drives a component or the web router in-process; none
-runs `fn main` of the real binaries. `just test-full-stack` does, and is
-mandatory after every merge.
+The browser suite that booted the real supervisor and drove headless
+Chrome has been removed. The gates that remain are the in-process
+pyramid (13.1 to 13.6) and the manual smoke runbooks (13.7).
 
-| Component | Artifact |
-|---|---|
-| Bench: `vauban-supervisor` and every child from `target/debug` (`just build` first), throw-away `vauban_e2e` database (migrate + `seed-data`), private config copy, vault master key, recording and audit trees, free ports; never touches the lab on :8443 | `vauban-e2e/tests/support/bench.rs` |
-| Sentinel: a scenario fails on any `IPC pump ended`, `Message too large`, `Deserialization error`, panic, child exit or respawn, or 5xx in the stack log | `vauban-e2e/tests/support/sentinel.rs` |
-| Browser: headless Chrome over WebDriver (`thirtyfour`, driver matched to the installed Chrome by `vauban-e2e/scripts/chromedriver.sh`); a probe in every document fails the scenario on JS errors, unhandled rejections, `console.error` and 5xx from fetch / XHR, with the page's WebSocket trace | `vauban-e2e/tests/support/browser.rs` |
-| Authentication: wrong password, TOTP enrolment of every seeded account, TOTP verify, wrong code, logout | `vauban-e2e/tests/scenarios/auth.rs` |
-| MCP upstream: an MCP server on loopback behind a self-signed certificate (pinned by SPKI), recording every request it receives; an agent client for hop 1 (`vbn_`) and hop 2 (`vbw_`) over the bench HTTPS port, trusting the bench CA | `vauban-e2e/tests/support/upstream.rs` |
-| MCP: zone and forged POST refused to a plain user; asset onboarding (no pin, wrong pin, Discover, Approve, instructions); rule modes Off / Allow / HITL / Require plan; direct visit (justification, `initialize`, `tools/list` shows only allowed tools, Off refused, redaction); HITL approve and deny from `/sessions/mcp`; Mission Seal (plan required, contract sealed on Approve, off-contract call `-32033` cuts the visit and suspends the group; a contestation overturned restores it, an upheld one keeps the subject out and cannot be contested again); changed tool definition quarantined (`-32002`, before/after view, re-approval brings it back Off until a new mode); Connect from `/assets` through the justification modal; tunnel transport through the `vauban-mcp` shim (TOFU pin, direct hop 2 refused); group removal, key revocation and account deletion cut live visits; on a throw-away asset, deleting the rule, taking the asset out of its group, rotating the pin and deleting the asset in the browser each cut the live visit, and hop 1 then answers 404; a deleted asset leaves no mode on its rule: recreated on the same server it advertises nothing while pending, its tools come back Off after Approve and only a new mode grants them; `session.mcp.jsonl`, `meta.json` and the WORM audit keep every call and never a secret; the Play page of that recording opens the asciinema player (no `<video>`) and replays the calls | `vauban-e2e/tests/scenarios/mcp.rs` |
-| Defects found and not fixed yet (reported on every hit; an entry no longer observed fails the run). A failed scenario saves the page it stopped on (HTML + screenshot) under `target/e2e-failures/` | `vauban-e2e/tests/support/known.rs` |
-`vauban-e2e` is excluded from the workspace: `cargo build`, `just test`
-and release builds never compile it, and all its dependencies are
-dev-dependencies.
+The notes below record defects that suite and the pyramid found.
 
 Product fixes found by the pyramid: Story and intent bounds counted
 bytes against a character schema; the effective-tools merge existed

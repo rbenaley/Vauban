@@ -297,15 +297,12 @@ pub async fn login(
             }
         }
         Some(u) => {
-            let password_valid = if let Some(ref client) = state.auth_ipc_client {
-                client
-                    .verify_password(&request.password, &u.password_hash)
-                    .await?
-            } else {
-                state
-                    .auth_service
-                    .verify_password(&request.password, &u.password_hash)?
-            };
+            let password_valid = crate::services::auth::verify_password_via_auth(
+                state.auth_ipc_client.as_ref(),
+                &request.password,
+                &u.password_hash,
+            )
+            .await?;
             if !password_valid {
                 let new_failed_attempts = u.failed_login_attempts + 1;
                 let locked_until_value = lockout_duration_for_attempts(
