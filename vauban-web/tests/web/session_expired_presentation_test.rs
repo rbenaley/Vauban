@@ -9,8 +9,8 @@ use diesel_async::RunQueryDsl;
 use crate::common::{TestApp, assertions::assert_status, unwrap_ok};
 use crate::fixtures::{
     add_user_to_vauban_group, create_simple_admin_user, create_simple_user,
-    create_test_access_rule_with_constraints, create_test_asset_group,
-    create_test_vauban_group, get_asset_uuid, unique_name,
+    create_test_access_rule_with_constraints, create_test_asset_group, create_test_vauban_group,
+    get_asset_uuid, unique_name,
 };
 
 type PersistedGrant = (

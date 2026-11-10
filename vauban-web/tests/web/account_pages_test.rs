@@ -2439,6 +2439,21 @@ async fn test_admin_sessions_page_has_correct_structure() {
 // Issue #8 - Login session deduplication & route renaming
 // =============================================================================
 
+/// Reset `last_totp_used_window` to NULL so a test can perform two
+/// successful MFA logins inside the same 30-second TOTP window. Login
+/// consumes the window (RFC 6238 section 5.2 replay protection), so a
+/// second login with the same code is otherwise refused with 401. Same
+/// helper as in `profile_password_test.rs` and `user_edit_test.rs`.
+async fn reset_totp_replay_state(conn: &mut AsyncPgConnection, user_id_val: i32) {
+    use vauban_web::schema::users;
+    unwrap_ok!(
+        diesel::update(users::table.filter(users::id.eq(user_id_val)))
+            .set(users::last_totp_used_window.eq::<Option<i64>>(None))
+            .execute(conn)
+            .await
+    );
+}
+
 /// Helper: count rows in `auth_sessions` for a given user_id.
 async fn count_auth_sessions(conn: &mut AsyncPgConnection, user_id_val: i32) -> i64 {
     use vauban_web::schema::auth_sessions;
@@ -2558,6 +2573,10 @@ async fn test_login_purges_previous_session_for_same_device() {
         after_first
     );
 
+    // The first login consumed the current TOTP window; clear the replay
+    // marker so the second login can present the same code.
+    reset_totp_replay_state(&mut conn, user_id).await;
+
     // Second login from the same client (same UA, same default IP):
     // `insert_session_with_purge` must delete the row from r1 before
     // inserting the new one, so the count must NOT grow.
@@ -2613,10 +2632,11 @@ async fn test_login_keeps_sessions_for_different_user_agents() {
         .await;
     assert_eq!(r1.status_code().as_u16(), 200);
 
-    // Second login -- pretend we are on Windows Firefox. Use a fresh
-    // TOTP code computed at this moment (verifies that two distinct
-    // codes within the same TOTP window are both accepted, which is
-    // expected since `generate_access_token` does not consume the code).
+    // The first login consumed the current TOTP window; clear the replay
+    // marker so the second login can present the same code.
+    reset_totp_replay_state(&mut conn, user_id).await;
+
+    // Second login -- pretend we are on Windows Firefox.
     let r2 = app
         .server
         .post("/api/v1/auth/login")

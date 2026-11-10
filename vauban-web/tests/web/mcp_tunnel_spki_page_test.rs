@@ -175,7 +175,16 @@ proptest! {
         let escaped = Escaped { s: &pin }.render().expect("escape");
         prop_assert!(html.contains(&escaped), "pin truncated or not escaped");
         if pin.contains('<') {
-            prop_assert!(!html.contains(&pin), "raw pin with '<' reached the page");
+            // The page's own markup is full of '<', so a short pin such
+            // as "<" or "</" occurs in it anyway. Compare against the
+            // same page rendered with a neutral pin: the raw pin must
+            // not occur one more time than the markup alone explains.
+            let baseline = render(detail("mcp", Some("NEUTRALPIN")));
+            prop_assert_eq!(
+                html.matches(pin.as_str()).count(),
+                baseline.matches(pin.as_str()).count(),
+                "raw pin with '<' reached the page"
+            );
         }
     }
 }

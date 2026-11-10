@@ -5265,11 +5265,18 @@ fn test_vau002_vault_authz_module_exists_and_fail_closed() {
 #[test]
 fn test_vau002_matrix_denies_mfa_secret_exfiltration() {
     let source = include_str!("../../../vauban-vault/src/authz.rs");
-    // web Decrypt is restricted to credentials + org secrets (not a wildcard,
-    // and NEVER the mfa domain).
+    // web Decrypt is restricted to org secrets only (not a wildcard, NEVER
+    // the mfa domain, and since 0.9.48 no longer the credentials domain:
+    // credentials are decrypted by the protocol proxies).
     assert!(
-        source.contains("domain == DOMAIN_CREDENTIALS || domain == DOMAIN_SECRETS"),
-        "web VaultDecrypt must be limited to the credentials + secrets domains"
+        source.contains(
+            "(VaultPeer::Web, Message::VaultDecrypt { domain, .. }) => domain == DOMAIN_SECRETS,"
+        ),
+        "web VaultDecrypt must be limited to the secrets domain"
+    );
+    assert!(
+        !source.contains("domain == DOMAIN_CREDENTIALS || domain == DOMAIN_SECRETS"),
+        "web VaultDecrypt must NOT cover the credentials domain"
     );
     assert!(
         !source.contains("(VaultPeer::Web, Message::VaultDecrypt { domain, .. }) => true"),
