@@ -669,6 +669,7 @@ mod tests {
             "credentials".to_string(),
             Keyring::new(&mk, "credentials", 1),
         );
+        keyrings.insert("secrets".to_string(), Keyring::new(&mk, "secrets", 1));
         keyrings
     }
 
@@ -987,15 +988,16 @@ mod tests {
     // client end. This demonstrates the capability matrix is enforced exactly
     // where a compromised peer would cross the pipe.
 
-    /// E2E: a `web` channel may encrypt then decrypt a credential (round-trip).
+    /// E2E: a `web` channel may encrypt then decrypt an org secret (round-trip).
+    /// `web` can no longer decrypt `credentials` (7b917940): only encrypt.
     #[test]
-    fn test_vau002_web_channel_credentials_roundtrip() {
+    fn test_vau002_web_channel_secrets_roundtrip() {
         let (client, service) = IpcChannel::pair().unwrap();
         let mut state = test_state();
 
         let enc = Message::VaultEncrypt {
             request_id: 1,
-            domain: "credentials".to_string(),
+            domain: "secrets".to_string(),
             plaintext: SensitiveString::new("hunter2".to_string()),
         };
         handle_peer_message(&service, &mut state, enc, "web").unwrap();
@@ -1010,7 +1012,7 @@ mod tests {
 
         let dec = Message::VaultDecrypt {
             request_id: 2,
-            domain: "credentials".to_string(),
+            domain: "secrets".to_string(),
             ciphertext: ct,
         };
         handle_peer_message(&service, &mut state, dec, "web").unwrap();
