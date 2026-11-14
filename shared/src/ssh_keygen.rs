@@ -57,7 +57,7 @@ pub struct GeneratedKeyPair {
 /// healthy host, but we surface them instead of panicking so the web
 /// handler can render a clean error fragment).
 pub fn generate_ed25519_keypair(comment: &str) -> io::Result<GeneratedKeyPair> {
-    // ssh-key 0.7 (russh 0.61) requires a `rand_core` 0.10 `CryptoRng`.
+    // ssh-key 0.7 (russh >= 0.61) requires a `rand_core` 0.10 `CryptoRng`.
     // getrandom's `SysRng` is the OS entropy source but only implements
     // the fallible `TryCryptoRng`; `UnwrapErr` adapts it to the
     // infallible `CryptoRng` the `random` bound demands. Mirrors

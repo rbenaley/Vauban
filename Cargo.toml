@@ -19,7 +19,8 @@ members = [
 # vauban-proxy-rdp is excluded due to irreconcilable pre-release version
 # conflicts in the RustCrypto ecosystem between ironrdp/picky/sspi (sha1
 # =0.11.0-rc.2, digest =0.11.0-rc.5, crypto-common =0.2.0-rc.8) and
-# russh/ssh-key (sha1 ^0.11.0-rc.3). Use `just build` to compile everything.
+# russh/ssh-key (sha1 ^0.11.0-rc.3 with russh 0.61; russh 0.65 is on the
+# stable sha1 0.11 / digest 0.11). Use `just build` to compile everything.
 exclude = ["vauban-proxy-rdp"]
 
 # Default package for `cargo run` from workspace root
@@ -61,11 +62,17 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync"
 # 0.61 migrates from the internal ssh-key 0.6 fork to upstream ssh-key 0.7
 # and replaces libcrux-ml-kem with the RustCrypto ml-kem crate (drops
 # libcrux-sha3, RUSTSEC-2026-0074).
-russh = "0.61"
+# 0.65 keeps that stack (ssh-key =0.7.0-rc.11, ml-kem 0.3, rand_core 0.10)
+# and fixes RUSTSEC-2026-0492 (0.63.1) and RUSTSEC-2026-0495 (0.65.0).
+# API breaks absorbed on the way: server `channel_open_*` answer through a
+# `ChannelOpenHandle` (0.62), client `check_server_key` receives a
+# `PublicKeyOrCertificate` (0.63), server `auth_publickey*` receive
+# `PublicKeyOffer` / `VerifiedPublicKey` (0.65).
+russh = "0.65"
 async-trait = "0.1"
 
 # OS CSPRNG adapter for `ssh_key::PrivateKey::random` (Ed25519 host-key
-# generation). russh 0.61's upstream ssh-key 0.7 requires a `rand_core`
+# generation). Since russh 0.61, upstream ssh-key 0.7 requires a `rand_core`
 # 0.10 `CryptoRng`; rand_core 0.10 no longer ships `OsRng`. getrandom's
 # `SysRng` is the OS entropy source (it is `TryCryptoRng`; wrap it in
 # `rand_core::UnwrapErr` to satisfy the infallible `CryptoRng` bound).

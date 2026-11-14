@@ -410,8 +410,14 @@ impl client::Handler for HostKeyFetchHandler {
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &russh::keys::PublicKey,
+        server_public_key: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
+        // Only a plain host key can be captured for pinning. A host
+        // certificate is never negotiated (see `plain_host_key`).
+        let Some(server_public_key) = plain_host_key(server_public_key) else {
+            warn!("Host key fetch refused: server presented a host certificate");
+            return Ok(false);
+        };
         let key_str = server_public_key
             .to_openssh()
             .unwrap_or_else(|_| format!("{:?}", server_public_key.algorithm()));
@@ -757,8 +763,17 @@ impl client::Handler for SshHandler {
     /// path that captures a key without one.
     async fn check_server_key(
         &mut self,
-        server_public_key: &russh::keys::PublicKey,
+        server_public_key: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
+        // The pin is a plain host key: a host certificate cannot match
+        // it and is refused before any comparison.
+        let Some(server_public_key) = plain_host_key(server_public_key) else {
+            warn!(
+                session_id = %self.session_id,
+                "SSH session refused: server presented a host certificate"
+            );
+            return Ok(false);
+        };
         let received_key = server_public_key
             .to_openssh()
             .unwrap_or_else(|_| format!("{:?}", server_public_key.algorithm()));
@@ -792,6 +807,24 @@ impl client::Handler for SshHandler {
              the server key was intentionally changed."
         );
         Ok(false)
+    }
+}
+
+/// The plain host key the server proved possession of, or `None` when
+/// it presented an OpenSSH host certificate instead.
+///
+/// Vauban pins plain host keys only and has no host CA to verify a
+/// certificate against, so a certificate is refused by both
+/// `check_server_key` implementations. `make_ssh_config` leaves
+/// `Preferred::host_key_certificates` empty, so the client never
+/// advertises a certificate algorithm and a compliant server never
+/// sends one; this refusal is the backstop if that ever changes.
+fn plain_host_key(
+    presented: &russh::keys::PublicKeyOrCertificate,
+) -> Option<&russh::keys::PublicKey> {
+    match presented {
+        russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } => Some(key),
+        russh::keys::PublicKeyOrCertificate::Certificate(_) => None,
     }
 }
 
@@ -1298,6 +1331,80 @@ mod host_key_behavioural_tests {
             }
             Err(other) => panic!("expected ConnectionFailed (KEX aborted), got {:?}", other),
         }
+    }
+
+    /// Build an OpenSSH host certificate for `subject`, signed by a
+    /// throwaway CA.
+    fn host_certificate_for(subject: &PrivateKey) -> russh::keys::Certificate {
+        use russh::keys::ssh_key::certificate::{Builder, CertType};
+
+        let ca = fresh_ed25519_key();
+        let mut builder = Builder::new_with_random_nonce(
+            &mut russh::keys::ssh_key::rand_core::UnwrapErr(getrandom::SysRng),
+            subject.public_key().key_data().clone(),
+            0,
+            u64::MAX - 1,
+        )
+        .expect("certificate builder");
+        builder.cert_type(CertType::Host).expect("cert type");
+        builder.key_id("attack-host-cert").expect("key id");
+        builder.all_principals_valid().expect("principals");
+        builder.sign(&ca).expect("sign certificate")
+    }
+
+    /// A server that presents a host CERTIFICATE is refused, even when
+    /// the key inside the certificate is the pinned one: Vauban has no
+    /// host CA, so nothing vouches for the certificate. The plain key
+    /// is accepted with the same pin (control).
+    #[tokio::test]
+    async fn attack_host_certificate_is_rejected() {
+        use russh::client::Handler as _;
+        use russh::keys::PublicKeyOrCertificate;
+
+        let host_key = fresh_ed25519_key();
+        let pin = openssh_public(&host_key);
+        let cert = PublicKeyOrCertificate::Certificate(host_certificate_for(&host_key));
+        let plain = PublicKeyOrCertificate::from(host_key.public_key().clone());
+
+        let mut session_handler = SshHandler::new("attack-cert".to_string(), Some(pin));
+        assert!(
+            !session_handler
+                .check_server_key(&cert)
+                .await
+                .expect("check_server_key"),
+            "a host certificate must be refused for a session"
+        );
+        assert!(
+            session_handler
+                .check_server_key(&plain)
+                .await
+                .expect("check_server_key"),
+            "control: the pinned plain key is accepted"
+        );
+
+        let captured = Arc::new(tokio::sync::Mutex::new((None, None)));
+        let mut fetch_handler = HostKeyFetchHandler {
+            captured: Arc::clone(&captured),
+        };
+        assert!(
+            !fetch_handler
+                .check_server_key(&cert)
+                .await
+                .expect("check_server_key"),
+            "a host certificate must not be captured as a pin"
+        );
+        assert_eq!(
+            *captured.lock().await,
+            (None, None),
+            "nothing may be captured from a host certificate"
+        );
+    }
+
+    /// The client never asks a server for a host certificate, so the
+    /// refusal above is a backstop, not the first line.
+    #[test]
+    fn ssh_config_advertises_no_host_certificate_algorithm() {
+        assert!(make_ssh_config().preferred.host_key_certificates.is_empty());
     }
 
     /// Since 0.9.48 the proxy itself refuses a session when no host key

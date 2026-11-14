@@ -36,7 +36,7 @@ use std::time::Instant;
 use russh::client::{self, Handler as ClientHandler};
 use russh::keys::ssh_key::Algorithm;
 use russh::keys::ssh_key::rand_core::UnwrapErr;
-use russh::keys::{PrivateKey, PrivateKeyWithHashAlg, PublicKey};
+use russh::keys::{PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use shared::messages::Message;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -65,7 +65,7 @@ impl ClientHandler for TestClient {
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &PublicKey,
+        _server_public_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
         Ok(true)
     }

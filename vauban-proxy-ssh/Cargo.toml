@@ -40,7 +40,7 @@ secrecy.workspace = true
 # Testing utilities
 tokio = { workspace = true, features = ["test-util"] }
 nix.workspace = true
-# Host-key behavioural tests call `PrivateKey::random`, which (russh 0.61 /
+# Host-key behavioural tests call `PrivateKey::random`, which (russh >= 0.61 /
 # ssh-key 0.7) needs a `rand_core` 0.10 `CryptoRng`. rand_core 0.10 dropped
 # `OsRng`, so we feed getrandom's `SysRng` wrapped in
 # `russh::keys::ssh_key::rand_core::UnwrapErr`. Using the re-exported

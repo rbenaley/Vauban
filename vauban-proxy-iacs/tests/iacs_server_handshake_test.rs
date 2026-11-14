@@ -20,9 +20,12 @@
 //! [`PendingSessions`] (exactly what `Message::IacsTunnelOpen` does in
 //! production).
 //!
-//! This is the regression net the russh 0.57 -> 0.61 bump needed: an
-//! API break in the server-side handler is now caught at CI time
-//! instead of only at runtime in the field.
+//! This is the regression net every russh bump needs (0.57 -> 0.61,
+//! 0.61 -> 0.65): an API break in the server-side handler is caught
+//! at CI time instead of only at runtime in the field. Since russh
+//! 0.62 a channel open is answered through a `ChannelOpenHandle`
+//! (accept / reject) instead of a returned `bool`; the refusal tests
+//! below pin the reason the EWS receives.
 
 #![allow(clippy::unwrap_used, clippy::panic, clippy::expect_used)]
 
@@ -32,7 +35,7 @@ use std::time::Instant;
 use russh::client::{self, Handler as ClientHandler};
 use russh::keys::ssh_key::Algorithm;
 use russh::keys::ssh_key::rand_core::UnwrapErr;
-use russh::keys::{PrivateKey, PrivateKeyWithHashAlg, PublicKey};
+use russh::keys::{PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{Duration, timeout};
@@ -59,7 +62,7 @@ impl ClientHandler for TestClient {
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &PublicKey,
+        _server_public_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
         Ok(true)
     }
@@ -367,9 +370,183 @@ async fn refuses_publickey_when_pending_expired() {
     assert!(!auth.success(), "{}", SSH_AUTH_FAILED);
 }
 
+/// Signs the authentication request with a key that is NOT the one
+/// named in the request: the wire format is valid, the signature is
+/// not.
+struct ForgingSigner {
+    attacker_key: PrivateKey,
+}
+
+impl russh::Signer for ForgingSigner {
+    type Error = russh::AgentAuthError;
+
+    async fn auth_sign(
+        &mut self,
+        _key: &russh::keys::agent::AgentIdentity,
+        _hash_alg: Option<russh::keys::HashAlg>,
+        mut to_sign: Vec<u8>,
+    ) -> Result<Vec<u8>, Self::Error> {
+        use russh::keys::signature::Signer as _;
+        use russh::keys::ssh_encoding::Encode as _;
+
+        let sig: russh::keys::ssh_key::Signature = self
+            .attacker_key
+            .try_sign(&to_sign)
+            .expect("attacker signature");
+        // Same framing as the russh agent client: the request, then
+        // string(string(algorithm) || string(signature)).
+        let algo = sig.algorithm().as_str().to_string();
+        let raw = sig.as_bytes().to_vec();
+        (algo.len() + raw.len() + 8)
+            .encode(&mut to_sign)
+            .expect("length");
+        algo.encode(&mut to_sign).expect("algorithm");
+        raw.encode(&mut to_sign).expect("signature");
+        Ok(to_sign)
+    }
+}
+
+/// An attacker who knows the session UUID and the EWS PUBLIC key (both
+/// are not secrets) claims that key but cannot sign with it. russh
+/// verifies the signature before it calls `auth_publickey`, so the
+/// handler never sees the key as verified: the login is refused and
+/// the pre-authorization is NOT consumed -- the legitimate EWS can
+/// still log in afterwards.
+#[tokio::test]
+async fn attack_publickey_with_forged_signature_is_rejected() {
+    let real_key = fresh_ed25519_key();
+    let session_uuid = Uuid::new_v4();
+    let target = spawn_echo_target().await;
+    let pending = PendingSessions::new();
+    let (sshd_addr, _registry) = spawn_test_sshd(pending.clone(), target, 16).await;
+    pending
+        .insert(make_pending(session_uuid, &real_key, target))
+        .await;
+
+    let mut handle = client::connect(client_config(), sshd_addr, TestClient)
+        .await
+        .expect("connect");
+    let mut forger = ForgingSigner {
+        attacker_key: fresh_ed25519_key(),
+    };
+    let auth = handle
+        .authenticate_publickey_with(
+            session_uuid.to_string(),
+            real_key.public_key().clone(),
+            None,
+            &mut forger,
+        )
+        .await;
+    assert!(
+        !matches!(auth, Ok(ref r) if r.success()),
+        "a claimed key with a forged signature must not authenticate"
+    );
+    // No channel for the attacker.
+    let res = handle
+        .channel_open_direct_tcpip(
+            target.ip().to_string(),
+            target.port() as u32,
+            "127.0.0.1",
+            0,
+        )
+        .await;
+    assert!(res.is_err(), "{}", SSH_OPEN_REJECTED);
+
+    // The pending entry survived the forged attempt.
+    connect_authenticated(sshd_addr, &session_uuid.to_string(), real_key)
+        .await
+        .expect("the legitimate EWS must still authenticate");
+}
+
 // ===================================================================
 // Channel-open refusals (post-auth)
 // ===================================================================
+
+/// The EWS must be told `administratively prohibited`, the reason
+/// russh 0.61 sent for a handler returning `Ok(false)`.
+fn assert_administratively_prohibited<T>(res: Result<T, russh::Error>, what: &str) {
+    match res {
+        Err(russh::Error::ChannelOpenFailure(
+            russh::ChannelOpenFailure::AdministrativelyProhibited,
+        )) => {}
+        Err(other) => panic!("{what}: refused with an unexpected error: {other:?}"),
+        Ok(_) => panic!("{what}: {SSH_OPEN_REJECTED}"),
+    }
+}
+
+#[tokio::test]
+async fn attack_x11_channel_is_rejected() {
+    let key = fresh_ed25519_key();
+    let session_uuid = Uuid::new_v4();
+    let target = spawn_echo_target().await;
+    let pending = PendingSessions::new();
+    let (sshd_addr, registry) = spawn_test_sshd(pending.clone(), target, 16).await;
+    pending
+        .insert(make_pending(session_uuid, &key, target))
+        .await;
+
+    let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key)
+        .await
+        .expect("auth");
+    assert_administratively_prohibited(handle.channel_open_x11("127.0.0.1", 6000).await, "x11");
+    assert!(
+        registry.is_empty(),
+        "a refused channel must not register a tunnel"
+    );
+}
+
+/// Every refused channel type answers `administratively prohibited`,
+/// and a refusal leaves the login usable for the one permitted
+/// channel (the refusal is a channel-level failure, not a session
+/// teardown, and it does not leak a slot of the per-login cap).
+#[tokio::test]
+async fn attack_refused_channel_types_are_rejected_with_prohibited_reason() {
+    let key = fresh_ed25519_key();
+    let session_uuid = Uuid::new_v4();
+    let target = spawn_echo_target().await;
+    let pending = PendingSessions::new();
+    // Cap of 1: a leaked slot would make the final open fail.
+    let (sshd_addr, _registry) = spawn_test_sshd(pending.clone(), target, 1).await;
+    pending
+        .insert(make_pending(session_uuid, &key, target))
+        .await;
+
+    let handle = connect_authenticated(sshd_addr, &session_uuid.to_string(), key)
+        .await
+        .expect("auth");
+    assert_administratively_prohibited(handle.channel_open_session().await, "session");
+    assert_administratively_prohibited(handle.channel_open_x11("127.0.0.1", 6000).await, "x11");
+    assert_administratively_prohibited(
+        handle
+            .channel_open_direct_streamlocal("/tmp/iacs.sock")
+            .await,
+        "direct-streamlocal",
+    );
+    assert_administratively_prohibited(
+        handle
+            .channel_open_direct_tcpip("8.8.8.8", target.port() as u32, "127.0.0.1", 0)
+            .await,
+        "direct-tcpip to a foreign host",
+    );
+
+    let mut chan = handle
+        .channel_open_direct_tcpip(
+            target.ip().to_string(),
+            target.port() as u32,
+            "127.0.0.1",
+            0,
+        )
+        .await
+        .expect("the pinned target stays reachable after refusals")
+        .into_stream();
+    chan.write_all(b"ping").await.expect("write");
+    let mut buf = [0u8; 4];
+    timeout(Duration::from_secs(5), chan.read_exact(&mut buf))
+        .await
+        .expect("echo within 5 s")
+        .expect("read");
+    assert_eq!(&buf, b"ping");
+}
 
 #[tokio::test]
 async fn refuses_session_channel() {

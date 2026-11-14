@@ -45,7 +45,7 @@ zeroize = { version = "1.8", features = ["derive"] }
 validator = { version = "0.20", features = ["derive"] }
 
 # Cryptography (Post-Quantum hybrid: X25519+ML-KEM-768, Ed25519+ML-DSA-65).
-# ml-kem 0.3 matches russh 0.61 (kem 0.3). PQC generate/encapsulate use
+# ml-kem 0.3 matches russh 0.65 (ml-kem 0.3, kem 0.3). PQC generate/encapsulate use
 # the crates' `getrandom` feature (rand_core 0.10). Classical X25519 /
 # Ed25519 stay on workspace `rand 0.8` -- do not bump web to rand 0.9
 # just for these two crates.

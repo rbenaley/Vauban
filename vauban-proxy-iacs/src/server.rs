@@ -16,9 +16,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use russh::keys::{PrivateKey, PublicKey};
-use russh::server::{Auth, Config as ServerConfig, Handler, Msg, Server, Session};
-use russh::{Channel, ChannelId, MethodKind, MethodSet};
+use russh::keys::PrivateKey;
+use russh::server::{
+    Auth, ChannelOpenHandle, Config as ServerConfig, Handler, Msg, PublicKeyOffer, Server, Session,
+    VerifiedPublicKey,
+};
+use russh::{Channel, ChannelId, ChannelOpenFailure, MethodKind, MethodSet};
 use shared::messages::Message;
 use tokio::sync::{Mutex, mpsc::UnboundedSender};
 use tracing::{debug, error, info, warn};
@@ -250,17 +253,22 @@ impl Handler for IacsTunnelHandler {
     async fn auth_publickey_offered(
         &mut self,
         _user: &str,
-        _public_key: &PublicKey,
+        _offer: PublicKeyOffer<'_>,
     ) -> Result<Auth, Self::Error> {
+        // Probe only: key ownership is NOT proven here. The decision
+        // is taken in `auth_publickey`, which russh calls only after
+        // it verified the signature.
         Ok(Auth::Accept)
     }
 
     async fn auth_publickey(
         &mut self,
         user: &str,
-        public_key: &PublicKey,
+        key: VerifiedPublicKey<'_>,
     ) -> Result<Auth, Self::Error> {
-        let outcome = verify_publickey(&self.pending, user, public_key, Instant::now()).await;
+        // `VerifiedPublicKey` is only built by russh, after the
+        // signature over the session id was verified with this key.
+        let outcome = verify_publickey(&self.pending, user, key.public_key, Instant::now()).await;
         match outcome {
             AuthOutcome::Accept(pending) => {
                 info!(
@@ -393,10 +401,14 @@ impl Handler for IacsTunnelHandler {
     async fn channel_open_session(
         &mut self,
         _channel: Channel<Msg>,
+        reply: ChannelOpenHandle,
         _session: &mut Session,
-    ) -> Result<bool, Self::Error> {
+    ) -> Result<(), Self::Error> {
         warn!(peer = ?self.peer_addr, "iacs_tunnel: refused channel_open_session");
-        Ok(false)
+        reply
+            .reject(ChannelOpenFailure::AdministrativelyProhibited)
+            .await;
+        Ok(())
     }
 
     async fn channel_open_x11(
@@ -404,10 +416,14 @@ impl Handler for IacsTunnelHandler {
         _channel: Channel<Msg>,
         _originator_address: &str,
         _originator_port: u32,
+        reply: ChannelOpenHandle,
         _session: &mut Session,
-    ) -> Result<bool, Self::Error> {
+    ) -> Result<(), Self::Error> {
         warn!(peer = ?self.peer_addr, "iacs_tunnel: refused channel_open_x11");
-        Ok(false)
+        reply
+            .reject(ChannelOpenFailure::AdministrativelyProhibited)
+            .await;
+        Ok(())
     }
 
     async fn channel_open_forwarded_tcpip(
@@ -417,23 +433,31 @@ impl Handler for IacsTunnelHandler {
         _port_to_connect: u32,
         _originator_address: &str,
         _originator_port: u32,
+        reply: ChannelOpenHandle,
         _session: &mut Session,
-    ) -> Result<bool, Self::Error> {
+    ) -> Result<(), Self::Error> {
         warn!(peer = ?self.peer_addr, "iacs_tunnel: refused channel_open_forwarded_tcpip");
-        Ok(false)
+        reply
+            .reject(ChannelOpenFailure::AdministrativelyProhibited)
+            .await;
+        Ok(())
     }
 
     async fn channel_open_direct_streamlocal(
         &mut self,
         _channel: Channel<Msg>,
         _socket_path: &str,
+        reply: ChannelOpenHandle,
         _session: &mut Session,
-    ) -> Result<bool, Self::Error> {
+    ) -> Result<(), Self::Error> {
         warn!(
             peer = ?self.peer_addr,
             "iacs_tunnel: refused channel_open_direct_streamlocal"
         );
-        Ok(false)
+        reply
+            .reject(ChannelOpenFailure::AdministrativelyProhibited)
+            .await;
+        Ok(())
     }
 
     async fn channel_open_direct_tcpip(
@@ -443,8 +467,9 @@ impl Handler for IacsTunnelHandler {
         port_to_connect: u32,
         originator_address: &str,
         originator_port: u32,
+        reply: ChannelOpenHandle,
         _session: &mut Session,
-    ) -> Result<bool, Self::Error> {
+    ) -> Result<(), Self::Error> {
         // Acquire a slot from the per-login channel pool. Multiple
         // concurrent `direct-tcpip` channels per authenticated SSH
         // login are accepted by design: every TCP `accept()` on the
@@ -473,7 +498,10 @@ impl Handler for IacsTunnelHandler {
                     in_flight = prev,
                     "iacs_tunnel: refused direct-tcpip (per-login channel cap reached)"
                 );
-                return Ok(false);
+                reply
+                    .reject(ChannelOpenFailure::AdministrativelyProhibited)
+                    .await;
+                return Ok(());
             }
         } else {
             self.live_channels.fetch_add(1, Ordering::SeqCst);
@@ -490,7 +518,10 @@ impl Handler for IacsTunnelHandler {
                     peer = ?self.peer_addr,
                     "iacs_tunnel: direct-tcpip without auth state"
                 );
-                return Ok(false);
+                reply
+                    .reject(ChannelOpenFailure::AdministrativelyProhibited)
+                    .await;
+                return Ok(());
             }
         };
         // Per-session target validation: the EWS MUST request a
@@ -509,7 +540,10 @@ impl Handler for IacsTunnelHandler {
                 expected = format!("{}:{}", pending.asset_host, pending.asset_port),
                 "iacs_tunnel: refused direct-tcpip to wrong target"
             );
-            return Ok(false);
+            reply
+                .reject(ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
+            return Ok(());
         }
         // Open the upstream connection through the supervisor
         // broker. On failure we close the channel so the EWS sees
@@ -524,7 +558,10 @@ impl Handler for IacsTunnelHandler {
                     error = %e,
                     "iacs_tunnel: upstream connect failed"
                 );
-                return Ok(false);
+                reply
+                    .reject(ChannelOpenFailure::AdministrativelyProhibited)
+                    .await;
+                return Ok(());
             }
         };
         info!(
@@ -648,6 +685,12 @@ impl Handler for IacsTunnelHandler {
             );
             hub.channel_recorder(pending.session_uuid.to_string(), channel_id)
         });
+        // Confirm the channel BEFORE the relay can write to it: russh
+        // registers the channel when it processes this reply, and
+        // drops data queued for a channel it does not know yet. Every
+        // refusal above went through `reply.reject`; a `reply`
+        // dropped unanswered is also refused by russh.
+        reply.accept().await;
         spawn_relay(RelayJob {
             channel,
             upstream: upstream_stream,
@@ -661,7 +704,7 @@ impl Handler for IacsTunnelHandler {
             recording_hub: self.recording.clone(),
             channel_id,
         });
-        Ok(true)
+        Ok(())
     }
 
     async fn pty_request(

@@ -59,7 +59,7 @@ pub fn load_or_generate_host_key(path: &Path) -> io::Result<PrivateKey> {
     {
         std::fs::create_dir_all(parent)?;
     }
-    // ssh-key 0.7 (russh 0.61) requires a `rand_core` 0.10 `CryptoRng`.
+    // ssh-key 0.7 (russh >= 0.61) requires a `rand_core` 0.10 `CryptoRng`.
     // rand_core 0.10 dropped `OsRng`; getrandom's `SysRng` is the OS
     // entropy source but only implements the fallible `TryCryptoRng`, so
     // we wrap it in `UnwrapErr` to obtain the infallible `CryptoRng` the
