@@ -505,8 +505,26 @@ pub struct KerberosConfig {
     #[serde(default = "default_kdc_port")]
     pub kdc_port: u16,
     /// Per-exchange timeout budget in seconds (broker TCP connect + I/O).
+    /// With several KDC hosts for a realm it bounds the WHOLE failover.
     #[serde(default = "default_kerberos_timeout_secs")]
     pub timeout_secs: u64,
+    /// Additional realms, each with its ordered list of KDC hosts
+    /// (`[[auth.kerberos.realms]]`). The single-realm keys above stay
+    /// valid and are read as one more realm with one KDC.
+    #[serde(default)]
+    pub realms: Vec<KerberosRealmConfig>,
+}
+
+/// One Kerberos realm and its KDC hosts, tried in order.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct KerberosRealmConfig {
+    /// Realm, DNS form (`CORP.EXAMPLE.COM`). Case-insensitive.
+    pub realm: String,
+    /// KDC host names or IP addresses, in failover order.
+    pub kdc_hosts: Vec<String>,
+    /// KDC TCP port shared by the hosts of this realm.
+    #[serde(default = "default_kdc_port")]
+    pub kdc_port: u16,
 }
 
 fn default_kdc_port() -> u16 {
@@ -525,11 +543,63 @@ impl Default for KerberosConfig {
             kdc_host: String::new(),
             kdc_port: default_kdc_port(),
             timeout_secs: default_kerberos_timeout_secs(),
+            realms: Vec::new(),
         }
     }
 }
 
+/// KDC endpoints of one realm, in failover order.
+pub type KdcEndpoints = Vec<(String, u16)>;
+
 impl KerberosConfig {
+    /// Every configured realm with its KDC endpoints, in declaration
+    /// order: the single-realm keys first, then `[[auth.kerberos.realms]]`.
+    /// An entry whose realm is not a DNS-form realm, or that has no host,
+    /// is left out (and refused by [`Self::validate`]).
+    pub fn realm_table(&self) -> Vec<(shared::kerberos::Realm, KdcEndpoints)> {
+        let mut table: Vec<(shared::kerberos::Realm, KdcEndpoints)> = Vec::new();
+        if let Some(endpoint) = self.endpoint()
+            && let Ok(realm) = shared::kerberos::normalize_realm(&self.realm)
+        {
+            table.push((realm, vec![endpoint]));
+        }
+        for entry in &self.realms {
+            let Ok(realm) = shared::kerberos::normalize_realm(&entry.realm) else {
+                continue;
+            };
+            let endpoints: KdcEndpoints = entry
+                .kdc_hosts
+                .iter()
+                .map(|h| h.trim())
+                .filter(|h| !h.is_empty())
+                .map(|h| (h.to_string(), entry.kdc_port))
+                .collect();
+            if endpoints.is_empty() || table.iter().any(|(r, _)| *r == realm) {
+                continue;
+            }
+            table.push((realm, endpoints));
+        }
+        table
+    }
+
+    /// KDC endpoints configured for `realm`, or `None` (fail-closed) when
+    /// the realm is not in the table. The realm is a lookup key: nothing
+    /// in a request can name a host.
+    pub fn endpoints_for(&self, realm: &shared::kerberos::Realm) -> Option<KdcEndpoints> {
+        self.realm_table()
+            .into_iter()
+            .find(|(r, _)| r == realm)
+            .map(|(_, endpoints)| endpoints)
+    }
+
+    /// Endpoints for a lease that names no realm (legacy
+    /// `KerberosKdcRequest`): only when exactly ONE realm is configured.
+    /// With several realms the choice would be a guess, so it is refused.
+    pub fn sole_realm_endpoints(&self) -> Option<(shared::kerberos::Realm, KdcEndpoints)> {
+        let mut table = self.realm_table();
+        if table.len() == 1 { table.pop() } else { None }
+    }
+
     /// Configured KDC endpoint as a `(host, port)` couple. Returns `None`
     /// (fail-closed) when the host is empty.
     pub fn endpoint(&self) -> Option<(String, u16)> {
@@ -545,23 +615,58 @@ impl KerberosConfig {
     /// always connects to its own configured KDC), so this is a pure
     /// enabled + configured check rather than a per-request host match.
     pub fn allows(&self) -> bool {
-        self.enabled && self.endpoint().is_some()
+        self.enabled && !self.realm_table().is_empty()
     }
 
     /// Reject malformed configurations at load time. A disabled block is
-    /// always valid. When enabled, `realm` and `kdc_host` MUST be set.
+    /// always valid. When enabled, at least one realm MUST be configured,
+    /// either through the single-realm keys (`realm` + `kdc_host`) or
+    /// through `[[auth.kerberos.realms]]`; every realm must be a DNS-form
+    /// realm, have at least one KDC host and a non-zero port, and appear
+    /// once.
     pub fn validate(&self) -> Result<()> {
         if !self.enabled {
             return Ok(());
         }
-        if self.realm.is_empty() {
-            anyhow::bail!("[auth.kerberos] realm must be set when kerberos is enabled");
+        let single_realm_used = !self.realm.is_empty() || !self.kdc_host.is_empty();
+        if single_realm_used || self.realms.is_empty() {
+            if self.realm.is_empty() {
+                anyhow::bail!("[auth.kerberos] realm must be set when kerberos is enabled");
+            }
+            if self.kdc_host.is_empty() {
+                anyhow::bail!("[auth.kerberos] kdc_host must be set when kerberos is enabled");
+            }
+            if self.kdc_port == 0 {
+                anyhow::bail!("[auth.kerberos] kdc_port must be non-zero when kerberos is enabled");
+            }
         }
-        if self.kdc_host.is_empty() {
-            anyhow::bail!("[auth.kerberos] kdc_host must be set when kerberos is enabled");
+
+        let mut seen: Vec<shared::kerberos::Realm> = Vec::new();
+        if single_realm_used {
+            let realm = shared::kerberos::normalize_realm(&self.realm).map_err(|e| {
+                anyhow::anyhow!("[auth.kerberos] realm is not a valid Kerberos realm: {e}")
+            })?;
+            seen.push(realm);
         }
-        if self.kdc_port == 0 {
-            anyhow::bail!("[auth.kerberos] kdc_port must be non-zero when kerberos is enabled");
+        for (index, entry) in self.realms.iter().enumerate() {
+            let realm = shared::kerberos::normalize_realm(&entry.realm).map_err(|e| {
+                anyhow::anyhow!("[[auth.kerberos.realms]] #{index}: realm is not valid: {e}")
+            })?;
+            if seen.contains(&realm) {
+                anyhow::bail!("[[auth.kerberos.realms]] #{index}: realm {realm} is declared twice");
+            }
+            if !entry.kdc_hosts.iter().any(|h| !h.trim().is_empty()) {
+                anyhow::bail!("[[auth.kerberos.realms]] #{index}: kdc_hosts must not be empty");
+            }
+            if entry.kdc_hosts.iter().any(|h| h.trim().is_empty()) {
+                anyhow::bail!(
+                    "[[auth.kerberos.realms]] #{index}: kdc_hosts contains a blank entry"
+                );
+            }
+            if entry.kdc_port == 0 {
+                anyhow::bail!("[[auth.kerberos.realms]] #{index}: kdc_port must be non-zero");
+            }
+            seen.push(realm);
         }
         Ok(())
     }
@@ -576,6 +681,12 @@ pub struct RdpProxyConfig {
     /// H.264 encoder bitrate in bits per second (default: 5 Mbps).
     #[serde(default = "default_video_bitrate_bps")]
     pub video_bitrate_bps: u32,
+    /// NTLM policy for RDP sessions: `"allow"` (default) or `"deny"`.
+    /// Any other value fails deserialization, so the supervisor refuses
+    /// to start instead of running with NTLM allowed by accident.
+    /// vauban-web reads the same key from the same file.
+    #[serde(default)]
+    pub ntlm_policy: shared::messages::NtlmPolicy,
 }
 
 fn default_video_bitrate_bps() -> u32 {
@@ -586,6 +697,7 @@ impl Default for RdpProxyConfig {
     fn default() -> Self {
         Self {
             video_bitrate_bps: default_video_bitrate_bps(),
+            ntlm_policy: shared::messages::NtlmPolicy::default(),
         }
     }
 }
@@ -1402,6 +1514,22 @@ impl SupervisorConfig {
                     "VAUBAN_RDP_VIDEO_BITRATE_BPS".to_string(),
                     self.rdp.video_bitrate_bps.to_string(),
                 ));
+                // Kerberos ambient-configuration isolation: `sspi` (inside
+                // the RDP proxy) reads `KRB5_CONFIG`, else /etc/krb5.conf,
+                // and applies its `[domain_realm]` / `[realms]` sections.
+                // Pin it to an always-empty file so the realm and the KDC
+                // only ever come from the asset and from `[auth.kerberos]`.
+                vars.push((
+                    shared::kerberos::KRB5_CONFIG_ENV.to_string(),
+                    shared::kerberos::KRB5_CONFIG_ISOLATED.to_string(),
+                ));
+                // NTLM policy, enforced by the proxy at session open even
+                // if vauban-web is compromised. Always set, so the proxy
+                // never has to guess a default from an absent variable.
+                vars.push((
+                    shared::messages::NtlmPolicy::ENV.to_string(),
+                    self.rdp.ntlm_policy.as_str().to_string(),
+                ));
                 let rdp_recording = self.recording.rdp_recording_enabled();
                 vars.push((
                     "VAUBAN_RECORDING_ENABLED".to_string(),
@@ -2059,11 +2187,97 @@ mod tests {
     fn test_service_env_vars_proxy_rdp() {
         let config = test_config();
         let vars = config.service_env_vars("proxy_rdp");
-        assert_eq!(vars.len(), 2);
+        assert_eq!(vars.len(), 4);
         assert_eq!(vars[0].0, "VAUBAN_RDP_VIDEO_BITRATE_BPS");
         assert_eq!(vars[0].1, "5000000");
-        assert_eq!(vars[1].0, "VAUBAN_RECORDING_ENABLED");
-        assert_eq!(vars[1].1, "true");
+        assert_eq!(vars[1].0, "KRB5_CONFIG");
+        assert_eq!(vars[1].1, "/dev/null");
+        assert_eq!(vars[2].0, "VAUBAN_RDP_NTLM_POLICY");
+        assert_eq!(vars[2].1, "allow");
+        assert_eq!(vars[3].0, "VAUBAN_RECORDING_ENABLED");
+        assert_eq!(vars[3].1, "true");
+    }
+
+    /// The policy reaches the RDP proxy as its canonical string, which
+    /// the proxy's reader accepts; no other service receives it.
+    #[test]
+    fn test_ntlm_policy_is_handed_to_proxy_rdp_only() {
+        use shared::messages::NtlmPolicy;
+        for policy in NtlmPolicy::ALL {
+            let mut config = test_config();
+            config.rdp.ntlm_policy = policy;
+            let vars = config.service_env_vars("proxy_rdp");
+            let value = vars
+                .iter()
+                .find(|(name, _)| name == NtlmPolicy::ENV)
+                .map(|(_, value)| value.as_str());
+            assert_eq!(NtlmPolicy::from_env_value(value), Ok(policy));
+            assert!(value.is_some(), "the variable is always set");
+            for service in ["web", "access", "auth", "audit", "proxy_ssh", "vault"] {
+                assert!(
+                    config
+                        .service_env_vars(service)
+                        .iter()
+                        .all(|(name, _)| name != NtlmPolicy::ENV),
+                    "{service} must not receive the NTLM policy"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_ntlm_policy_defaults_to_allow() {
+        use shared::messages::NtlmPolicy;
+        assert_eq!(RdpProxyConfig::default().ntlm_policy, NtlmPolicy::Allow);
+        let parsed: RdpProxyConfig = toml::from_str("").expect("empty [rdp]");
+        assert_eq!(parsed.ntlm_policy, NtlmPolicy::Allow);
+        let parsed: RdpProxyConfig = toml::from_str("ntlm_policy = \"deny\"").expect("deny");
+        assert_eq!(parsed.ntlm_policy, NtlmPolicy::Deny);
+        // The shipped default file does not turn NTLM off.
+        assert_eq!(load_default_toml_only().rdp.ntlm_policy, NtlmPolicy::Allow);
+    }
+
+    /// A mistyped policy stops the supervisor at load: it is never read
+    /// as `allow`.
+    #[test]
+    fn attack_mistyped_ntlm_policy_in_supervisor_config_is_rejected() {
+        for bad in [
+            "ntlm_policy = \"Deny\"",
+            "ntlm_policy = \"denny\"",
+            "ntlm_policy = \"\"",
+            "ntlm_policy = \"deny \"",
+            "ntlm_policy = true",
+            "ntlm_policy = 1",
+        ] {
+            assert!(
+                toml::from_str::<RdpProxyConfig>(bad).is_err(),
+                "{bad} must be refused"
+            );
+        }
+    }
+
+    /// The environment handed to the RDP proxy, taken alone, satisfies
+    /// the isolation predicate the proxy checks before a Kerberos session.
+    #[test]
+    fn test_proxy_rdp_env_is_isolated_from_ambient_kerberos_config() {
+        let config = test_config();
+        let vars = config.service_env_vars("proxy_rdp");
+        assert!(shared::kerberos::ambient_config_is_isolated(vars));
+    }
+
+    /// Only the RDP proxy runs `sspi`: no other service gets the pin.
+    #[test]
+    fn test_krb5_config_pin_is_scoped_to_proxy_rdp() {
+        let config = test_config();
+        for service in ["web", "access", "auth", "audit", "proxy_ssh", "vault"] {
+            assert!(
+                config
+                    .service_env_vars(service)
+                    .iter()
+                    .all(|(name, _)| name != shared::kerberos::KRB5_CONFIG_ENV),
+                "{service} must not receive KRB5_CONFIG"
+            );
+        }
     }
 
     #[test]
@@ -2735,6 +2949,157 @@ dn_template = "{username}@example.com"
         k.kdc_port = 0;
         let err = k.validate().unwrap_err().to_string();
         assert!(err.contains("kdc_port"), "got: {err}");
+    }
+
+    fn krb_realms(realms: &[(&str, &[&str])]) -> KerberosConfig {
+        KerberosConfig {
+            enabled: true,
+            realms: realms
+                .iter()
+                .map(|(realm, hosts)| KerberosRealmConfig {
+                    realm: (*realm).to_string(),
+                    kdc_hosts: hosts.iter().map(|h| (*h).to_string()).collect(),
+                    kdc_port: 88,
+                })
+                .collect(),
+            ..KerberosConfig::default()
+        }
+    }
+
+    fn realm(s: &str) -> shared::kerberos::Realm {
+        shared::kerberos::normalize_realm(s).unwrap()
+    }
+
+    #[test]
+    fn kerberos_realm_table_lists_single_realm_then_realms() {
+        let mut k = krb_realms(&[(
+            "lab.example.net",
+            &["kdc1.lab.example.net", "kdc2.lab.example.net"],
+        )]);
+        k.realm = "EXAMPLE.COM".to_string();
+        k.kdc_host = "dc1.example.com".to_string();
+        let table = k.realm_table();
+        assert_eq!(table.len(), 2);
+        assert_eq!(table[0].0, realm("example.com"));
+        assert_eq!(table[0].1, vec![("dc1.example.com".to_string(), 88)]);
+        assert_eq!(table[1].0, realm("lab.example.net"));
+        assert_eq!(
+            table[1].1,
+            vec![
+                ("kdc1.lab.example.net".to_string(), 88),
+                ("kdc2.lab.example.net".to_string(), 88),
+            ]
+        );
+        assert!(k.validate().is_ok());
+        assert!(k.allows());
+    }
+
+    #[test]
+    fn kerberos_realms_only_config_is_valid_without_single_realm_keys() {
+        let k = krb_realms(&[("corp.example.com", &["dc1.corp.example.com"])]);
+        assert!(k.validate().is_ok());
+        assert!(k.allows());
+        assert!(k.endpoint().is_none(), "single-realm keys stay empty");
+        assert_eq!(
+            k.endpoints_for(&realm("CORP.EXAMPLE.COM")),
+            Some(vec![("dc1.corp.example.com".to_string(), 88)])
+        );
+        assert!(k.endpoints_for(&realm("other.example.com")).is_none());
+    }
+
+    #[test]
+    fn kerberos_sole_realm_endpoints_requires_exactly_one_realm() {
+        let one = krb_realms(&[("corp.example.com", &["dc1.corp.example.com"])]);
+        assert!(one.sole_realm_endpoints().is_some());
+        let two = krb_realms(&[
+            ("corp.example.com", &["dc1.corp.example.com"]),
+            ("lab.example.net", &["kdc.lab.example.net"]),
+        ]);
+        assert!(two.sole_realm_endpoints().is_none());
+        assert!(KerberosConfig::default().sole_realm_endpoints().is_none());
+    }
+
+    #[test]
+    fn kerberos_validate_rejects_a_netbios_realm() {
+        let err = krb(true, "CORP", "dc1.example.com")
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not a valid Kerberos realm"), "got: {err}");
+
+        let err = krb_realms(&[("CORP", &["dc1.example.com"])])
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("realms") && err.contains("#0"), "got: {err}");
+    }
+
+    #[test]
+    fn kerberos_validate_rejects_duplicate_realms() {
+        let err = krb_realms(&[
+            ("corp.example.com", &["dc1.corp.example.com"]),
+            ("CORP.EXAMPLE.COM", &["dc2.corp.example.com"]),
+        ])
+        .validate()
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("declared twice"), "got: {err}");
+
+        let mut k = krb_realms(&[("example.com", &["dc2.example.com"])]);
+        k.realm = "EXAMPLE.COM".to_string();
+        k.kdc_host = "dc1.example.com".to_string();
+        assert!(
+            k.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("declared twice")
+        );
+    }
+
+    #[test]
+    fn kerberos_validate_rejects_empty_or_blank_kdc_hosts() {
+        let err = krb_realms(&[("corp.example.com", &[])])
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("kdc_hosts must not be empty"), "got: {err}");
+        let err = krb_realms(&[("corp.example.com", &["dc1.corp.example.com", "  "])])
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("blank entry"), "got: {err}");
+    }
+
+    #[test]
+    fn kerberos_validate_rejects_zero_port_in_a_realm_entry() {
+        let mut k = krb_realms(&[("corp.example.com", &["dc1.corp.example.com"])]);
+        k.realms[0].kdc_port = 0;
+        assert!(k.validate().unwrap_err().to_string().contains("kdc_port"));
+    }
+
+    #[test]
+    fn kerberos_realms_table_parses_from_toml() {
+        let k: KerberosConfig = toml::from_str(
+            r#"
+enabled = true
+timeout_secs = 4
+
+[[realms]]
+realm = "CORP.EXAMPLE.COM"
+kdc_hosts = ["dc1.corp.example.com", "dc2.corp.example.com"]
+
+[[realms]]
+realm = "lab.example.net"
+kdc_hosts = ["kdc.lab.example.net"]
+kdc_port = 8088
+"#,
+        )
+        .unwrap();
+        assert!(k.validate().is_ok());
+        let table = k.realm_table();
+        assert_eq!(table.len(), 2);
+        assert_eq!(table[0].1.len(), 2);
+        assert_eq!(table[1].1, vec![("kdc.lab.example.net".to_string(), 8088)]);
     }
 
     #[test]

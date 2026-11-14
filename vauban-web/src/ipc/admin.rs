@@ -298,6 +298,50 @@ async fn handle_update_user_mfa_secret(
     }
 }
 
+/// Whether replacing `stored` by `new` on an asset is acceptable as far
+/// as the RDP auth settings go.
+///
+/// A replacement that leaves the mode and the domain as they are is
+/// always accepted: this command re-encrypts credentials on rows that may
+/// predate the rules. One that CHANGES them must satisfy the same service
+/// as the form and the API (`services::rdp_auth_mode`): a closed-set
+/// mode, and for a Kerberos mode an FQDN target and a DNS-form domain.
+pub(crate) fn check_rdp_auth_settings_change(
+    asset_type: crate::models::asset::AssetType,
+    hostname: &str,
+    stored: &serde_json::Value,
+    new: &serde_json::Value,
+) -> Result<(), crate::services::rdp_auth_mode::RdpAuthSettingsError> {
+    use crate::services::rdp_auth_mode as rdp;
+
+    if asset_type != crate::models::asset::AssetType::Rdp {
+        return Ok(());
+    }
+    let raw = |config: &serde_json::Value, key: &str| -> Option<String> {
+        config
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    let unchanged = raw(stored, rdp::MODE_KEY) == raw(new, rdp::MODE_KEY)
+        && raw(stored, rdp::DOMAIN_KEY) == raw(new, rdp::DOMAIN_KEY);
+    if unchanged {
+        return Ok(());
+    }
+    // The new config stands alone (`stored: None`): what it says is what
+    // the asset will be. An absent mode is the default; an unknown one is
+    // refused.
+    let new_mode = raw(new, rdp::MODE_KEY);
+    let new_domain = raw(new, rdp::DOMAIN_KEY);
+    rdp::resolve(
+        new_mode.as_deref(),
+        Some(new_domain.as_deref().unwrap_or_default()),
+        None,
+        hostname,
+    )
+    .map(|_| ())
+}
+
 async fn handle_update_asset_connection_config(
     pool: &DbPool,
     asset_id: i32,
@@ -312,6 +356,30 @@ async fn handle_update_asset_connection_config(
         Ok(v) => v,
         Err(e) => return AdminResponse::Error(format!("Invalid JSON config: {e}")),
     };
+
+    // This command replaces the whole `connection_config`, so it is a
+    // write path for the RDP auth settings too. It must not be a way
+    // around the rules of the form and the API.
+    let existing: Option<(crate::models::asset::AssetType, String, serde_json::Value)> =
+        match assets::table
+            .filter(assets::id.eq(asset_id))
+            .select((
+                assets::asset_type,
+                assets::hostname,
+                assets::connection_config,
+            ))
+            .first(&mut conn)
+            .await
+            .optional()
+        {
+            Ok(row) => row,
+            Err(e) => return AdminResponse::Error(format!("Failed to read asset: {e}")),
+        };
+    if let Some((asset_type, hostname, stored)) = &existing
+        && let Err(e) = check_rdp_auth_settings_change(*asset_type, hostname, stored, &config_value)
+    {
+        return AdminResponse::Error(format!("Refused connection config: {e}"));
+    }
 
     match diesel::update(assets::table.filter(assets::id.eq(asset_id)))
         .set((
@@ -615,6 +683,80 @@ mod tests {
         assert!(
             source.contains("on_conflict"),
             "Seed handlers must use ON CONFLICT for idempotency"
+        );
+    }
+
+    // ---- RDP auth settings through the connection-config command ---------
+
+    /// The admin command replaces the whole config: it must not store an
+    /// unknown mode, or a Kerberos mode without an FQDN target and a
+    /// DNS-form domain.
+    #[test]
+    fn attack_rdp_auth_settings_bypass_through_admin_config_update_is_rejected() {
+        use crate::models::asset::AssetType;
+        use crate::services::rdp_auth_mode::RdpAuthSettingsError;
+        use serde_json::json;
+
+        let fqdn = "srv01.corp.example.com";
+        let stored = json!({"username": "jdoe", "rdp_auth_mode": "ntlm", "domain": "CORP"});
+        let check = |host: &str, new: serde_json::Value| {
+            check_rdp_auth_settings_change(AssetType::Rdp, host, &stored, &new)
+        };
+
+        assert_eq!(
+            check(
+                fqdn,
+                json!({"rdp_auth_mode": "kerbeross", "domain": "corp.example.com"})
+            ),
+            Err(RdpAuthSettingsError::UnknownMode)
+        );
+        assert!(matches!(
+            check(fqdn, json!({"rdp_auth_mode": "kerberos", "domain": "CORP"})),
+            Err(RdpAuthSettingsError::Domain(_))
+        ));
+        assert!(matches!(
+            check(fqdn, json!({"rdp_auth_mode": "kerberos_restricted_admin"})),
+            Err(RdpAuthSettingsError::Domain(_))
+        ));
+        assert!(matches!(
+            check(
+                "192.0.2.10",
+                json!({"rdp_auth_mode": "kerberos", "domain": "corp.example.com"})
+            ),
+            Err(RdpAuthSettingsError::Hostname(_))
+        ));
+        // A valid change is accepted.
+        assert_eq!(
+            check(
+                fqdn,
+                json!({"rdp_auth_mode": "kerberos", "domain": "corp.example.com"})
+            ),
+            Ok(())
+        );
+    }
+
+    /// Re-encrypting credentials leaves the mode and the domain as they
+    /// are: accepted even on a row that predates the rules. Other asset
+    /// types are not concerned.
+    #[test]
+    fn test_admin_config_update_that_keeps_the_rdp_auth_settings_is_accepted() {
+        use crate::models::asset::AssetType;
+        use serde_json::json;
+
+        let legacy = json!({"password": "old", "rdp_auth_mode": "kerberos_restricted_admin", "domain": "CORP"});
+        let reencrypted = json!({"password": "v1:abc", "rdp_auth_mode": "kerberos_restricted_admin", "domain": "CORP"});
+        assert_eq!(
+            check_rdp_auth_settings_change(AssetType::Rdp, "192.0.2.10", &legacy, &reencrypted),
+            Ok(())
+        );
+        assert_eq!(
+            check_rdp_auth_settings_change(
+                AssetType::Ssh,
+                "192.0.2.10",
+                &json!({}),
+                &json!({"rdp_auth_mode": "bogus"})
+            ),
+            Ok(())
         );
     }
 }

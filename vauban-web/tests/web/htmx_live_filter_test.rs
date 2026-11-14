@@ -295,6 +295,8 @@ fn one_manage_asset() -> ManageAssetItem {
         iacs_protocol_label: String::new(),
         status: "online".to_string(),
         group_name: Some("DB".to_string()),
+        rdp_auth_label: String::new(),
+        rdp_uses_kerberos: false,
     }
 }
 

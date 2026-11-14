@@ -124,6 +124,27 @@ pub async fn create_asset(
         ));
     }
 
+    // RDP NLA settings: same service as the web form. An unknown mode is
+    // a 400, as is a Kerberos mode without an FQDN target or a DNS-form
+    // domain, or either field on an asset that is not RDP.
+    let mut new_connection_config = serde_json::json!({});
+    if request.asset_type == AssetType::Rdp {
+        let settings = crate::services::rdp_auth_mode::resolve(
+            request.rdp_auth_mode.as_deref(),
+            request.rdp_domain.as_deref(),
+            None,
+            request.hostname.trim(),
+        )
+        .map_err(|e| AppError::Validation(e.to_string()))?;
+        crate::services::rdp_auth_mode::apply(&mut new_connection_config, &settings);
+    } else {
+        crate::services::rdp_auth_mode::refuse_on_non_rdp(
+            request.rdp_auth_mode.as_deref(),
+            request.rdp_domain.as_deref(),
+        )
+        .map_err(|e| AppError::Validation(e.to_string()))?;
+    }
+
     let mut conn = state
         .db_pool
         .get()
@@ -185,7 +206,7 @@ pub async fn create_asset(
         asset_type: request.asset_type,
         status: "unknown".to_string(),
         description: sanitized_description,
-        connection_config: serde_json::json!({}),
+        connection_config: new_connection_config,
         created_by_id: actor_id,
         updated_by_id: actor_id,
         connection_username: "root".to_string(),
@@ -308,8 +329,9 @@ pub async fn update_asset(
     };
 
     use crate::schema::assets::dsl::{
-        assets, description as description_col, hostname as hostname_col, name as name_col,
-        port as port_col, status as status_col, updated_at, updated_by_id as updated_by_col, uuid,
+        assets, connection_config as config_col, description as description_col,
+        hostname as hostname_col, name as name_col, port as port_col, status as status_col,
+        updated_at, updated_by_id as updated_by_col, uuid,
     };
     use chrono::Utc;
 
@@ -334,6 +356,34 @@ pub async fn update_asset(
         .clone()
         .unwrap_or_else(|| existing.hostname.clone());
     let new_port = request.port.unwrap_or(existing.port);
+
+    // RDP NLA settings, validated on the EFFECTIVE (mode, hostname,
+    // domain) after this update: the stored mode still binds when the
+    // request only changes the hostname. Same service as the web form.
+    let mut new_connection_config = existing.connection_config.clone();
+    if existing.asset_type == AssetType::Rdp {
+        match crate::services::rdp_auth_mode::resolve(
+            request.rdp_auth_mode.as_deref(),
+            request.rdp_domain.as_deref(),
+            Some(&existing.connection_config),
+            new_hostname.trim(),
+        ) {
+            Ok(settings) => {
+                crate::services::rdp_auth_mode::apply(&mut new_connection_config, &settings);
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                handle_error!(StatusCode::BAD_REQUEST, &msg);
+            }
+        }
+    } else if let Err(e) = crate::services::rdp_auth_mode::refuse_on_non_rdp(
+        request.rdp_auth_mode.as_deref(),
+        request.rdp_domain.as_deref(),
+    ) {
+        let msg = e.to_string();
+        handle_error!(StatusCode::BAD_REQUEST, &msg);
+    }
+
     let mcp_upstream_moved = crate::services::mcp_session::mcp_upstream_moved(
         &existing,
         existing.asset_type,
@@ -368,6 +418,7 @@ pub async fn update_asset(
             port_col.eq(new_port),
             status_col.eq(request.status.unwrap_or(existing.status)),
             description_col.eq(sanitized_description),
+            config_col.eq(new_connection_config),
             updated_at.eq(Utc::now()),
             updated_by_col.eq(actor_id),
         ))

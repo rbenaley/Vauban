@@ -759,6 +759,15 @@ pub struct CreateAssetRequest {
     #[serde(default)]
     pub group_ids: Vec<i32>,
     pub description: Option<String>,
+    /// RDP NLA authentication mode: `ntlm` (default), `kerberos` or
+    /// `kerberos_restricted_admin`. RDP assets only; an unknown value is
+    /// refused. Validated by `services::rdp_auth_mode`.
+    #[serde(default)]
+    pub rdp_auth_mode: Option<String>,
+    /// Windows domain of an RDP asset. A Kerberos mode requires its DNS
+    /// name (`corp.example.com`): it is the Kerberos realm.
+    #[serde(default)]
+    pub rdp_domain: Option<String>,
 }
 
 /// Asset update request.
@@ -776,6 +785,14 @@ pub struct UpdateAssetRequest {
     pub port: Option<i32>,
     pub status: Option<String>,
     pub description: Option<String>,
+    /// RDP NLA authentication mode. Absent keeps the stored mode; an
+    /// unknown value is refused. RDP assets only.
+    #[serde(default)]
+    pub rdp_auth_mode: Option<String>,
+    /// Windows domain of an RDP asset. Absent keeps the stored domain;
+    /// an empty string clears it.
+    #[serde(default)]
+    pub rdp_domain: Option<String>,
 }
 
 #[cfg(test)]
@@ -1345,6 +1362,8 @@ mod tests {
             group_id: None,
             group_ids: vec![],
             description: None,
+            rdp_auth_mode: None,
+            rdp_domain: None,
         };
 
         assert!(request.validate().is_ok());
@@ -1362,6 +1381,8 @@ mod tests {
             group_id: None,
             group_ids: vec![],
             description: None,
+            rdp_auth_mode: None,
+            rdp_domain: None,
         };
 
         assert!(request.validate().is_err());
@@ -1379,6 +1400,8 @@ mod tests {
             group_id: None,
             group_ids: vec![],
             description: None,
+            rdp_auth_mode: None,
+            rdp_domain: None,
         };
 
         assert!(request.validate().is_err());
@@ -1396,6 +1419,8 @@ mod tests {
             group_id: None,
             group_ids: vec![],
             description: None,
+            rdp_auth_mode: None,
+            rdp_domain: None,
         };
 
         assert!(request.validate().is_err());
@@ -1648,6 +1673,8 @@ mod tests {
             group_id: None,
             group_ids: vec![],
             description: None,
+            rdp_auth_mode: None,
+            rdp_domain: None,
         };
 
         let debug_str = format!("{:?}", request);
@@ -1664,6 +1691,8 @@ mod tests {
             group_id: Some(1),
             group_ids: vec![],
             description: Some("Cloned".to_string()),
+            rdp_auth_mode: None,
+            rdp_domain: None,
         };
 
         let cloned = request.clone();
@@ -1682,6 +1711,8 @@ mod tests {
             group_id: None,
             group_ids: vec![],
             description: None,
+            rdp_auth_mode: None,
+            rdp_domain: None,
         };
 
         assert!(request.validate().is_err());
@@ -1699,6 +1730,8 @@ mod tests {
             group_id: None,
             group_ids: vec![],
             description: None,
+            rdp_auth_mode: None,
+            rdp_domain: None,
         };
 
         assert!(request.validate().is_err());
@@ -1714,6 +1747,8 @@ mod tests {
             port: None,
             status: None,
             description: None,
+            rdp_auth_mode: None,
+            rdp_domain: None,
         };
 
         let debug_str = format!("{:?}", request);
@@ -1728,6 +1763,8 @@ mod tests {
             port: Some(2222),
             status: Some("maintenance".to_string()),
             description: Some("Updated description".to_string()),
+            rdp_auth_mode: None,
+            rdp_domain: None,
         };
 
         let cloned = request.clone();

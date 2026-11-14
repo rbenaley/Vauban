@@ -277,6 +277,23 @@ impl TestApp {
             .await
     }
 
+    /// Variant with `[rdp] ntlm_policy = "deny"`: RDP sessions in a mode
+    /// that is not a Kerberos mode are refused, and the asset forms
+    /// disable the NTLM option. Its own singleton, so the default app
+    /// keeps the default policy.
+    pub async fn spawn_ntlm_denied() -> &'static TestApp {
+        static NTLM_DENIED_APP: OnceCell<TestApp> = OnceCell::const_new();
+        NTLM_DENIED_APP
+            .get_or_init(|| async {
+                let auth_client = Self::shared_ldap_auth_client().await;
+                Self::create_inner_with(Some(auth_client), |config| {
+                    config.rdp.ntlm_policy = shared::messages::NtlmPolicy::Deny;
+                })
+                .await
+            })
+            .await
+    }
+
     /// Variant with the ACL enabled but NO trusted proxy: an
     /// `X-Forwarded-For` header must be ignored, so every request is
     /// attributed to the loopback TCP peer, which the matcher always

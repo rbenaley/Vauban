@@ -159,10 +159,175 @@ impl From<Vec<u8>> for SensitiveBytes {
     }
 }
 
+/// Bastion-wide policy on NTLM for RDP sessions (`[rdp] ntlm_policy`).
+///
+/// `Deny` refuses every RDP session whose mode is not a Kerberos mode,
+/// including for assets that already exist. It is enforced twice: by
+/// vauban-web before a session is created, and by the RDP proxy at
+/// session open, so a compromised web tier cannot reopen NTLM.
+///
+/// The default is `Allow`: an installation that does not set the key
+/// behaves as before. A value outside the set is a configuration error
+/// (the service refuses to start), never a silent `Allow`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NtlmPolicy {
+    #[default]
+    Allow,
+    Deny,
+}
+
+impl NtlmPolicy {
+    /// Environment variable through which the supervisor hands the policy
+    /// to `vauban-proxy-rdp`.
+    pub const ENV: &'static str = "VAUBAN_RDP_NTLM_POLICY";
+
+    /// Every policy.
+    pub const ALL: [NtlmPolicy; 2] = [NtlmPolicy::Allow, NtlmPolicy::Deny];
+
+    /// Canonical string, as written in the configuration.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            NtlmPolicy::Allow => "allow",
+            NtlmPolicy::Deny => "deny",
+        }
+    }
+
+    /// Exact parse of the canonical string. No trimming, no case folding.
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.as_str() == s)
+    }
+
+    /// Whether a session in `mode` may be opened under this policy.
+    ///
+    /// Written on `uses_kerberos()`, not on `mode == Ntlm`: under `Deny`
+    /// a future mode is refused unless it is a Kerberos mode.
+    pub const fn permits(&self, mode: RdpAuthMode) -> bool {
+        match self {
+            NtlmPolicy::Allow => true,
+            NtlmPolicy::Deny => mode.uses_kerberos(),
+        }
+    }
+
+    /// Read the policy from a process environment value. The supervisor
+    /// always sets the variable, so an ABSENT value is an error, exactly
+    /// like a value that is not canonical: neither is read as `Allow`.
+    /// (The `Allow` default applies to an absent configuration KEY, in
+    /// the supervisor and in vauban-web.)
+    pub fn from_env_value(value: Option<&str>) -> Result<Self, String> {
+        match value {
+            None => Err(format!("{} is not set", Self::ENV)),
+            Some(raw) => Self::parse(raw)
+                .ok_or_else(|| format!("{} must be \"allow\" or \"deny\"", Self::ENV)),
+        }
+    }
+}
+
+/// Why the NLA leg of an RDP session failed, as a closed set.
+///
+/// The proxy classifies a failure into one of these and sends it in
+/// [`Message::RdpSessionOpenFailed`]. Nothing else about the failure
+/// crosses the IPC boundary: no password, no ticket, no byte of the
+/// exchange, and no text written by the KDC or the target. The free-text
+/// detail stays in the `vauban-proxy-rdp` log, keyed by session id.
+///
+/// Wire: bincode encodes the variant by index, so reasons are APPENDED.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RdpAuthFailure {
+    /// No KDC of the realm answered (connect, timeout, I/O).
+    KdcUnreachable,
+    /// The KDC or the target refused the request for clock skew.
+    ClockSkew,
+    /// The KDC refused the pre-authentication: wrong password.
+    PreAuthFailed,
+    /// The KDC does not know the account.
+    ClientPrincipalUnknown,
+    /// The KDC does not know `TERMSRV/<fqdn>`.
+    ServicePrincipalUnknown,
+    /// The target refused a Restricted Admin logon.
+    RestrictedAdminRefused,
+    /// The target did not complete a Kerberos-only negotiation.
+    KerberosPackageRefused,
+    /// The realm is not in the supervisor `[auth.kerberos]` table.
+    RealmNotConfigured,
+    /// The NTLM policy forbids an NTLM session.
+    NtlmForbidden,
+    /// Anything the proxy could not classify.
+    Other,
+    /// The account is exempt from Kerberos pre-authentication.
+    PreAuthNotRequired,
+    /// The asset domain is missing or is not the DNS name of a realm.
+    RealmInvalid,
+    /// The account is disabled, locked out or outside its logon hours.
+    AccountDisabledOrLocked,
+    /// The password of the account has expired.
+    PasswordExpired,
+    /// The KDC offers no encryption type the proxy supports (AES).
+    EncryptionTypeUnsupported,
+    /// Kerberos brokering is disabled in the supervisor, or the proxy has
+    /// no broker channel.
+    KerberosBrokerUnavailable,
+    /// The target refused the credentials (NLA logon failure).
+    CredentialsRejected,
+    /// The security negotiation did not end in NLA: the target refused
+    /// it, selected TLS-only security, or (Restricted Admin) did not
+    /// announce support for the mode. No credential was sent.
+    NegotiationRefused,
+}
+
+impl RdpAuthFailure {
+    /// Every reason, in wire order.
+    pub const ALL: [RdpAuthFailure; 18] = [
+        RdpAuthFailure::KdcUnreachable,
+        RdpAuthFailure::ClockSkew,
+        RdpAuthFailure::PreAuthFailed,
+        RdpAuthFailure::ClientPrincipalUnknown,
+        RdpAuthFailure::ServicePrincipalUnknown,
+        RdpAuthFailure::RestrictedAdminRefused,
+        RdpAuthFailure::KerberosPackageRefused,
+        RdpAuthFailure::RealmNotConfigured,
+        RdpAuthFailure::NtlmForbidden,
+        RdpAuthFailure::Other,
+        RdpAuthFailure::PreAuthNotRequired,
+        RdpAuthFailure::RealmInvalid,
+        RdpAuthFailure::AccountDisabledOrLocked,
+        RdpAuthFailure::PasswordExpired,
+        RdpAuthFailure::EncryptionTypeUnsupported,
+        RdpAuthFailure::KerberosBrokerUnavailable,
+        RdpAuthFailure::CredentialsRejected,
+        RdpAuthFailure::NegotiationRefused,
+    ];
+
+    /// Stable machine name, for audit details and logs. `[a-z_]` only, so
+    /// it can be placed in a JSON string without escaping.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            RdpAuthFailure::KdcUnreachable => "kdc_unreachable",
+            RdpAuthFailure::ClockSkew => "clock_skew",
+            RdpAuthFailure::PreAuthFailed => "pre_auth_failed",
+            RdpAuthFailure::ClientPrincipalUnknown => "client_principal_unknown",
+            RdpAuthFailure::ServicePrincipalUnknown => "service_principal_unknown",
+            RdpAuthFailure::RestrictedAdminRefused => "restricted_admin_refused",
+            RdpAuthFailure::KerberosPackageRefused => "kerberos_package_refused",
+            RdpAuthFailure::RealmNotConfigured => "realm_not_configured",
+            RdpAuthFailure::NtlmForbidden => "ntlm_forbidden",
+            RdpAuthFailure::Other => "other",
+            RdpAuthFailure::PreAuthNotRequired => "pre_auth_not_required",
+            RdpAuthFailure::RealmInvalid => "realm_invalid",
+            RdpAuthFailure::AccountDisabledOrLocked => "account_disabled_or_locked",
+            RdpAuthFailure::PasswordExpired => "password_expired",
+            RdpAuthFailure::EncryptionTypeUnsupported => "encryption_type_unsupported",
+            RdpAuthFailure::KerberosBrokerUnavailable => "kerberos_broker_unavailable",
+            RdpAuthFailure::CredentialsRejected => "credentials_rejected",
+            RdpAuthFailure::NegotiationRefused => "negotiation_refused",
+        }
+    }
+}
+
 /// NLA authentication mode for an RDP asset (CredSSP leg).
 ///
 /// Stored in `assets.connection_config.rdp_auth_mode` as its canonical wire
-/// string (`ntlm` | `kerberos_restricted_admin`), threaded through
+/// string (`ntlm` | `kerberos_restricted_admin` | `kerberos`), threaded through
 /// `Message::RdpSessionOpen` down to the RDP proxy's CredSSP sequence.
 ///
 /// - `Ntlm` (default): CredSSP + NTLMv2, credentials delegated in
@@ -170,20 +335,38 @@ impl From<Vec<u8>> for SensitiveBytes {
 /// - `KerberosRestrictedAdmin`: CredSSP + Kerberos with the
 ///   `RESTRICTED_ADMIN_MODE_REQUIRED` nego flag and credential-less
 ///   TSCredentials (the password never leaves the proxy; it is only used
-///   in-memory for the AS-REQ pre-authentication).
+///   in-memory for the AS-REQ pre-authentication). Reserved to accounts
+///   that are local administrators of the target.
+/// - `Kerberos`: CredSSP + Kerberos with regular TSCredentials. No NTLM
+///   on the wire (no relay, no offline-crackable challenge/response), for
+///   any domain account. The password IS delegated to the target, exactly
+///   as in `Ntlm`: this mode removes NTLM, not the delegation.
+///
+/// Neither Kerberos mode ever falls back to NTLM.
+///
+/// Wire: bincode encodes the variant by index, so new modes are APPENDED.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum RdpAuthMode {
     #[default]
     Ntlm,
     KerberosRestrictedAdmin,
+    Kerberos,
 }
 
 impl RdpAuthMode {
+    /// Every mode, in wire order.
+    pub const ALL: [RdpAuthMode; 3] = [
+        RdpAuthMode::Ntlm,
+        RdpAuthMode::KerberosRestrictedAdmin,
+        RdpAuthMode::Kerberos,
+    ];
+
     /// Canonical wire/storage form (JSON `connection_config.rdp_auth_mode`).
     pub fn as_str(&self) -> &'static str {
         match self {
             RdpAuthMode::Ntlm => "ntlm",
             RdpAuthMode::KerberosRestrictedAdmin => "kerberos_restricted_admin",
+            RdpAuthMode::Kerberos => "kerberos",
         }
     }
 
@@ -193,7 +376,28 @@ impl RdpAuthMode {
         match s {
             "ntlm" => Some(RdpAuthMode::Ntlm),
             "kerberos_restricted_admin" => Some(RdpAuthMode::KerberosRestrictedAdmin),
+            "kerberos" => Some(RdpAuthMode::Kerberos),
             _ => None,
+        }
+    }
+
+    /// Whether this mode authenticates through Kerberos, and therefore
+    /// needs a KDC, a fully-qualified target name and a DNS-form domain
+    /// (see [`crate::kerberos::normalize_realm`]). Exhaustive on purpose:
+    /// a new mode must state which side it is on.
+    pub const fn uses_kerberos(&self) -> bool {
+        match self {
+            RdpAuthMode::Ntlm => false,
+            RdpAuthMode::KerberosRestrictedAdmin | RdpAuthMode::Kerberos => true,
+        }
+    }
+
+    /// Whether the target receives the account password in TSCredentials.
+    /// `false` only for Restricted Admin (credential-less CredSSP).
+    pub const fn delegates_password(&self) -> bool {
+        match self {
+            RdpAuthMode::Ntlm | RdpAuthMode::Kerberos => true,
+            RdpAuthMode::KerberosRestrictedAdmin => false,
         }
     }
 }
@@ -1937,11 +2141,15 @@ pub enum AuditEventType {
     /// approved fingerprint: quarantined by the proxy, set back to pending
     /// by web.
     McpToolDefinitionDrift,
+    // ---- appended for RDP Kerberos (classified NLA failures) ----
+    /// The NLA leg of an RDP session failed. Details carry the asset, the
+    /// `RdpAuthFailure` reason and the `RdpAuthMode`.
+    RdpAuthFailed,
 }
 
 impl AuditEventType {
     /// Number of variants. Pinned by `audit_event_type_count_is_pinned`.
-    pub const COUNT: usize = 81;
+    pub const COUNT: usize = 82;
 
     /// Every variant, for table-driven tests and drift checks.
     pub const ALL: [AuditEventType; Self::COUNT] = [
@@ -2026,6 +2234,7 @@ impl AuditEventType {
         AuditEventType::LdapAggregationPurgedFailsafe,
         AuditEventType::McpToolCallUpstreamFailed,
         AuditEventType::McpToolDefinitionDrift,
+        AuditEventType::RdpAuthFailed,
     ];
 
     /// Coarse category, for log pivoting and the drift test. EXHAUSTIVE match
@@ -2048,7 +2257,8 @@ impl AuditEventType {
             | AuditEventType::SessionEnd
             | AuditEventType::SessionRequested
             | AuditEventType::SessionTerminated
-            | AuditEventType::CommandExecuted => "session",
+            | AuditEventType::CommandExecuted
+            | AuditEventType::RdpAuthFailed => "session",
             AuditEventType::UserCreated
             | AuditEventType::UserUpdated
             | AuditEventType::UserDeleted
@@ -3653,6 +3863,39 @@ pub enum Message {
         live_fp: String,
         live_definition_json: String,
     },
+
+    /// Lease a connected KDC TCP FD for one Kerberos realm (SCM_RIGHTS).
+    ///
+    /// Successor of [`Message::KerberosKdcRequest`], which carried no
+    /// realm and so could only reach a single KDC. `realm` is a KEY into
+    /// the supervisor-owned `[auth.kerberos]` realm table, never a
+    /// destination: the supervisor validates it
+    /// (`shared::kerberos::normalize_realm`), looks the realm up, and
+    /// connects only to the KDC hosts configured for it. An unknown realm
+    /// is refused without opening any socket. Answered by
+    /// [`Message::KerberosKdcResponse`]. Caller = proxy_rdp only.
+    /// Appended at END.
+    KerberosKdcLeaseRequest {
+        request_id: u64,
+        /// RDP session id the KDC exchange belongs to (correlation only).
+        session_id: String,
+        /// Canonical upper-case realm of the asset's domain.
+        realm: String,
+    },
+
+    /// The NLA leg of an RDP session failed, with a classified reason.
+    ///
+    /// Sent by proxy_rdp INSTEAD of [`Message::RdpSessionOpened`] when the
+    /// failure is an authentication failure. It carries a closed-set
+    /// reason and the mode, and deliberately no free text: see
+    /// [`RdpAuthFailure`]. Appended at END.
+    RdpSessionOpenFailed {
+        request_id: u64,
+        session_id: String,
+        reason: RdpAuthFailure,
+        /// The mode the proxy attempted (echo of the open request).
+        rdp_auth_mode: RdpAuthMode,
+    },
 }
 
 /// Largest payload of one [`Message::McpRelayBody`] or [`Message::McpTunnelData`].
@@ -3731,6 +3974,8 @@ impl Message {
             | Message::SshTestKeyAuthResult { request_id, .. }
             | Message::KerberosKdcRequest { request_id, .. }
             | Message::KerberosKdcResponse { request_id, .. }
+            | Message::KerberosKdcLeaseRequest { request_id, .. }
+            | Message::RdpSessionOpenFailed { request_id, .. }
             | Message::McpDiscover { request_id, .. }
             | Message::McpDiscovered { request_id, .. } => Some(*request_id),
             _ => None,
@@ -4095,7 +4340,7 @@ mod tests {
         // and ALL together when appending a variant (never reorder existing
         // ones -- bincode encodes the index).
         assert_eq!(AuditEventType::ALL.len(), AuditEventType::COUNT);
-        assert_eq!(AuditEventType::COUNT, 81);
+        assert_eq!(AuditEventType::COUNT, 82);
     }
 
     #[test]
@@ -5359,6 +5604,344 @@ mod tests {
         let bytes = serialize(&req);
         let decoded: Message = deserialize(&bytes);
         assert!(matches!(decoded, Message::KerberosKdcRequest { .. }));
+    }
+
+    #[test]
+    fn test_rdp_auth_mode_string_forms_round_trip() {
+        for mode in RdpAuthMode::ALL {
+            assert_eq!(RdpAuthMode::parse(mode.as_str()), Some(mode));
+        }
+        assert_eq!(RdpAuthMode::Kerberos.as_str(), "kerberos");
+        assert_eq!(RdpAuthMode::default(), RdpAuthMode::Ntlm);
+    }
+
+    #[test]
+    fn test_rdp_auth_mode_unknown_strings_are_rejected() {
+        for raw in [
+            "",
+            "Kerberos",
+            "KERBEROS",
+            " kerberos",
+            "kerberos ",
+            "kerberos_delegation",
+            "ntlmv1",
+            "negotiate",
+        ] {
+            assert_eq!(RdpAuthMode::parse(raw), None, "{raw:?}");
+        }
+    }
+
+    /// The security-relevant classification of every mode, in one table.
+    #[test]
+    fn test_rdp_auth_mode_classification() {
+        let table = [
+            (RdpAuthMode::Ntlm, false, true),
+            (RdpAuthMode::KerberosRestrictedAdmin, true, false),
+            (RdpAuthMode::Kerberos, true, true),
+        ];
+        assert_eq!(table.len(), RdpAuthMode::ALL.len());
+        for (mode, kerberos, delegates) in table {
+            assert_eq!(mode.uses_kerberos(), kerberos, "{mode:?}");
+            assert_eq!(mode.delegates_password(), delegates, "{mode:?}");
+        }
+    }
+
+    proptest::proptest! {
+        /// `parse` accepts the canonical string of a mode and nothing
+        /// else: no trimming, no case folding, no prefix match. A mode
+        /// string that is not canonical never selects a Kerberos mode.
+        #[test]
+        fn proptest_rdp_auth_mode_parse_is_exact(s in "\\PC{0,40}") {
+            let expected = RdpAuthMode::ALL.into_iter().find(|m| m.as_str() == s);
+            proptest::prop_assert_eq!(RdpAuthMode::parse(&s), expected);
+        }
+
+        /// Near-misses of the canonical strings are rejected.
+        #[test]
+        fn proptest_rdp_auth_mode_near_misses_are_rejected(
+            idx in 0usize..3,
+            suffix in "[ _A-Za-z0-9]{1,8}",
+            upper in proptest::bool::ANY,
+        ) {
+            let canonical = RdpAuthMode::ALL[idx].as_str();
+            let padded = format!("{canonical}{suffix}");
+            // `kerberos` + `_restricted_admin` is itself canonical.
+            if RdpAuthMode::ALL.iter().all(|m| m.as_str() != padded) {
+                proptest::prop_assert_eq!(RdpAuthMode::parse(&padded), None);
+            }
+            if upper {
+                proptest::prop_assert_eq!(
+                    RdpAuthMode::parse(&canonical.to_uppercase()),
+                    None
+                );
+            }
+        }
+    }
+
+    /// Wire pin: existing modes keep their bincode index; `Kerberos` is
+    /// appended. A peer from the previous release still decodes the two
+    /// historical modes.
+    #[test]
+    fn test_rdp_auth_mode_wire_indexes_are_frozen() {
+        assert_eq!(serialize(&RdpAuthMode::Ntlm), vec![0]);
+        assert_eq!(serialize(&RdpAuthMode::KerberosRestrictedAdmin), vec![1]);
+        assert_eq!(serialize(&RdpAuthMode::Kerberos), vec![2]);
+        for mode in RdpAuthMode::ALL {
+            let decoded: RdpAuthMode = deserialize(&serialize(&mode));
+            assert_eq!(decoded, mode);
+        }
+    }
+
+    #[test]
+    fn test_ntlm_policy_string_forms() {
+        assert_eq!(NtlmPolicy::default(), NtlmPolicy::Allow);
+        for policy in NtlmPolicy::ALL {
+            assert_eq!(NtlmPolicy::parse(policy.as_str()), Some(policy));
+        }
+        for bad in [
+            "", "Allow", "DENY", " deny", "deny ", "denied", "true", "off", "0",
+        ] {
+            assert_eq!(NtlmPolicy::parse(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn test_ntlm_policy_permits_table() {
+        for mode in RdpAuthMode::ALL {
+            assert!(NtlmPolicy::Allow.permits(mode), "{mode:?}");
+            assert_eq!(
+                NtlmPolicy::Deny.permits(mode),
+                mode.uses_kerberos(),
+                "{mode:?}"
+            );
+        }
+        assert!(!NtlmPolicy::Deny.permits(RdpAuthMode::Ntlm));
+        assert!(NtlmPolicy::Deny.permits(RdpAuthMode::Kerberos));
+        assert!(NtlmPolicy::Deny.permits(RdpAuthMode::KerberosRestrictedAdmin));
+    }
+
+    /// A mistyped policy is an error, never a silent `allow`.
+    #[test]
+    fn attack_mistyped_ntlm_policy_read_as_allow_is_rejected() {
+        assert!(
+            NtlmPolicy::from_env_value(None).is_err(),
+            "an absent variable is not `allow`"
+        );
+        assert_eq!(
+            NtlmPolicy::from_env_value(Some("allow")),
+            Ok(NtlmPolicy::Allow)
+        );
+        assert_eq!(
+            NtlmPolicy::from_env_value(Some("deny")),
+            Ok(NtlmPolicy::Deny)
+        );
+        for bad in ["", "Deny", "DENY", "denny", "deny\n", "no", "false"] {
+            assert!(NtlmPolicy::from_env_value(Some(bad)).is_err(), "{bad:?}");
+        }
+        // Same closed set through serde (the TOML path).
+        #[derive(serde::Deserialize)]
+        struct Probe {
+            #[allow(dead_code)]
+            p: NtlmPolicy,
+        }
+        assert!(serde_json::from_str::<Probe>(r#"{"p":"deny"}"#).is_ok());
+        for bad in [
+            r#"{"p":"Deny"}"#,
+            r#"{"p":"denny"}"#,
+            r#"{"p":""}"#,
+            r#"{"p":true}"#,
+        ] {
+            assert!(serde_json::from_str::<Probe>(bad).is_err(), "{bad}");
+        }
+    }
+
+    proptest::proptest! {
+        /// `parse` and the env reader accept the two canonical strings
+        /// and nothing else.
+        #[test]
+        fn proptest_ntlm_policy_parse_is_exact(s in "\\PC{0,12}") {
+            let expected = NtlmPolicy::ALL.into_iter().find(|p| p.as_str() == s);
+            proptest::prop_assert_eq!(NtlmPolicy::parse(&s), expected);
+            proptest::prop_assert_eq!(NtlmPolicy::from_env_value(Some(&s)).ok(), expected);
+        }
+    }
+
+    #[test]
+    fn test_rdp_auth_failure_wire_indexes_are_frozen() {
+        for (index, reason) in RdpAuthFailure::ALL.into_iter().enumerate() {
+            assert_eq!(serialize(&reason), vec![index as u8], "{reason:?} moved");
+            let decoded: RdpAuthFailure = deserialize(&serialize(&reason));
+            assert_eq!(decoded, reason);
+        }
+        // The first ten are the plan's original set, in its order.
+        assert_eq!(serialize(&RdpAuthFailure::KdcUnreachable), vec![0]);
+        assert_eq!(serialize(&RdpAuthFailure::Other), vec![9]);
+        assert_eq!(serialize(&RdpAuthFailure::CredentialsRejected), vec![16]);
+        assert_eq!(serialize(&RdpAuthFailure::NegotiationRefused), vec![17]);
+    }
+
+    #[test]
+    fn test_rdp_auth_failure_names_are_unique_and_json_safe() {
+        let mut seen = std::collections::HashSet::new();
+        for reason in RdpAuthFailure::ALL {
+            let name = reason.as_str();
+            assert!(seen.insert(name), "duplicate name {name}");
+            assert!(
+                !name.is_empty() && name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
+                "{name} must be [a-z_]+"
+            );
+        }
+    }
+
+    #[test]
+    fn test_rdp_session_open_failed_roundtrip() {
+        let msg = Message::RdpSessionOpenFailed {
+            request_id: 41,
+            session_id: "sess".to_string(),
+            reason: RdpAuthFailure::ClockSkew,
+            rdp_auth_mode: RdpAuthMode::Kerberos,
+        };
+        assert_eq!(msg.request_id(), Some(41));
+        match deserialize::<Message>(&serialize(&msg)) {
+            Message::RdpSessionOpenFailed {
+                request_id,
+                session_id,
+                reason,
+                rdp_auth_mode,
+            } => {
+                assert_eq!(request_id, 41);
+                assert_eq!(session_id, "sess");
+                assert_eq!(reason, RdpAuthFailure::ClockSkew);
+                assert_eq!(rdp_auth_mode, RdpAuthMode::Kerberos);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    /// The failure message has no free-text field: a reason and a mode,
+    /// nothing a KDC or a target could have written.
+    #[test]
+    fn test_rdp_session_open_failed_carries_no_free_text() {
+        let source = include_str!("messages.rs");
+        let start = source
+            .find("    RdpSessionOpenFailed {\n        request_id: u64,")
+            .expect("variant");
+        let body = &source[start..start + source[start..].find("\n    },").expect("end")];
+        let fields: Vec<&str> = body
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with("///") && l.contains(": "))
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                "request_id: u64,",
+                "session_id: String,",
+                "reason: RdpAuthFailure,",
+                "rdp_auth_mode: RdpAuthMode,"
+            ]
+        );
+    }
+
+    /// Appended at END: the realm lease keeps its index, so every earlier
+    /// variant does too.
+    #[test]
+    fn test_rdp_session_open_failed_is_appended_after_the_kdc_lease() {
+        let lease = serialize(&Message::KerberosKdcLeaseRequest {
+            request_id: 1,
+            session_id: String::new(),
+            realm: String::new(),
+        });
+        let failed = serialize(&Message::RdpSessionOpenFailed {
+            request_id: 1,
+            session_id: String::new(),
+            reason: RdpAuthFailure::KdcUnreachable,
+            rdp_auth_mode: RdpAuthMode::Ntlm,
+        });
+        let tag = |bytes: &[u8]| -> u32 {
+            match bytes[0] {
+                b if b < 251 => u32::from(b),
+                251 => u32::from(u16::from_le_bytes([bytes[1], bytes[2]])),
+                other => panic!("unexpected varint marker {other}"),
+            }
+        };
+        assert_eq!(tag(&failed), tag(&lease) + 1);
+    }
+
+    #[test]
+    fn test_rdp_auth_failed_audit_event_is_appended_last() {
+        assert_eq!(
+            AuditEventType::ALL.last(),
+            Some(&AuditEventType::RdpAuthFailed)
+        );
+        assert_eq!(serialize(&AuditEventType::RdpAuthFailed), vec![81]);
+        assert_eq!(AuditEventType::RdpAuthFailed.category(), "session");
+    }
+
+    #[test]
+    fn test_kerberos_kdc_lease_request_roundtrip() {
+        let req = Message::KerberosKdcLeaseRequest {
+            request_id: 9,
+            session_id: "s".to_string(),
+            realm: "CORP.EXAMPLE.COM".to_string(),
+        };
+        let decoded: Message = deserialize(&serialize(&req));
+        match decoded {
+            Message::KerberosKdcLeaseRequest {
+                request_id,
+                session_id,
+                realm,
+            } => {
+                assert_eq!(request_id, 9);
+                assert_eq!(session_id, "s");
+                assert_eq!(realm, "CORP.EXAMPLE.COM");
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+        assert_eq!(req.request_id(), Some(9));
+    }
+
+    /// The realm-carrying lease is appended AFTER every pre-existing
+    /// variant: the legacy lease keeps its wire discriminant, so a
+    /// not-yet-upgraded peer still decodes it.
+    #[test]
+    fn test_kerberos_kdc_lease_request_does_not_shift_the_legacy_lease() {
+        let legacy = serialize(&Message::KerberosKdcRequest {
+            request_id: 1,
+            session_id: String::new(),
+            data: SensitiveBytes::default(),
+        });
+        let lease = serialize(&Message::KerberosKdcLeaseRequest {
+            request_id: 1,
+            session_id: String::new(),
+            realm: String::new(),
+        });
+        let drift = serialize(&Message::McpToolDefinitionDrift {
+            session_id: String::new(),
+            asset_id: String::new(),
+            tool: String::new(),
+            approved_fp: String::new(),
+            live_fp: String::new(),
+            live_definition_json: String::new(),
+        });
+        // bincode `standard()` writes the variant index as a varint: one
+        // byte below 251, else the marker 251 followed by a u16 (LE).
+        let tag = |bytes: &[u8]| -> u32 {
+            match bytes[0] {
+                b if b < 251 => u32::from(b),
+                251 => u32::from(u16::from_le_bytes([bytes[1], bytes[2]])),
+                other => panic!("unexpected varint marker {other}"),
+            }
+        };
+        assert!(
+            tag(&legacy) < tag(&drift),
+            "legacy lease precedes the MCP tail"
+        );
+        assert_eq!(
+            tag(&lease),
+            tag(&drift) + 1,
+            "the realm lease must be the variant right after the previous last one"
+        );
     }
 
     #[test]

@@ -118,6 +118,13 @@ pub struct RdpSessionOpened {
     pub desktop_width: u16,
     pub desktop_height: u16,
     pub error: Option<String>,
+    /// Classified reason and attempted mode, when the proxy answered
+    /// with `Message::RdpSessionOpenFailed`. `success` is then `false`
+    /// and `error` is `None`: that message carries no text.
+    pub auth_failure: Option<(
+        shared::messages::RdpAuthFailure,
+        shared::messages::RdpAuthMode,
+    )>,
 }
 
 /// Event from an RDP session forwarded to the WebSocket handler.
@@ -483,6 +490,34 @@ impl ProxyRdpClient {
                     desktop_width,
                     desktop_height,
                     error,
+                    auth_failure: None,
+                };
+
+                deliver_or_warn(&self.pending_requests, request_id, response, "proxy_rdp");
+            }
+
+            Message::RdpSessionOpenFailed {
+                request_id,
+                session_id,
+                reason,
+                rdp_auth_mode,
+            } => {
+                debug!(
+                    request_id = request_id,
+                    session_id = %session_id,
+                    reason = reason.as_str(),
+                    auth_mode = rdp_auth_mode.as_str(),
+                    "RDP session open failed: NLA authentication"
+                );
+
+                let response = RdpSessionOpened {
+                    request_id,
+                    session_id,
+                    success: false,
+                    desktop_width: 0,
+                    desktop_height: 0,
+                    error: None,
+                    auth_failure: Some((reason, rdp_auth_mode)),
                 };
 
                 deliver_or_warn(&self.pending_requests, request_id, response, "proxy_rdp");
@@ -718,6 +753,7 @@ mod tests {
             desktop_width: 1920,
             desktop_height: 1080,
             error: None,
+            auth_failure: None,
         };
         assert!(response.success);
         assert!(response.error.is_none());
@@ -733,6 +769,7 @@ mod tests {
             desktop_width: 0,
             desktop_height: 0,
             error: Some("Connection refused".to_string()),
+            auth_failure: None,
         };
         assert!(!response.success);
         assert_eq!(response.error.unwrap(), "Connection refused");
@@ -747,6 +784,7 @@ mod tests {
             desktop_width: 1280,
             desktop_height: 720,
             error: None,
+            auth_failure: None,
         };
         let cloned = response.clone();
         assert_eq!(response.request_id, cloned.request_id);
@@ -763,6 +801,7 @@ mod tests {
             desktop_width: 0,
             desktop_height: 0,
             error: Some("Auth failed".to_string()),
+            auth_failure: None,
         };
         let debug_str = format!("{:?}", response);
         assert!(debug_str.contains("RdpSessionOpened"));
@@ -787,6 +826,7 @@ mod tests {
                 desktop_width: 0,
                 desktop_height: 0,
                 error: Some(error_msg.to_string()),
+                auth_failure: None,
             };
             assert!(!response.success);
             assert_eq!(response.error.as_deref(), Some(error_msg));
@@ -1082,6 +1122,99 @@ mod tests {
         }
     }
 
+    // ==================== Classified NLA failure ====================
+
+    /// The failure message has no text: the response carries the reason
+    /// and the mode, `success` is false and `error` stays empty.
+    #[test]
+    fn test_open_failed_response_carries_reason_and_no_text() {
+        let source = include_str!("proxy_rdp.rs");
+        let arm = source
+            .find("            Message::RdpSessionOpenFailed {\n                request_id,")
+            .expect("RdpSessionOpenFailed arm");
+        let block = &source[arm..arm + 900];
+        assert!(block.contains("success: false,"));
+        assert!(block.contains("error: None,"));
+        assert!(block.contains("auth_failure: Some((reason, rdp_auth_mode)),"));
+        assert!(block.contains("deliver_or_warn(&self.pending_requests, request_id, response"));
+    }
+
+    /// Behavioral: a parked `open_session` caller receives the reason and
+    /// the mode the proxy attempted, with no text, for every reason.
+    #[tokio::test]
+    async fn test_open_failed_is_delivered_to_the_parked_request() {
+        use shared::messages::{RdpAuthFailure, RdpAuthMode};
+        use std::os::fd::IntoRawFd;
+
+        let (read_fd, _peer_write) = nix::unistd::pipe().unwrap();
+        let (_peer_read, write_fd) = nix::unistd::pipe().unwrap();
+        let client = ProxyRdpClient::new(read_fd.into_raw_fd(), write_fd.into_raw_fd()).unwrap();
+
+        for (index, reason) in RdpAuthFailure::ALL.into_iter().enumerate() {
+            let request_id = 100 + index as u64;
+            let mode = RdpAuthMode::ALL[index % RdpAuthMode::ALL.len()];
+            let (tx, rx) = oneshot::channel();
+            client
+                .pending_requests
+                .lock()
+                .unwrap()
+                .insert(request_id, tx);
+
+            client
+                .handle_message(Message::RdpSessionOpenFailed {
+                    request_id,
+                    session_id: "sess".to_string(),
+                    reason,
+                    rdp_auth_mode: mode,
+                })
+                .await;
+
+            let response = rx.await.unwrap();
+            assert!(!response.success);
+            assert_eq!(response.error, None);
+            assert_eq!(response.auth_failure, Some((reason, mode)));
+            assert_eq!((response.desktop_width, response.desktop_height), (0, 0));
+        }
+    }
+
+    /// A failure for a request nobody waits on is dropped, not delivered
+    /// to another caller.
+    #[tokio::test]
+    async fn attack_forged_open_failed_for_unknown_request_is_rejected() {
+        use shared::messages::{RdpAuthFailure, RdpAuthMode};
+        use std::os::fd::IntoRawFd;
+
+        let (read_fd, _peer_write) = nix::unistd::pipe().unwrap();
+        let (_peer_read, write_fd) = nix::unistd::pipe().unwrap();
+        let client = ProxyRdpClient::new(read_fd.into_raw_fd(), write_fd.into_raw_fd()).unwrap();
+
+        let (tx, mut rx) = oneshot::channel();
+        client.pending_requests.lock().unwrap().insert(1, tx);
+        client
+            .handle_message(Message::RdpSessionOpenFailed {
+                request_id: 2,
+                session_id: "other".to_string(),
+                reason: RdpAuthFailure::PreAuthFailed,
+                rdp_auth_mode: RdpAuthMode::Kerberos,
+            })
+            .await;
+        assert!(rx.try_recv().is_err(), "request 1 must still be parked");
+        assert!(client.pending_requests.lock().unwrap().contains_key(&1));
+    }
+
+    /// A success-shaped answer never carries a failure reason.
+    #[test]
+    fn test_opened_response_never_carries_a_failure_reason() {
+        let source = include_str!("proxy_rdp.rs");
+        let arm = source
+            .find("            Message::RdpSessionOpened {\n                request_id,")
+            .expect("RdpSessionOpened arm");
+        let end = source[arm..]
+            .find("Message::RdpSessionOpenFailed {")
+            .expect("next arm");
+        assert!(source[arm..arm + end].contains("auth_failure: None,"));
+    }
+
     // ==================== Session Opened Response Edge Cases ====================
 
     #[test]
@@ -1093,6 +1226,7 @@ mod tests {
             error: None,
             desktop_width: 1920,
             desktop_height: 1080,
+            auth_failure: None,
         };
         assert_eq!(response.desktop_width, 1920);
         assert_eq!(response.desktop_height, 1080);
@@ -1107,6 +1241,7 @@ mod tests {
             error: None,
             desktop_width: 1280,
             desktop_height: 720,
+            auth_failure: None,
         };
         assert_eq!(response.desktop_width, 1280);
         assert_eq!(response.desktop_height, 720);

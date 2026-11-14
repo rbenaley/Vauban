@@ -259,6 +259,10 @@ pub struct Config {
     /// Email notification (Issue #10) configuration.
     #[serde(default)]
     pub mailer: MailerConfig,
+    /// RDP settings read by the web tier. `[rdp]` also carries keys owned
+    /// by the supervisor (`video_bitrate_bps`), ignored here.
+    #[serde(default)]
+    pub rdp: RdpSettings,
     /// Industrial / IACS module (preliminary scaffolding for future
     /// IACS asset support). Carries the global kill-switch for the
     /// EWS onboarding flow.
@@ -378,6 +382,18 @@ impl WebLdapConfig {
             self.login_password_min_length,
         )
     }
+}
+
+/// Web-side `[rdp]` settings.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct RdpSettings {
+    /// NTLM policy for RDP sessions: `"allow"` (default) or `"deny"`.
+    /// Any other value fails deserialization: the web tier refuses to
+    /// start instead of running with NTLM allowed by accident. The
+    /// supervisor reads the same key and hands it to the RDP proxy,
+    /// which enforces it too.
+    #[serde(default)]
+    pub ntlm_policy: shared::messages::NtlmPolicy,
 }
 
 /// Asset and asset-group configuration.

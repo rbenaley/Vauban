@@ -20,12 +20,15 @@
 //!
 //! This service uses Tokio for async I/O, matching the SSH proxy architecture.
 
+mod auth_failure;
 mod error;
 mod fmp4_writer;
 mod ipc;
 mod rdp_recording_writer;
 mod session;
 mod session_manager;
+#[cfg(test)]
+mod test_support;
 mod vault;
 mod video_encoder;
 
@@ -39,7 +42,7 @@ use session_manager::{
 };
 use shared::access_guard::{AccessGuard, AccessGuardMetrics, AccessGuardWiring, PROTOCOL_RDP};
 use shared::ipc::{IpcChannel, recv_fd};
-use shared::messages::{ControlMessage, Message, ServiceStats};
+use shared::messages::{ControlMessage, Message, NtlmPolicy, ServiceStats};
 use shared::recording_fd::{DEFAULT_BROKER_TIMEOUT, recv_fd_timed};
 use shared::sandbox as capsicum;
 use shared::session_token::proxy_gate as session_token_gate;
@@ -51,6 +54,17 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, error, info, warn};
+
+/// NTLM policy of this process, set once at startup from the environment
+/// the supervisor provides.
+static NTLM_POLICY: std::sync::OnceLock<NtlmPolicy> = std::sync::OnceLock::new();
+
+/// The policy applied at session open. Before startup has set it (which
+/// no session can precede) the answer is `Deny`: the unset state must not
+/// be the permissive one.
+fn ntlm_policy() -> NtlmPolicy {
+    NTLM_POLICY.get().copied().unwrap_or(NtlmPolicy::Deny)
+}
 
 struct ServiceState {
     start_time: Instant,
@@ -301,6 +315,21 @@ async fn run_service() -> Result<ServiceExit> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(5_000_000);
 
+    // NTLM policy, set by the supervisor from `[rdp] ntlm_policy`. A value
+    // that is absent or not canonical stops the proxy: neither is ever
+    // read as "allow".
+    let ntlm_policy_raw = std::env::var_os(NtlmPolicy::ENV);
+    let ntlm_policy = match &ntlm_policy_raw {
+        // Absent is an error too: the supervisor always sets it.
+        None => NtlmPolicy::from_env_value(None),
+        Some(value) => match value.to_str() {
+            Some(text) => NtlmPolicy::from_env_value(Some(text)),
+            None => Err(format!("{} is not valid UTF-8", NtlmPolicy::ENV)),
+        },
+    }
+    .map_err(|e| anyhow::anyhow!(e))?;
+    let _ = NTLM_POLICY.set(ntlm_policy);
+
     let recording_enabled: bool = std::env::var("VAUBAN_RECORDING_ENABLED")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -367,6 +396,7 @@ async fn run_service() -> Result<ServiceExit> {
         std::env::remove_var("VAUBAN_WEB_IPC_WRITE");
         std::env::remove_var("VAUBAN_FD_PASSING_SOCKET");
         std::env::remove_var("VAUBAN_RDP_VIDEO_BITRATE_BPS");
+        std::env::remove_var(NtlmPolicy::ENV);
         std::env::remove_var("VAUBAN_RECORDING_ENABLED");
         std::env::remove_var("VAUBAN_AUDIT_IPC_READ");
         std::env::remove_var("VAUBAN_AUDIT_IPC_WRITE");
@@ -855,6 +885,39 @@ async fn handle_web_message(
                 return Ok(());
             }
 
+            // The proxy's own gate, before the credentials and any
+            // connection to the target: the NTLM policy, then the Kerberos
+            // pre-flight (realm present and DNS-form, environment isolated
+            // from ambient Kerberos configuration). vauban-web applies the
+            // same policy and validates the domain at write time; the proxy
+            // does not rely on it (a compromised web tier, a row written
+            // before the rules). No NTLM fallback: the session fails.
+            let domain = match session::session_open_gate(
+                ntlm_policy(),
+                rdp_auth_mode,
+                domain,
+                session::process_ambient_config_is_isolated(),
+            ) {
+                Ok(domain) => domain,
+                Err(refusal) => {
+                    warn!(
+                        session_id = %session_id,
+                        auth_mode = rdp_auth_mode.as_str(),
+                        refusal = ?refusal,
+                        detail = refusal.message(),
+                        "RDP session refused by the session-open gate (fail-closed)"
+                    );
+                    let response = Message::RdpSessionOpenFailed {
+                        request_id,
+                        session_id,
+                        reason: refusal.auth_failure(),
+                        rdp_auth_mode,
+                    };
+                    let _ = response_tx.send(response);
+                    return Ok(());
+                }
+            };
+
             // VAU-001: defense-in-depth fail-closed. vauban-web's connect
             // pre-flight already refuses to open a session without a pinned
             // certificate, but the proxy MUST NOT trust that alone: a
@@ -1016,6 +1079,28 @@ async fn handle_web_message(
                     }
                     Err(e) => {
                         state_clone.increment_failed();
+                        // An authentication failure leaves this process
+                        // as a closed-set reason. Its text can quote the
+                        // KDC or the target: it is logged here, not sent.
+                        if let Some(reason) = e.auth_failure() {
+                            warn!(
+                                session_id = %session_id,
+                                reason = reason.as_str(),
+                                auth_mode = rdp_auth_mode.as_str(),
+                                // Debug form: the text can quote the KDC
+                                // or the target, and must not be able to
+                                // break the log line.
+                                error = ?e.to_string(),
+                                "RDP session refused: NLA authentication failed"
+                            );
+                            let _ = response_tx_clone.send(Message::RdpSessionOpenFailed {
+                                request_id,
+                                session_id,
+                                reason,
+                                rdp_auth_mode,
+                            });
+                            return;
+                        }
                         let response = Message::RdpSessionOpened {
                             request_id,
                             session_id,
@@ -1202,7 +1287,9 @@ mod tests {
 
     fn prod_source() -> &'static str {
         let full = include_str!("main.rs");
-        if let Some(idx) = full.find("#[cfg(test)]") {
+        // The unit-test module, not the first `#[cfg(test)]` item: the
+        // test-only `test_support` module is declared near the top.
+        if let Some(idx) = full.find("#[cfg(test)]\nmod tests") {
             &full[..idx]
         } else {
             full

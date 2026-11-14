@@ -214,6 +214,20 @@ max_connections_per_user = 30
 # Recommended range: 2_000_000 (low quality) to 30_000_000 (high quality).
 video_bitrate_bps = 5_000_000
 
+# NTLM policy for RDP sessions: "allow" (default) or "deny".
+#
+# "deny" refuses every RDP session whose asset is not in a Kerberos
+# authentication mode ("kerberos" or "kerberos_restricted_admin"), including
+# for assets that already exist. It is enforced by vauban-web before a session
+# is created and again by vauban-proxy-rdp at session open. The asset forms
+# then disable the NTLM option, and the dashboard counts the RDP assets still
+# on NTLM.
+#
+# Any other value is a configuration error: the supervisor and vauban-web
+# refuse to start. Requires [auth.kerberos] to be configured for "deny" to
+# leave any RDP asset usable.
+ntlm_policy = "allow"
+
 # ==============================================================================
 # EMAIL NOTIFICATIONS (Issue #10)
 # ==============================================================================
@@ -375,17 +389,35 @@ login_password_min_length = 12
 aggregation_fail_closed_threshold = 3
 
 # ------------------------------------------------------------------------------
-# Kerberos KDC brokering (RDP "kerberos_restricted_admin" auth mode)
+# Kerberos KDC brokering (RDP "kerberos" and "kerberos_restricted_admin" modes)
 # ------------------------------------------------------------------------------
 #
 # When enabled, the supervisor relays the sandboxed RDP proxy's Kerberos KDC
 # exchanges (AS-REQ / TGS-REQ) to the configured domain controller over TCP 88
-# (the proxy cannot open the socket itself once sealed). The supervisor
-# connects ONLY to the endpoint below, ignoring any host embedded in the
-# relayed request (SSRF-safe). Realm is uppercase (e.g. EXAMPLE.COM).
+# (the proxy cannot open the socket itself once sealed). The proxy names a
+# realm, taken from the asset's domain; the supervisor looks it up in the
+# table below and connects ONLY to the KDC hosts listed for it (SSRF-safe: a
+# request never carries a host, and an unknown realm is refused).
+#
+# A realm is the DNS name of the domain (e.g. CORP.EXAMPLE.COM), not its
+# NetBIOS short name. Case-insensitive.
 [auth.kerberos]
 enabled = false
+# Budget, in seconds, for one KDC lease, failover across hosts included.
+# timeout_secs = 5
+#
+# One realm, one KDC (original form, still supported):
 # realm = "EXAMPLE.COM"
 # kdc_host = "dc1.example.com"
 # kdc_port = 88
-# timeout_secs = 5
+#
+# Several realms, and/or several KDC hosts per realm. Hosts are tried in
+# the order written; the first that accepts the connection wins.
+# [[auth.kerberos.realms]]
+# realm = "CORP.EXAMPLE.COM"
+# kdc_hosts = ["dc1.corp.example.com", "dc2.corp.example.com"]
+# kdc_port = 88
+#
+# [[auth.kerberos.realms]]
+# realm = "LAB.EXAMPLE.NET"
+# kdc_hosts = ["kdc.lab.example.net"]

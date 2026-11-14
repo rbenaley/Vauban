@@ -275,21 +275,30 @@
                     <label for="rdp_auth_mode" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Authentication Mode</label>
                     <select name="rdp_auth_mode" id="rdp_auth_mode" x-model="rdpAuthMode"
                             class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm">
-                        <option value="ntlm">Password / NTLMv2</option>
+                        <option value="ntlm"{% if ntlm_denied %} disabled{% endif %}>Password / NTLMv2{% if ntlm_denied %} (forbidden by policy){% endif %}</option>
+                        <option value="kerberos">Kerberos</option>
                         <option value="kerberos_restricted_admin">Kerberos - Restricted Admin</option>
                     </select>
+                    {% if ntlm_denied %}
+                    <p class="mt-1 text-xs text-amber-700 dark:text-amber-300" data-ntlm-denied-notice>
+                        NTLM is forbidden on this bastion (<code>[rdp] ntlm_policy = "deny"</code>): an asset in the NTLMv2 mode cannot open a session. Choose a Kerberos mode.
+                    </p>
+                    {% endif %}
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400" x-show="rdpAuthMode === 'kerberos'" x-cloak>
+                        Requires a fully-qualified hostname (SPN <code>TERMSRV/&lt;fqdn&gt;</code>), the DNS name of the domain, and a KDC for that realm in <code>[auth.kerberos]</code>. No NTLM fallback. The password is delegated to the target inside CredSSP, as in the NTLMv2 mode: use Restricted Admin for accounts that are local administrators of the target.
+                    </p>
                     <p class="mt-1 text-xs text-gray-500 dark:text-gray-400" x-show="rdpAuthMode === 'kerberos_restricted_admin'" x-cloak>
-                        Requires a fully-qualified hostname (SPN <code>TERMSRV/&lt;fqdn&gt;</code>) and a KDC configured in <code>[auth.kerberos]</code>. The password is never delegated to the target (credential-less CredSSP).
+                        Requires a fully-qualified hostname (SPN <code>TERMSRV/&lt;fqdn&gt;</code>), the DNS name of the domain, and a KDC for that realm in <code>[auth.kerberos]</code>. No NTLM fallback. The password is never delegated to the target (credential-less CredSSP); the account must be a local administrator of the target.
                     </p>
                 </div>
 
                 <div x-show="assetType === 'rdp'" x-cloak>
-                    <label for="rdp_domain" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Domain (optional)</label>
+                    <label for="rdp_domain" class="block text-sm font-medium text-gray-700 dark:text-gray-300">Domain <span x-show="rdpAuthMode === 'ntlm'">(optional)</span><span x-show="rdpAuthMode !== 'ntlm'" x-cloak>(required, DNS name)</span></label>
                     <input type="text" name="rdp_domain" id="rdp_domain"
                            value="{{ asset.rdp_domain }}"
                            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-vauban-500 focus:ring-vauban-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
                            maxlength="255" placeholder="CORP">
-                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Windows Active Directory domain (e.g. <code>CORP</code>). Leave empty for local accounts.</p>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Windows Active Directory domain (e.g. <code>CORP</code>). Leave empty for local accounts. A Kerberos mode needs the DNS name (e.g. <code>corp.example.com</code>): it is the Kerberos realm.</p>
                 </div>
             </div>
         </div>

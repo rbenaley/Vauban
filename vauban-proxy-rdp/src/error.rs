@@ -8,8 +8,14 @@ pub enum SessionError {
     #[error("RDP connection failed: {0}")]
     ConnectionFailed(String),
 
-    #[error("RDP authentication failed: {0}")]
-    AuthenticationFailed(String),
+    /// The NLA leg failed. `reason` is what leaves the process; `detail`
+    /// is for this process's log only (it can quote text written by the
+    /// KDC or the target).
+    #[error("RDP authentication failed ({}): {detail}", reason.as_str())]
+    AuthenticationFailed {
+        reason: shared::messages::RdpAuthFailure,
+        detail: String,
+    },
 
     #[error("TLS upgrade failed: {0}")]
     TlsUpgradeFailed(String),
@@ -31,6 +37,16 @@ pub enum SessionError {
 
     #[error("PNG encoding failed: {0}")]
     PngEncodingFailed(String),
+}
+
+impl SessionError {
+    /// The classified reason, when this is an authentication failure.
+    pub const fn auth_failure(&self) -> Option<shared::messages::RdpAuthFailure> {
+        match self {
+            Self::AuthenticationFailed { reason, .. } => Some(*reason),
+            _ => None,
+        }
+    }
 }
 
 /// Errors that can occur during IPC operations.

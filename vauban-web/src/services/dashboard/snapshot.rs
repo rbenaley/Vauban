@@ -135,6 +135,10 @@ pub struct AccessPosture {
     pub active_rules: u64,
     pub mfa_enabled_users: u64,
     pub mfa_disabled_users: u64,
+    /// Active RDP assets, and how many of them are still in a mode that
+    /// is not a Kerberos mode (`ntlm`, or no stored mode).
+    pub rdp_assets: u64,
+    pub rdp_ntlm_assets: u64,
     pub bars: Vec<Bar>,
 }
 
@@ -510,6 +514,8 @@ pub(crate) async fn load_access_posture(db_pool: &DbPool) -> AccessPosture {
                 active_rules: 0,
                 mfa_enabled_users: 0,
                 mfa_disabled_users: 0,
+                rdp_assets: 0,
+                rdp_ntlm_assets: 0,
                 bars: Vec::new(),
             };
         }
@@ -545,8 +551,24 @@ pub(crate) async fn load_access_posture(db_pool: &DbPool) -> AccessPosture {
         .get_result(&mut conn)
         .await
         .unwrap_or(0);
+    // RDP assets still on NTLM. Only the stored mode string leaves
+    // `connection_config`; it is classified by the closed-set parser, so
+    // a row with no mode or an unknown one counts as NTLM, which is how
+    // a session on it would open.
+    let rdp_modes: Vec<Option<String>> = assets::table
+        .filter(assets::asset_type.eq(crate::models::asset::AssetType::Rdp))
+        .filter(assets::is_deleted.eq(false))
+        .select(diesel::dsl::sql::<
+            diesel::sql_types::Nullable<diesel::sql_types::Text>,
+        >("connection_config->>'rdp_auth_mode'"))
+        .load(&mut conn)
+        .await
+        .unwrap_or_default();
+    let rdp_assets = rdp_modes.len() as u64;
+    let rdp_ntlm_assets = count_rdp_ntlm_assets(&rdp_modes);
+
     let total = (mfa_on + mfa_off).max(1);
-    let bars = vec![
+    let mut bars = vec![
         Bar::new(
             mfa_on.max(0) as u64,
             total.max(0) as u64,
@@ -562,12 +584,43 @@ pub(crate) async fn load_access_posture(db_pool: &DbPool) -> AccessPosture {
             format!("{}", active_rules),
         ),
     ];
+    if rdp_assets > 0 {
+        bars.push(Bar::new(
+            rdp_ntlm_assets,
+            rdp_assets,
+            if rdp_ntlm_assets == 0 {
+                "bg-emerald-500"
+            } else {
+                "bg-amber-500"
+            },
+            "RDP assets on NTLM",
+            format!("{}/{}", rdp_ntlm_assets, rdp_assets),
+        ));
+    }
     AccessPosture {
         active_rules: active_rules.max(0) as u64,
         mfa_enabled_users: mfa_on.max(0) as u64,
         mfa_disabled_users: mfa_off.max(0) as u64,
+        rdp_assets,
+        rdp_ntlm_assets,
         bars,
     }
+}
+
+/// How many stored RDP modes are not a Kerberos mode. `None` (no stored
+/// mode) and a value outside the closed set both count: that is the mode
+/// `connect_rdp` would use for the asset.
+pub(crate) fn count_rdp_ntlm_assets(stored_modes: &[Option<String>]) -> u64 {
+    stored_modes
+        .iter()
+        .filter(|mode| {
+            !mode
+                .as_deref()
+                .and_then(shared::messages::RdpAuthMode::parse)
+                .unwrap_or_default()
+                .uses_kerberos()
+        })
+        .count() as u64
 }
 
 pub(crate) async fn load_heatmap(
@@ -933,5 +986,45 @@ mod tests {
             needle,
             count
         );
+    }
+
+    // ---- RDP assets still on NTLM ---------------------------------------
+
+    #[test]
+    fn test_count_rdp_ntlm_assets_counts_every_non_kerberos_mode() {
+        let modes = |raw: &[Option<&str>]| -> Vec<Option<String>> {
+            raw.iter().map(|m| m.map(str::to_string)).collect()
+        };
+        assert_eq!(count_rdp_ntlm_assets(&[]), 0);
+        assert_eq!(
+            count_rdp_ntlm_assets(&modes(&[
+                Some("kerberos"),
+                Some("kerberos_restricted_admin")
+            ])),
+            0
+        );
+        // `ntlm`, no stored mode, and a value outside the closed set all
+        // open as NTLM, so all three count.
+        assert_eq!(
+            count_rdp_ntlm_assets(&modes(&[
+                Some("ntlm"),
+                None,
+                Some("Kerberos"),
+                Some(""),
+                Some("kerberos"),
+            ])),
+            4
+        );
+    }
+
+    /// The count agrees with the policy: an asset is counted iff `deny`
+    /// would refuse its sessions.
+    #[test]
+    fn test_count_rdp_ntlm_assets_matches_the_deny_policy() {
+        use shared::messages::{NtlmPolicy, RdpAuthMode};
+        for mode in RdpAuthMode::ALL {
+            let counted = count_rdp_ntlm_assets(&[Some(mode.as_str().to_string())]) == 1;
+            assert_eq!(counted, !NtlmPolicy::Deny.permits(mode), "{mode:?}");
+        }
     }
 }

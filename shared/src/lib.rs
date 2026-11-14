@@ -22,6 +22,7 @@ pub mod ipc;
 /// Recursive JSON redaction for MCP audit / session recordings.
 #[cfg(feature = "json-redact")]
 pub mod json_redact;
+pub mod kerberos;
 pub mod ldap_dn;
 pub mod ldap_filter;
 pub mod ldap_mapping;

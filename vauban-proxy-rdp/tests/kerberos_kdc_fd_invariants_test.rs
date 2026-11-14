@@ -46,8 +46,17 @@ fn kdc_pending_keyed_by_request_id_not_session_id_map() {
                 && session.contains("pending")),
         "KDC lease pending must be request_id-keyed (OwnedFd), not asset session_id map"
     );
+    let ctor_at = session
+        .find("let request = Message::KerberosKdcLeaseRequest {")
+        .expect("lease request construction");
+    let ctor = &session[ctor_at..];
+    let ctor = &ctor[..ctor.find("};").expect("ctor end")];
     assert!(
-        session.contains("SensitiveBytes::default()"),
-        "KerberosKdcRequest.data must be empty on the FD-lease path"
+        ctor.contains("realm: realm.as_str().to_string()"),
+        "the lease must carry the canonical realm"
+    );
+    assert!(
+        !ctor.contains("data"),
+        "the lease request has no payload field: sspi bytes go on the leased FD"
     );
 }

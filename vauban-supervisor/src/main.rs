@@ -23,6 +23,7 @@
 mod acme;
 mod admin;
 mod config;
+mod kdc_broker;
 mod privsep_fs;
 mod recording_delete;
 mod tcp_resolve;
@@ -368,8 +369,38 @@ const TOPOLOGY: &[PipeTopology] = &[
     },
 ];
 
+/// Remove ambient Kerberos configuration from the supervisor's own
+/// environment so that no child ever inherits it.
+///
+/// `spawn_child` forks and execs without clearing the environment, so a
+/// `KRB5_CONFIG` or `SSPI_KDC_URL*` variable present when the supervisor
+/// starts would reach `vauban-proxy-rdp`, where `sspi` honors it (realm
+/// remapping, KDC override). The RDP proxy then gets `KRB5_CONFIG` pinned
+/// to an empty file through its service environment, and refuses a
+/// Kerberos session if the isolation does not hold.
+///
+/// Returns the names that were removed, for the startup log.
+///
+/// MUST run first thing in `main`, while the process is single-threaded.
+fn scrub_ambient_kerberos_config() -> Vec<String> {
+    let names: Vec<String> = std::env::vars_os()
+        .map(|(name, _)| name.to_string_lossy().into_owned())
+        .collect();
+    let removals = shared::kerberos::ambient_config_removals(names);
+    for name in &removals {
+        // SAFETY: called at the very top of `main`, before any thread is
+        // spawned and before any other code reads the environment.
+        unsafe {
+            std::env::remove_var(name);
+        }
+    }
+    removals
+}
+
 #[allow(clippy::print_stdout, clippy::print_stderr)]
 fn main() -> ExitCode {
+    let scrubbed_kerberos_env = scrub_ambient_kerberos_config();
+
     let cli = Cli::parse();
 
     // Admin subcommands run without the supervisor banner/tracing
@@ -428,6 +459,13 @@ fn main() -> ExitCode {
         .init();
 
     info!("Vauban Supervisor starting");
+    if !scrubbed_kerberos_env.is_empty() {
+        warn!(
+            variables = ?scrubbed_kerberos_env,
+            "Removed ambient Kerberos configuration from the environment; \
+             children never inherit KRB5_CONFIG or SSPI_KDC_URL*"
+        );
+    }
 
     match run_supervisor() {
         Ok(()) => {
@@ -3299,17 +3337,22 @@ fn linger_brokered_stream(stream: std::net::TcpStream) {
 ///
 /// The proxy cannot `connect()` to the KDC (TCP 88) once sealed, so during
 /// the CredSSP Kerberos leg each sspi `NetworkRequest` asks the supervisor
-/// to open a socket to the configured KDC and hand the connected FD via
+/// to open a socket to a configured KDC and hand the connected FD via
 /// SCM_RIGHTS. The proxy then performs the framed Kerberos TCP I/O itself
 /// — the root TCB never sees AS-REQ / TGS-REQ / ticket bytes.
 ///
+/// `requested_realm` is `Some` for `KerberosKdcLeaseRequest` and `None`
+/// for the legacy `KerberosKdcRequest` (honored only with one realm).
+///
 /// Security posture (mirrors the LDAPS `Service::Auth` whitelist branch):
 /// - **token-less** (the RDP proxy does not mint a `SessionToken` for this),
-/// - **SSRF-safe by construction**: the supervisor connects ONLY to its own
-///   `[auth.kerberos]` configured KDC (request carries no destination;
-///   `data` is ignored),
-/// - **fail-closed**: any error (Kerberos disabled, wrong caller, no
-///   endpoint, connect / `send_fd` failure, timeout) yields
+/// - **SSRF-safe by construction**: the request carries a realm, used only
+///   as a lookup key into the supervisor-owned `[auth.kerberos]` realm
+///   table (`kdc_broker::select_endpoints`). The supervisor connects ONLY
+///   to the KDC hosts configured for that realm; an unknown or malformed
+///   realm is refused before any socket is opened,
+/// - **fail-closed**: any error (Kerberos disabled, wrong caller, realm
+///   not configured, no KDC reachable, `send_fd` failure, timeout) yields
 ///   `success: false` with no FD,
 /// - **caller restricted** to `proxy_rdp` (only service that speaks CredSSP
 ///   Kerberos).
@@ -3319,7 +3362,7 @@ fn linger_brokered_stream(stream: std::net::TcpStream) {
 fn handle_kerberos_kdc_request(
     request_id: u64,
     session_id: String,
-    _data: shared::messages::SensitiveBytes,
+    requested_realm: Option<String>,
     requesting_channel: &IpcChannel,
     requesting_service_key: &str,
     children: &HashMap<String, ChildState>,
@@ -3342,21 +3385,23 @@ fn handle_kerberos_kdc_request(
     };
 
     // Only proxy-rdp may lease KDC sockets (CredSSP Kerberos path).
-    if requesting_service_key != "proxy_rdp" {
+    if !crate::kdc_broker::caller_may_lease(requesting_service_key) {
         fail(format!(
             "Kerberos KDC FD lease refused for service {requesting_service_key}"
         ));
         return;
     }
 
-    // Gate: Kerberos must be enabled AND a KDC endpoint configured.
-    let (kdc_host, kdc_port) = match (kerberos.allows(), kerberos.endpoint()) {
-        (true, Some(endpoint)) => endpoint,
-        _ => {
-            fail("Kerberos KDC brokering is disabled or unconfigured".to_string());
-            return;
-        }
-    };
+    // Gate: Kerberos enabled AND the realm present in the supervisor-owned
+    // table. The realm selects endpoints; it is never dialed itself.
+    let (realm, endpoints) =
+        match crate::kdc_broker::select_endpoints(kerberos, requested_realm.as_deref()) {
+            Ok(selected) => selected,
+            Err(e) => {
+                fail(e.broker_message());
+                return;
+            }
+        };
 
     let requester_state = match children.get(requesting_service_key) {
         Some(s) => s,
@@ -3375,30 +3420,19 @@ fn handle_kerberos_kdc_request(
         }
     };
 
-    let timeout = Duration::from_secs(kerberos.timeout_secs.max(1));
-
-    // Resolve + connect to the SUPERVISOR-OWNED KDC endpoint. The lease
-    // request carries no destination, so there is no attacker-chosen host.
-    let kdc_addrs = match crate::tcp_resolve::resolve_tcp_targets(kdc_host.as_str(), kdc_port) {
-        Ok(addrs) => addrs,
+    // One budget for the whole failover across the realm's KDC hosts.
+    let budget = Duration::from_secs(kerberos.timeout_secs.max(1));
+    let connection = match crate::kdc_broker::connect_first_kdc(&endpoints, budget) {
+        Ok(connection) => connection,
         Err(e) => {
-            fail(format!(
-                "KDC endpoint {kdc_host}:{kdc_port} resolution failed: {e}"
-            ));
+            fail(
+                shared::kerberos::KdcLeaseRefusal::Unreachable
+                    .error(&format!("KDC connect failed for realm {realm}: {e}")),
+            );
             return;
         }
     };
-    let (stream, socket_addr) =
-        match crate::tcp_resolve::connect_first_reachable(&kdc_addrs, timeout, |_| {
-            crate::tcp_resolve::AddrDecision::Accept
-        }) {
-            Ok(pair) => pair,
-            Err(e) => {
-                fail(format!("KDC connect failed: {}", e.broker_message()));
-                return;
-            }
-        };
-    let tcp_fd = stream.as_raw_fd();
+    let tcp_fd = connection.stream.as_raw_fd();
 
     // FD first, then IPC notify (TcpConnect / recording convention).
     if let Err(e) = send_fd(fd_socket, tcp_fd) {
@@ -3406,9 +3440,19 @@ fn handle_kerberos_kdc_request(
         return;
     }
 
+    if connection.endpoint_index > 0 {
+        warn!(
+            session_id = %session_id,
+            realm = %realm,
+            kdc = %connection.addr,
+            skipped = connection.endpoint_index,
+            "Kerberos KDC failover: earlier KDC hosts did not answer"
+        );
+    }
     debug!(
         session_id = %session_id,
-        kdc = %socket_addr,
+        realm = %realm,
+        kdc = %connection.addr,
         "Kerberos KDC FD leased to proxy_rdp"
     );
 
@@ -3421,7 +3465,7 @@ fn handle_kerberos_kdc_request(
     };
     let _ = requesting_channel.send(&response);
     // Keep the TcpStream alive until after send_fd (child owns a copy).
-    drop(stream);
+    drop(connection);
 }
 
 /// Handle a RecordingFileRequest from a sandboxed service.
@@ -3981,15 +4025,32 @@ fn dispatch_service_message(
                 mcp_guards,
             );
         }
+        // Legacy lease: no realm. `data` is unused on the FD-lease path
+        // and dropped here; honored only with a single configured realm.
         Message::KerberosKdcRequest {
             request_id,
             session_id,
-            data,
+            data: _,
         } => {
             handle_kerberos_kdc_request(
                 request_id,
                 session_id,
-                data,
+                None,
+                &state.channel,
+                service_key,
+                children,
+                kerberos,
+            );
+        }
+        Message::KerberosKdcLeaseRequest {
+            request_id,
+            session_id,
+            realm,
+        } => {
+            handle_kerberos_kdc_request(
+                request_id,
+                session_id,
+                Some(realm),
                 &state.channel,
                 service_key,
                 children,
@@ -6261,6 +6322,76 @@ mod tests {
         );
     }
 
+    // ==================== Kerberos ambient-config isolation ====================
+
+    /// The scrub must be the very first statement of `main`: it mutates
+    /// the environment, which is only sound while single-threaded, and it
+    /// must precede anything that could fork a child.
+    #[test]
+    fn test_main_scrubs_ambient_kerberos_config_first() {
+        let source = supervisor_prod_source();
+        let main_start = source
+            .find("fn main() -> ExitCode {")
+            .expect("main must exist");
+        let body = source[main_start + "fn main() -> ExitCode {".len()..].trim_start();
+        assert!(
+            body.starts_with("let scrubbed_kerberos_env = scrub_ambient_kerberos_config();"),
+            "scrub_ambient_kerberos_config() must be the first statement of main"
+        );
+    }
+
+    /// The scrub delegates the selection to the shared predicate (single
+    /// definition of what counts as ambient Kerberos configuration).
+    #[test]
+    fn test_scrub_uses_the_shared_selection() {
+        let source = supervisor_prod_source();
+        let start = source
+            .find("fn scrub_ambient_kerberos_config()")
+            .expect("scrub_ambient_kerberos_config must exist");
+        let body = &source[start..];
+        let end = body.find("\n}\n").expect("function end");
+        let body = &body[..end];
+        assert!(body.contains("shared::kerberos::ambient_config_removals("));
+        assert!(body.contains("std::env::remove_var(name)"));
+    }
+
+    /// `spawn_child` must keep inheriting the (scrubbed) environment
+    /// through `execv`: if it ever switches to an explicit environment,
+    /// the isolation has to be re-established there.
+    #[test]
+    fn test_spawn_child_inherits_the_scrubbed_environment() {
+        let source = supervisor_prod_source();
+        let start = source.find("fn spawn_child(").expect("spawn_child");
+        let body = &source[start..];
+        let end = body
+            .find("\nfn ")
+            .or_else(|| body.find("\n#[allow"))
+            .expect("end");
+        let body = &body[..end];
+        // Needle kept short on purpose: `ipc_fd_hygiene_pin_test` counts
+        // the full call form across this whole file.
+        assert!(body.contains("let Err(e) = execv("));
+        assert!(
+            !body.contains("execve("),
+            "spawn_child passes no explicit environment; see scrub_ambient_kerberos_config"
+        );
+    }
+
+    /// Behavior of the scrub on this process. Runs in its own test
+    /// process only for the two variables it sets and removes.
+    #[test]
+    fn attack_inherited_sspi_kdc_override_is_rejected() {
+        const NAME: &str = "SSPI_KDC_URL_VAUBAN.SCRUB.TEST";
+        // SAFETY: the variable name is unique to this test; no other
+        // test reads or writes it.
+        unsafe {
+            std::env::set_var(NAME, "tcp://attacker.test:88");
+        }
+        let removed = scrub_ambient_kerberos_config();
+        assert!(removed.iter().any(|n| n == NAME), "removed: {removed:?}");
+        assert!(std::env::var_os(NAME).is_none());
+    }
+
     // ==================== Bitrate Env Var Injection Tests ====================
 
     #[test]
@@ -7225,9 +7356,26 @@ mod tests {
             .unwrap_or(handler.len().min(4000));
         let handler = &handler[..handler_end];
         assert!(
-            handler.contains("kerberos.allows()") && handler.contains("kerberos.endpoint()"),
-            "the KDC FD broker MUST gate on kerberos.allows()/endpoint() (supervisor-owned)"
+            handler.contains("crate::kdc_broker::select_endpoints(kerberos,"),
+            "the KDC FD broker MUST select endpoints from the supervisor-owned realm table"
         );
+        assert!(
+            handler.contains("crate::kdc_broker::connect_first_kdc(&endpoints,"),
+            "the KDC FD broker MUST connect only to the endpoints it selected"
+        );
+        assert!(
+            !handler.contains("resolve_tcp_targets(") && !handler.contains("to_socket_addrs"),
+            "no name from the request may be resolved in the handler; \
+             resolution lives in kdc_broker on configured hosts only"
+        );
+        // The realm reaches the broker only as a lookup key.
+        let select_at = handler
+            .find("crate::kdc_broker::select_endpoints(")
+            .expect("select call");
+        let connect_at = handler
+            .find("crate::kdc_broker::connect_first_kdc(")
+            .expect("connect call");
+        assert!(select_at < connect_at, "select before connect");
         assert!(
             !handler.contains("SessionToken::verify_bytes"),
             "the KDC FD broker is token-less; it MUST NOT verify a SessionToken"
@@ -7253,6 +7401,34 @@ mod tests {
 
     /// The Kerberos config must be threaded through the message dispatch so a
     /// future refactor cannot silently drop the SSRF gate.
+    /// Both lease variants reach the single handler, and only the
+    /// realm-carrying one forwards a realm.
+    #[test]
+    fn test_both_kerberos_lease_variants_route_to_the_broker() {
+        let source = supervisor_prod_source();
+        let dispatch = source
+            .split("fn dispatch_service_message(")
+            .nth(1)
+            .expect("dispatch_service_message");
+        let legacy = dispatch
+            .find("Message::KerberosKdcRequest {")
+            .expect("legacy arm");
+        let lease = dispatch
+            .find("Message::KerberosKdcLeaseRequest {")
+            .expect("realm lease arm");
+        let legacy_arm = &dispatch[legacy..lease];
+        assert!(legacy_arm.contains("handle_kerberos_kdc_request("));
+        assert!(legacy_arm.contains("None,"), "legacy lease names no realm");
+        let lease_arm = &dispatch[lease..lease + 400];
+        assert!(lease_arm.contains("handle_kerberos_kdc_request("));
+        assert!(lease_arm.contains("Some(realm),"));
+        assert_eq!(
+            source.matches("handle_kerberos_kdc_request(").count(),
+            3,
+            "one definition and two call sites"
+        );
+    }
+
     #[test]
     fn test_kerberos_config_threaded_through_process_service_messages() {
         let source = supervisor_prod_source();

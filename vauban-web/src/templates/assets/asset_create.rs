@@ -28,7 +28,7 @@ pub struct AssetCreateForm {
     pub ssh_key_source: Option<String>,
     /// Optional Windows AD domain shown only for RDP assets.
     pub rdp_domain: Option<String>,
-    /// RDP NLA auth mode (`ntlm` | `kerberos_restricted_admin`), shown only
+    /// RDP NLA auth mode (`ntlm` | `kerberos_restricted_admin` | `kerberos`), shown only
     /// for RDP assets.
     pub rdp_auth_mode: Option<String>,
 }
@@ -47,6 +47,8 @@ pub struct AssetCreateTemplate {
     pub form: AssetCreateForm,
     pub csrf_token: String,
     pub asset_types: Vec<(String, String)>,
+    /// `[rdp] ntlm_policy = "deny"`: the NTLM option is disabled.
+    pub ntlm_denied: bool,
 }
 
 #[cfg(test)]
@@ -105,6 +107,7 @@ mod tests {
                 ("ssh".to_string(), "SSH".to_string()),
                 ("rdp".to_string(), "RDP".to_string()),
             ],
+            ntlm_denied: false,
         };
         assert_eq!(template.title, "New Asset");
     }
@@ -130,6 +133,7 @@ mod tests {
             form: create_test_form(),
             csrf_token: "test".to_string(),
             asset_types: vec![],
+            ntlm_denied: false,
         };
 
         assert!(template.user.is_some());
@@ -158,6 +162,7 @@ mod tests {
                 ("ssh".to_string(), "SSH".to_string()),
                 ("rdp".to_string(), "RDP".to_string()),
             ],
+            ntlm_denied: false,
         };
 
         let result = template.render();
@@ -189,6 +194,7 @@ mod tests {
                 ("ssh".to_string(), "SSH".to_string()),
                 ("rdp".to_string(), "RDP".to_string()),
             ],
+            ntlm_denied: false,
         };
 
         let html = template.render().expect("render should succeed");
@@ -225,6 +231,7 @@ mod tests {
                 ("ssh".to_string(), "SSH".to_string()),
                 ("rdp".to_string(), "RDP".to_string()),
             ],
+            ntlm_denied: false,
         };
 
         let html = template.render().expect("render should succeed");

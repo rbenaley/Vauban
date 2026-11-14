@@ -172,7 +172,7 @@ pub struct AssetEdit {
     pub rdp_server_cert_fingerprint: Option<String>,
     /// Windows AD domain extracted from connection_config (RDP only).
     pub rdp_domain: String,
-    /// NLA auth mode (`ntlm` | `kerberos_restricted_admin`) extracted from
+    /// NLA auth mode (`ntlm` | `kerberos_restricted_admin` | `kerberos`) extracted from
     /// connection_config (RDP only), normalised to the closed set.
     pub rdp_auth_mode: String,
     /// MCP upstream SPKI pin (`mcp_upstream_tls_spki`, MCP only).
@@ -199,6 +199,8 @@ pub struct AssetEditTemplate {
     pub asset: AssetEdit,
     /// Industrial protocol choices for IACS asset edit (five variants).
     pub iacs_asset_types: Vec<(String, String)>,
+    /// `[rdp] ntlm_policy = "deny"`: the NTLM option is disabled.
+    pub ntlm_denied: bool,
 }
 
 #[cfg(test)]
@@ -289,6 +291,7 @@ mod tests {
             header_user: None,
             asset: create_test_asset_edit(),
             iacs_asset_types: AssetType::iacs_select_options(),
+            ntlm_denied: false,
         };
         assert_eq!(template.title, "Edit Asset");
         assert_eq!(template.asset.name, "Production Server");
@@ -310,6 +313,7 @@ mod tests {
             header_user: None,
             asset,
             iacs_asset_types: AssetType::iacs_select_options(),
+            ntlm_denied: false,
         }
         .render()
         .unwrap();
@@ -340,6 +344,7 @@ mod tests {
             header_user: Some(user),
             asset: create_test_asset_edit(),
             iacs_asset_types: AssetType::iacs_select_options(),
+            ntlm_denied: false,
         };
 
         assert!(template.user.is_some());
@@ -364,6 +369,7 @@ mod tests {
             header_user: None,
             asset: create_test_asset_edit(),
             iacs_asset_types: AssetType::iacs_select_options(),
+            ntlm_denied: false,
         };
 
         let result = template.render();
@@ -497,6 +503,7 @@ mod tests {
             header_user: None,
             asset,
             iacs_asset_types: AssetType::iacs_select_options(),
+            ntlm_denied: false,
         }
         .render()
         .unwrap();

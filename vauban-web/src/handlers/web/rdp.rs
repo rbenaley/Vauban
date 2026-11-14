@@ -27,15 +27,49 @@ fn htmx_error_response(message: &str) -> Response {
         .into_response()
 }
 
+/// Refuse an RDP session for a classified authentication reason: audit
+/// the reason and the mode, then answer with a constant message. The
+/// cause is shown to a holder of `assets:manage` only; `perms` selects
+/// the wording here, it does not gate the session (the access-rule
+/// pipeline does). `session_id` is `None` when no session was created.
+#[allow(clippy::too_many_arguments)]
+fn refuse_rdp_auth(
+    state: &AppState,
+    auth_user: &AuthUser,
+    perms: &crate::auth::PermissionContext,
+    client_ip: std::net::IpAddr,
+    asset_uuid: uuid::Uuid,
+    session_id: Option<String>,
+    reason: shared::messages::RdpAuthFailure,
+    mode: shared::messages::RdpAuthMode,
+) -> Response {
+    let mut event = crate::ipc::AuditEvent::new(
+        shared::messages::AuditEventType::RdpAuthFailed,
+        crate::services::rdp_auth_failure::audit_details(asset_uuid, reason, mode),
+    )
+    .user(auth_user.uuid.to_string())
+    .ip(Some(client_ip));
+    if let Some(session_id) = session_id {
+        event = event.session(session_id);
+    }
+    crate::services::emit_audit(state, event);
+    htmx_error_response(crate::services::rdp_auth_failure::message_for(
+        reason,
+        perms.assets_manage,
+    ))
+}
+
 /// Initiate RDP connection to an asset.
 ///
 /// POST /assets/{uuid}/connect-rdp
+#[allow(clippy::too_many_arguments)] // axum extractors, one per input
 // allow-ungated: session-open path; authorization delegated to the access-rule pipeline (vauban-access CheckAssetAccess + MFA + JIT)
 pub async fn connect_rdp(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     jar: CookieJar,
     auth_user: AuthUser,
+    perms: crate::auth::PermissionContext,
     client_addr: crate::middleware::ClientAddr,
     axum::extract::Path(asset_uuid_str): axum::extract::Path<String>,
     Form(form): Form<ConnectRdpForm>,
@@ -351,6 +385,24 @@ pub async fn connect_rdp(
         }
     };
 
+    // NTLM policy (`[rdp] ntlm_policy`). Under `deny`, an asset whose mode
+    // is not a Kerberos mode opens no session: refused here, before any
+    // session record, token or proxy request. Placed after the access
+    // rules, so a caller without access to the asset learns nothing about
+    // its mode. The RDP proxy enforces the same policy on its side.
+    if !state.config.rdp.ntlm_policy.permits(rdp_auth_mode) {
+        return refuse_rdp_auth(
+            &state,
+            &auth_user,
+            &perms,
+            client_addr.addr().ip(),
+            asset_uuid,
+            None,
+            shared::messages::RdpAuthFailure::NtlmForbidden,
+            rdp_auth_mode,
+        );
+    }
+
     // Get RDP proxy client (checked after access rules to avoid leaking proxy state)
     let proxy_client = match &state.rdp_proxy {
         Some(client) => client.clone(),
@@ -510,6 +562,24 @@ pub async fn connect_rdp(
             Redirect::to(&redirect_url).into_response()
         }
         Ok(response) => {
+            // NLA failure with a classified reason: audit the reason and
+            // the mode, then answer with a constant message. The cause is
+            // shown to a holder of `assets:manage` only; `perms` selects
+            // the wording here, it does not gate the session (the
+            // access-rule pipeline above did).
+            if let Some((reason, attempted_mode)) = response.auth_failure {
+                return refuse_rdp_auth(
+                    &state,
+                    &auth_user,
+                    &perms,
+                    client_addr.addr().ip(),
+                    asset_uuid,
+                    Some(session_id.clone()),
+                    reason,
+                    attempted_mode,
+                );
+            }
+
             let err = response
                 .error
                 .unwrap_or_else(|| "RDP connection failed".to_string());

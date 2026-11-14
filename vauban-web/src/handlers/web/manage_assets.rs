@@ -99,6 +99,7 @@ pub async fn asset_create_form(
         form,
         csrf_token,
         asset_types: AssetType::select_options(state.config.industrial.enabled),
+        ntlm_denied: state.config.rdp.ntlm_policy == shared::messages::NtlmPolicy::Deny,
     };
 
     let html = template
@@ -288,14 +289,19 @@ pub async fn create_asset_web(
         return flash_redirect(flash.error(msg), "/assets/manage/new");
     }
 
-    // Kerberos RDP requires an FQDN target (SPN TERMSRV/<fqdn>): reject an
-    // IP-literal hostname fail-closed, before persisting anything.
+    // Kerberos RDP requires an FQDN target (SPN TERMSRV/<fqdn>) and a
+    // DNS-form domain (the realm): reject an IP-literal hostname, a missing
+    // domain or a NetBIOS short name fail-closed, before persisting anything.
+    // An unknown mode is refused, not folded into NTLM.
     if parsed_asset_type == AssetType::Rdp
-        && super::normalize_rdp_auth_mode(form.rdp_auth_mode.as_deref())
-            == shared::messages::RdpAuthMode::KerberosRestrictedAdmin.as_str()
-        && let Err(msg) = super::validate_kerberos_fqdn(&form.hostname)
+        && let Err(e) = crate::services::rdp_auth_mode::resolve(
+            form.rdp_auth_mode.as_deref(),
+            form.rdp_domain.as_deref(),
+            None,
+            &form.hostname,
+        )
     {
-        return flash_redirect(flash.error(msg), "/assets/manage/new");
+        return flash_redirect(flash.error(e.to_string()), "/assets/manage/new");
     }
 
     // Resolve the SSH key material for the `ssh_key` auth mode.
@@ -630,7 +636,15 @@ pub async fn manage_asset_list(
     }
 
     #[allow(clippy::type_complexity)]
-    let db_assets: Vec<(::uuid::Uuid, String, String, i32, AssetType, String)> = query
+    let db_assets: Vec<(
+        ::uuid::Uuid,
+        String,
+        String,
+        i32,
+        AssetType,
+        String,
+        serde_json::Value,
+    )> = query
         .select((
             schema_assets::uuid,
             schema_assets::name,
@@ -638,6 +652,7 @@ pub async fn manage_asset_list(
             schema_assets::port,
             schema_assets::asset_type,
             schema_assets::status,
+            schema_assets::connection_config,
         ))
         .order(schema_assets::name.asc())
         .limit(window.limit_i64())
@@ -647,12 +662,20 @@ pub async fn manage_asset_list(
 
     let assets: Vec<ManageAssetItem> = db_assets
         .into_iter()
-        .map(|(uuid, name, hostname, port, asset_type, status)| {
+        .map(|(uuid, name, hostname, port, asset_type, status, config)| {
             let iacs_protocol_label = asset_type
                 .iacs_protocol()
                 .map(|p| p.as_str().to_string())
                 .unwrap_or_default();
+            // Only the mode leaves `connection_config` for the list.
+            let rdp_auth_mode = (asset_type == AssetType::Rdp)
+                .then(|| crate::services::rdp_auth_mode::stored_mode(&config));
             ManageAssetItem {
+                rdp_auth_label: rdp_auth_mode
+                    .map(crate::services::rdp_auth_mode::badge_label)
+                    .unwrap_or_default()
+                    .to_string(),
+                rdp_uses_kerberos: rdp_auth_mode.is_some_and(|m| m.uses_kerberos()),
                 uuid,
                 name,
                 hostname,
@@ -1404,6 +1427,7 @@ pub async fn asset_edit(
         header_user,
         asset,
         iacs_asset_types: AssetType::iacs_select_options(),
+        ntlm_denied: state.config.rdp.ntlm_policy == shared::messages::NtlmPolicy::Deny,
     };
 
     match template.render() {
@@ -1437,7 +1461,7 @@ pub struct UpdateAssetForm {
     pub ssh_key_source: Option<String>,
     pub rdp_domain: Option<String>,
     pub mcp_transport: Option<String>,
-    /// RDP NLA auth mode: `ntlm` | `kerberos_restricted_admin`
+    /// RDP NLA auth mode: `ntlm` | `kerberos_restricted_admin` | `kerberos`
     /// (see `CreateAssetWebForm::rdp_auth_mode`).
     pub rdp_auth_mode: Option<String>,
     /// Present on IACS asset edits; selects the industrial protocol.
@@ -1751,33 +1775,27 @@ pub async fn update_asset_web(
         }
     }
 
-    // Kerberos RDP requires an FQDN target (SPN TERMSRV/<fqdn>). Compute
-    // the effective mode after the overlay (blank ⇒ keep existing) and
-    // reject an IP-literal hostname fail-closed before persisting.
-    if effective_asset_type == AssetType::Rdp {
-        let effective_mode = form
-            .rdp_auth_mode
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|m| super::normalize_rdp_auth_mode(Some(m)))
-            .unwrap_or_else(|| {
-                existing
-                    .connection_config
-                    .get("rdp_auth_mode")
-                    .and_then(|v| v.as_str())
-                    .map(|m| super::normalize_rdp_auth_mode(Some(m)))
-                    .unwrap_or_else(|| super::normalize_rdp_auth_mode(None))
-            });
-        if effective_mode == shared::messages::RdpAuthMode::KerberosRestrictedAdmin.as_str()
-            && let Err(msg) = super::validate_kerberos_fqdn(&form.hostname)
-        {
-            return htmx_or_flash_redirect(
-                &headers,
-                flash.error(msg),
-                &format!("/assets/manage/{asset_uuid}/edit"),
-            );
-        }
+    // Kerberos RDP requires an FQDN target (SPN TERMSRV/<fqdn>) and a
+    // DNS-form domain (the realm). Compute the effective mode and domain
+    // after the overlay (blank mode ⇒ keep existing) and reject an
+    // IP-literal hostname, a missing domain or a NetBIOS short name
+    // fail-closed before persisting.
+    // `resolve` applies the form's overlay rules (blank mode keeps the
+    // stored one, an empty domain clears it, an absent one keeps it) and
+    // refuses an unknown mode instead of folding it into NTLM.
+    if effective_asset_type == AssetType::Rdp
+        && let Err(e) = crate::services::rdp_auth_mode::resolve(
+            form.rdp_auth_mode.as_deref(),
+            form.rdp_domain.as_deref(),
+            Some(&existing.connection_config),
+            &form.hostname,
+        )
+    {
+        return htmx_or_flash_redirect(
+            &headers,
+            flash.error(e.to_string()),
+            &format!("/assets/manage/{asset_uuid}/edit"),
+        );
     }
 
     let mut connection_config = compute_updated_connection_config(

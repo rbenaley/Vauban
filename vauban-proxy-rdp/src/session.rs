@@ -38,7 +38,7 @@ use ironrdp_tokio::single_sequence_step;
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, NetworkClient, Upgraded};
 use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
-use shared::messages::{Message, RdpAuthMode, RdpInputEvent};
+use shared::messages::{Message, RdpAuthFailure, RdpAuthMode, RdpInputEvent};
 use std::os::unix::io::{FromRawFd, IntoRawFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -81,7 +81,9 @@ pub struct SessionConfig {
     /// NLA authentication mode for the CredSSP leg. `Ntlm` preserves the
     /// historical behavior; `KerberosRestrictedAdmin` sets the
     /// `RESTRICTED_ADMIN_MODE_REQUIRED` nego flag and drives CredSSP in
-    /// credential-less mode (fail-closed: no NTLM fallback).
+    /// credential-less mode; `Kerberos` drives CredSSP with Kerberos and
+    /// regular TSCredentials. Neither Kerberos mode falls back to NTLM.
+    /// See [`auth_mode_profile`].
     pub auth_mode: RdpAuthMode,
     /// Supervisor KDC FD-lease handle (Kerberos mode only). `None` in NTLM
     /// mode or in non-sandboxed dev mode; Kerberos mode fails closed
@@ -208,22 +210,28 @@ impl RdpSession {
         let mut framed = ironrdp_tokio::TokioFramed::new(stream);
 
         // Drive connection up to TLS upgrade point. Local mirror of
-        // `ironrdp_tokio::connect_begin`: in Kerberos / Restricted Admin
-        // mode the X.224 Connection Request must carry the
+        // `ironrdp_tokio::connect_begin`: in Restricted Admin mode the
+        // X.224 Connection Request must carry the
         // RESTRICTED_ADMIN_MODE_REQUIRED nego flag, which upstream
-        // hardcodes to empty.
-        let extra_nego_flags = match config.auth_mode {
-            RdpAuthMode::Ntlm => nego::RequestFlags::empty(),
-            RdpAuthMode::KerberosRestrictedAdmin => {
-                nego::RequestFlags::RESTRICTED_ADMIN_MODE_REQUIRED
-            }
+        // hardcodes to empty. The plain `Kerberos` mode sends no flag.
+        let extra_nego_flags = if auth_mode_profile(config.auth_mode).restricted_admin {
+            nego::RequestFlags::RESTRICTED_ADMIN_MODE_REQUIRED
+        } else {
+            nego::RequestFlags::empty()
         };
-        let should_upgrade =
+        let (should_upgrade, negotiation) =
             connect_begin_with_nego_flags(&mut framed, &mut connector, extra_nego_flags)
                 .await
-                .map_err(|e| {
-                    SessionError::ConnectionFailed(format!("RDP handshake begin failed: {e}"))
-                })?;
+                .map_err(|e| negotiation_error(&e))?;
+        // No mode goes further unless the target selected NLA (and, in
+        // Restricted Admin, announced support for it). Checked before the
+        // TLS upgrade: no credential has been used yet.
+        check_negotiation(config.auth_mode, negotiation).map_err(|detail| {
+            SessionError::AuthenticationFailed {
+                reason: RdpAuthFailure::NegotiationRefused,
+                detail: detail.to_string(),
+            }
+        })?;
 
         trace!(session_id = %config.session_id, "TLS upgrade starting");
 
@@ -280,6 +288,7 @@ impl RdpSession {
             config.auth_mode,
             config.supervisor_relay.clone(),
             &config.session_id,
+            config.domain.as_deref(),
         )?;
         let connection_result = connect_finalize_with_message_channel_demux(
             upgraded,
@@ -291,7 +300,10 @@ impl RdpSession {
             config.auth_mode,
         )
         .await
-        .map_err(|e| SessionError::AuthenticationFailed(format!("RDP finalize failed: {e}")))?;
+        .map_err(|e| SessionError::AuthenticationFailed {
+            reason: auth_failure_reason(config.auth_mode, &e, &network_client),
+            detail: format!("RDP finalize failed: {e}"),
+        })?;
 
         let actual_width = connection_result.desktop_size.width;
         let actual_height = connection_result.desktop_size.height;
@@ -1733,6 +1745,168 @@ impl ServerCertVerifier for TofuAcceptAnyFetchVerifier {
     }
 }
 
+/// What an [`RdpAuthMode`] means on the wire, for the three places that
+/// differ between modes: the X.224 negotiation flag, the CredSSP
+/// TSCredentials, and the security package.
+///
+/// One row per mode in [`auth_mode_profile`]. Adding a mode is adding a
+/// row there: the `match` is exhaustive, so the compiler refuses a mode
+/// that has not stated its posture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuthModeProfile {
+    /// Send `RESTRICTED_ADMIN_MODE_REQUIRED` in the X.224 Connection
+    /// Request.
+    pub restricted_admin: bool,
+    /// Send EMPTY TSCredentials (`CredSspMode::CredentialLess`): the
+    /// target never receives the password.
+    pub credential_less: bool,
+    /// Authenticate with the Kerberos package ONLY, through the
+    /// supervisor KDC broker. `false` means NTLM, with no network client.
+    pub kerberos: bool,
+}
+
+/// The posture of each auth mode. Neither Kerberos row can reach NTLM:
+/// `kerberos: true` selects a Kerberos-only package list, and a
+/// server-driven NTLM downgrade aborts the sequence.
+pub const fn auth_mode_profile(mode: RdpAuthMode) -> AuthModeProfile {
+    match mode {
+        RdpAuthMode::Ntlm => AuthModeProfile {
+            restricted_admin: false,
+            credential_less: false,
+            kerberos: false,
+        },
+        RdpAuthMode::KerberosRestrictedAdmin => AuthModeProfile {
+            restricted_admin: true,
+            credential_less: true,
+            kerberos: true,
+        },
+        RdpAuthMode::Kerberos => AuthModeProfile {
+            restricted_admin: false,
+            credential_less: false,
+            kerberos: true,
+        },
+    }
+}
+
+/// Why a session was refused before any Kerberos exchange.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KerberosPreflightError {
+    /// The process environment carries ambient Kerberos configuration
+    /// (`KRB5_CONFIG` not pinned, or an `SSPI_KDC_URL*` override).
+    AmbientConfigNotIsolated,
+    /// The asset domain is missing or is not a DNS-form realm.
+    Realm(shared::kerberos::RealmError),
+}
+
+impl KerberosPreflightError {
+    /// The classified reason sent to vauban-web.
+    pub const fn auth_failure(&self) -> RdpAuthFailure {
+        match self {
+            Self::AmbientConfigNotIsolated => RdpAuthFailure::Other,
+            Self::Realm(_) => RdpAuthFailure::RealmInvalid,
+        }
+    }
+
+    /// Operator-facing text for this process's log. No secret and no
+    /// caller-supplied value is echoed.
+    pub const fn message(&self) -> &'static str {
+        match self {
+            Self::AmbientConfigNotIsolated => {
+                "Kerberos refused: the proxy environment carries ambient Kerberos configuration"
+            }
+            Self::Realm(_) => {
+                "Kerberos requires the DNS name of the domain (e.g. corp.example.com) on the asset"
+            }
+        }
+    }
+}
+
+/// Why the proxy refuses to open a session, before any credential is
+/// materialized or any connection is made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionOpenRefusal {
+    /// The NTLM policy forbids a session in this mode.
+    NtlmForbidden,
+    /// The Kerberos pre-flight failed.
+    Preflight(KerberosPreflightError),
+}
+
+impl SessionOpenRefusal {
+    /// The classified reason sent to vauban-web.
+    pub const fn auth_failure(&self) -> RdpAuthFailure {
+        match self {
+            Self::NtlmForbidden => RdpAuthFailure::NtlmForbidden,
+            Self::Preflight(error) => error.auth_failure(),
+        }
+    }
+
+    /// Operator-facing text for this process's log.
+    pub const fn message(&self) -> &'static str {
+        match self {
+            Self::NtlmForbidden => "NTLM is forbidden by policy",
+            Self::Preflight(error) => error.message(),
+        }
+    }
+}
+
+/// Everything the proxy decides on its own before opening a session, in
+/// one function: the NTLM policy, then the Kerberos pre-flight.
+///
+/// vauban-web applies the same policy and validates the domain at write
+/// time. The proxy does not rely on either: a compromised web tier, or a
+/// row written before the rules existed, gets the same answer here.
+/// Returns the domain to use (the canonical realm in a Kerberos mode).
+pub fn session_open_gate(
+    policy: shared::messages::NtlmPolicy,
+    auth_mode: RdpAuthMode,
+    domain: Option<String>,
+    ambient_isolated: bool,
+) -> Result<Option<String>, SessionOpenRefusal> {
+    if !policy.permits(auth_mode) {
+        return Err(SessionOpenRefusal::NtlmForbidden);
+    }
+    kerberos_preflight(auth_mode, domain, ambient_isolated).map_err(SessionOpenRefusal::Preflight)
+}
+
+/// Gate run at session open, before any credential is materialized.
+///
+/// * NTLM: the domain is passed through untouched (a NetBIOS short name,
+///   or none, stays valid there).
+/// * Kerberos modes: the environment must be isolated from ambient
+///   Kerberos configuration, and the domain must be a DNS-form realm. The
+///   returned domain is the canonical upper-case realm, the only value
+///   `sspi` then turns into the client principal's realm.
+///
+/// `sspi` would otherwise upper-case whatever it is given: an absent
+/// domain becomes an EMPTY realm, and `[domain_realm]` from a host
+/// `krb5.conf` could silently remap it.
+pub fn kerberos_preflight(
+    auth_mode: RdpAuthMode,
+    domain: Option<String>,
+    ambient_config_isolated: bool,
+) -> Result<Option<String>, KerberosPreflightError> {
+    if !auth_mode.uses_kerberos() {
+        return Ok(domain);
+    }
+    if !ambient_config_isolated {
+        return Err(KerberosPreflightError::AmbientConfigNotIsolated);
+    }
+    let realm = shared::kerberos::normalize_realm(domain.as_deref().unwrap_or_default())
+        .map_err(KerberosPreflightError::Realm)?;
+    Ok(Some(realm.as_str().to_string()))
+}
+
+/// Whether this process's environment is free of ambient Kerberos
+/// configuration (see [`shared::kerberos::ambient_config_is_isolated`]).
+pub fn process_ambient_config_is_isolated() -> bool {
+    shared::kerberos::ambient_config_is_isolated(std::env::vars_os().map(|(name, value)| {
+        (
+            name.to_string_lossy().into_owned(),
+            value.to_string_lossy().into_owned(),
+        )
+    }))
+}
+
 /// Minimal NetworkClient for NTLM-only authentication.
 /// Kerberos authentication (which requires network access to KDC) is not
 /// supported in this initial implementation. For username/password auth
@@ -1788,7 +1962,7 @@ pub fn decode_kdc_reply_len(be: [u8; 4]) -> Result<usize, String> {
 ///
 /// Correlation uses `request_id` (distinct from asset `pending_connections`
 /// keyed by `session_id` and from recording leases). `kdc_round_trip`
-/// parks a oneshot, sends [`Message::KerberosKdcRequest`] (empty `data`),
+/// parks a oneshot, sends [`Message::KerberosKdcLeaseRequest`] (realm only),
 /// and `main_loop` completes with the leased [`OwnedFd`] after
 /// `recv_fd_timed`.
 type KdcLeaseResult = Result<OwnedFd, String>;
@@ -1819,16 +1993,23 @@ impl SupervisorRelay {
     /// Lease a connected KDC FD, write one framed Kerberos TCP message
     /// (AS-REQ / TGS-REQ, 4-byte length prefix included), read the framed
     /// reply, and return it to sspi. Fail-closed on lease / I/O / timeout.
-    pub async fn kdc_round_trip(&self, session_id: &str, data: Vec<u8>) -> Result<Vec<u8>, String> {
+    pub async fn kdc_round_trip(
+        &self,
+        session_id: &str,
+        realm: &shared::kerberos::Realm,
+        data: Vec<u8>,
+    ) -> Result<Vec<u8>, String> {
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
         self.pending.lock().await.insert(request_id, resp_tx);
 
-        let request = Message::KerberosKdcRequest {
+        // The realm is a lookup key into the supervisor's `[auth.kerberos]`
+        // table, never a destination. The sspi payload stays in this
+        // process: it is written on the leased FD, not on the IPC pipe.
+        let request = Message::KerberosKdcLeaseRequest {
             request_id,
             session_id: session_id.to_string(),
-            // Wire field retained for bincode; supervisor ignores payload.
-            data: shared::messages::SensitiveBytes::default(),
+            realm: realm.as_str().to_string(),
         };
         if self.tx.send(request).is_err() {
             self.pending.lock().await.remove(&request_id);
@@ -1901,18 +2082,55 @@ pub fn kdc_framed_round_trip(owned_fd: OwnedFd, request: &[u8]) -> Result<Vec<u8
     Ok(reply)
 }
 
-/// NetworkClient for the Kerberos / Restricted Admin mode: every sspi
-/// `NetworkRequest` leases a KDC FD from the supervisor
-/// ([`Message::KerberosKdcRequest`]) and performs framed TCP I/O locally.
+/// Where the Kerberos network client sends one framed KDC exchange for a
+/// realm. Production has a single implementation, [`SupervisorRelay`]
+/// (a KDC socket leased from the supervisor). The seam exists so the
+/// CredSSP sequence, the realm gate and the failure trace can be run in
+/// tests against an in-memory KDC.
+trait KdcTransport: Send + Sync {
+    fn kdc_round_trip<'a>(
+        &'a self,
+        session_id: &'a str,
+        realm: &'a shared::kerberos::Realm,
+        data: Vec<u8>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
+}
+
+impl KdcTransport for SupervisorRelay {
+    fn kdc_round_trip<'a>(
+        &'a self,
+        session_id: &'a str,
+        realm: &'a shared::kerberos::Realm,
+        data: Vec<u8>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>
+    {
+        Box::pin(SupervisorRelay::kdc_round_trip(
+            self, session_id, realm, data,
+        ))
+    }
+}
+
+/// NetworkClient for the Kerberos modes: every sspi `NetworkRequest`
+/// leases a KDC FD from the supervisor
+/// ([`Message::KerberosKdcLeaseRequest`]) and performs framed TCP I/O
+/// locally.
 ///
 /// Posture:
 /// - Only `NetworkProtocol::Tcp` is accepted. `Udp` / `Http` / `Https`
 ///   are refused fail-closed.
-/// - The request URL host ([`KERBEROS_KDC_SENTINEL_URL`]) is NOT forwarded:
-///   the supervisor always connects to its own configured KDC.
+/// - The request URL must be the sentinel of THIS session's realm (see
+///   [`kerberos_kdc_sentinel_url`]). sspi can produce other URLs on its
+///   own: for a cross-realm referral it runs its KDC discovery (env,
+///   krb5.conf, DNS). Such a URL is refused, never followed: the proxy
+///   reaches a KDC only through the supervisor's realm table.
+/// - The URL host is not forwarded. Only the realm is, as a lookup key.
 struct KerberosRelayNetworkClient {
-    relay: Arc<SupervisorRelay>,
+    relay: Arc<dyn KdcTransport>,
     session_id: String,
+    realm: shared::kerberos::Realm,
+    /// Evidence for classifying a failure: lease outcome and the error
+    /// code of the last KDC reply. Never the reply itself.
+    trace: crate::auth_failure::KdcTrace,
 }
 
 impl NetworkClient for KerberosRelayNetworkClient {
@@ -1923,20 +2141,76 @@ impl NetworkClient for KerberosRelayNetworkClient {
         use ironrdp::connector::sspi::network_client::NetworkProtocol;
 
         match request.protocol {
-            NetworkProtocol::Tcp => self
-                .relay
-                .kdc_round_trip(&self.session_id, request.data.clone())
-                .await
-                .map_err(|e| {
-                    warn!(session_id = %self.session_id, error = %e, "KDC FD round-trip failed");
-                    ironrdp::connector::custom_err!("KDC FD", std::io::Error::other(e))
-                }),
+            NetworkProtocol::Tcp => {
+                if realm_from_kdc_request(request).as_ref() != Some(&self.realm) {
+                    warn!(
+                        session_id = %self.session_id,
+                        realm = %self.realm,
+                        "KDC path refused a URL that is not this session's realm sentinel"
+                    );
+                    return Err(ironrdp::connector::general_err!(
+                        "KDC path refuses a URL outside the session realm (fail-closed)"
+                    ));
+                }
+                match self
+                    .relay
+                    .kdc_round_trip(&self.session_id, &self.realm, request.data.clone())
+                    .await
+                {
+                    Ok(reply) => {
+                        self.trace.record_reply(&reply);
+                        Ok(reply)
+                    }
+                    Err(e) => {
+                        self.trace.record_relay_error(&e);
+                        warn!(session_id = %self.session_id, error = %e, "KDC FD round-trip failed");
+                        Err(ironrdp::connector::custom_err!(
+                            "KDC FD",
+                            std::io::Error::other(e)
+                        ))
+                    }
+                }
+            }
             NetworkProtocol::Udp | NetworkProtocol::Http | NetworkProtocol::Https => {
                 Err(ironrdp::connector::general_err!(
                     "KDC path refuses non-TCP transports (fail-closed)"
                 ))
             }
         }
+    }
+}
+
+/// The reason for a failed NLA leg, from typed evidence only: the KDC
+/// relay trace, the `sspi` error kind and the CredSSP status. The text of
+/// `error` is not read and stays in this process.
+fn auth_failure_reason(
+    auth_mode: RdpAuthMode,
+    error: &ConnectorError,
+    network_client: &SessionNetworkClient,
+) -> RdpAuthFailure {
+    crate::auth_failure::classify(
+        auth_mode,
+        &nla_failure_of(error),
+        &network_client.kdc_trace(),
+    )
+}
+
+/// The typed evidence a failed `connect_finalize` carries: the `sspi`
+/// error kind and CredSSP status, or the early-authorization denial. The
+/// error's text is not read.
+fn nla_failure_of(error: &ConnectorError) -> crate::auth_failure::NlaFailure {
+    match error.kind() {
+        ConnectorErrorKind::Credssp(sspi_error) => crate::auth_failure::NlaFailure {
+            sspi_kind: Some(sspi_error.error_type),
+            nstatus: sspi_error.nstatus.map(|status| status.0),
+            access_denied: false,
+        },
+        ConnectorErrorKind::AccessDenied => crate::auth_failure::NlaFailure {
+            sspi_kind: None,
+            nstatus: None,
+            access_denied: true,
+        },
+        _ => crate::auth_failure::NlaFailure::default(),
     }
 }
 
@@ -1953,23 +2227,49 @@ impl SessionNetworkClient {
     /// Fail-closed selection: Kerberos mode WITHOUT a supervisor relay
     /// (e.g. non-sandboxed dev mode where no FD-passing state exists) is
     /// refused instead of silently downgrading to NTLM.
+    ///
+    /// `domain` is the session domain; in a Kerberos mode it must be a
+    /// DNS-form realm (the session-open pre-flight already canonicalized
+    /// it, this re-check keeps the client self-sufficient).
     fn for_auth_mode(
         auth_mode: RdpAuthMode,
         relay: Option<Arc<SupervisorRelay>>,
         session_id: &str,
+        domain: Option<&str>,
     ) -> SessionResult<Self> {
-        match auth_mode {
-            RdpAuthMode::Ntlm => Ok(Self::NtlmOnly(NtlmOnlyNetworkClient)),
-            RdpAuthMode::KerberosRestrictedAdmin => match relay {
-                Some(relay) => Ok(Self::KerberosRelay(KerberosRelayNetworkClient {
-                    relay,
-                    session_id: session_id.to_string(),
-                })),
-                None => Err(SessionError::AuthenticationFailed(
-                    "Kerberos mode requires the supervisor KDC FD broker (no NTLM fallback)"
+        if !auth_mode_profile(auth_mode).kerberos {
+            return Ok(Self::NtlmOnly(NtlmOnlyNetworkClient));
+        }
+        let Some(relay) = relay else {
+            return Err(SessionError::AuthenticationFailed {
+                reason: RdpAuthFailure::KerberosBrokerUnavailable,
+                detail: "Kerberos mode requires the supervisor KDC FD broker (no NTLM fallback)"
+                    .to_string(),
+            });
+        };
+        let realm =
+            shared::kerberos::normalize_realm(domain.unwrap_or_default()).map_err(|_| {
+                SessionError::AuthenticationFailed {
+                    reason: RdpAuthFailure::RealmInvalid,
+                    detail: "Kerberos mode requires the DNS name of the domain (no NTLM fallback)"
                         .to_string(),
-                )),
-            },
+                }
+            })?;
+        let relay: Arc<dyn KdcTransport> = relay;
+        Ok(Self::KerberosRelay(KerberosRelayNetworkClient {
+            relay,
+            session_id: session_id.to_string(),
+            realm,
+            trace: crate::auth_failure::KdcTrace::default(),
+        }))
+    }
+
+    /// What the KDC relay saw so far. Empty in NTLM mode, which has no
+    /// relay.
+    fn kdc_trace(&self) -> crate::auth_failure::KdcTrace {
+        match self {
+            Self::NtlmOnly(_) => crate::auth_failure::KdcTrace::default(),
+            Self::KerberosRelay(client) => client.trace,
         }
     }
 }
@@ -2172,7 +2472,7 @@ async fn connect_begin_with_nego_flags<S>(
     framed: &mut Framed<S>,
     connector: &mut ClientConnector,
     extra_flags: nego::RequestFlags,
-) -> ConnectorResult<ironrdp_tokio::ShouldUpgrade>
+) -> ConnectorResult<(ironrdp_tokio::ShouldUpgrade, Option<NegotiationOutcome>)>
 where
     S: Sync + FramedRead + FramedWrite,
 {
@@ -2180,6 +2480,9 @@ where
     // Nothing to patch when no extra flag is requested (NTLM mode): the
     // first PDU is then written verbatim, byte-identical to upstream.
     let mut connection_request_patched = extra_flags.is_empty();
+    // What the target answered. IronRDP keeps the selected protocol but
+    // drops the response flags, so the confirm is decoded here as well.
+    let mut negotiation = None;
 
     while !connector.should_perform_security_upgrade() {
         buf.clear();
@@ -2188,6 +2491,12 @@ where
                 .read_by_hint(next_pdu_hint)
                 .await
                 .map_err(|e| ironrdp::connector::custom_err!("read frame by hint", e))?;
+            if matches!(
+                connector.state,
+                ClientConnectorState::ConnectionInitiationWaitConfirm { .. }
+            ) {
+                negotiation = negotiation_outcome_of(&pdu);
+            }
             connector.step(&pdu, &mut buf)?
         } else {
             connector.step_no_input(&mut buf)?
@@ -2210,7 +2519,92 @@ where
         }
     }
 
-    Ok(ironrdp_tokio::skip_connect_begin(connector))
+    Ok((ironrdp_tokio::skip_connect_begin(connector), negotiation))
+}
+
+/// What the target answered to the X.224 security negotiation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NegotiationOutcome {
+    /// The security protocol the target selected.
+    selected: nego::SecurityProtocol,
+    /// The flags of its negotiation response.
+    flags: nego::ResponseFlags,
+}
+
+/// The outcome carried by an X.224 Connection Confirm, when it is a
+/// negotiation response. `None` for a negotiation failure or bytes that
+/// are not a confirm.
+fn negotiation_outcome_of(pdu: &[u8]) -> Option<NegotiationOutcome> {
+    match ironrdp::core::decode::<X224<nego::ConnectionConfirm>>(pdu)
+        .ok()?
+        .0
+    {
+        nego::ConnectionConfirm::Response { flags, protocol } => Some(NegotiationOutcome {
+            selected: protocol,
+            flags,
+        }),
+        nego::ConnectionConfirm::Failure { .. } => None,
+    }
+}
+
+/// Whether the negotiation outcome allows `mode` to continue.
+///
+/// The X.224 negotiation is cleartext and precedes TLS: a target, or
+/// anyone on the path, can answer "TLS only". IronRDP accepts that answer
+/// (the proxy advertises TLS next to NLA) and then skips CredSSP: the
+/// session would open with no NLA at all, and the password would go to
+/// the target in the Client Info PDU. Every mode therefore requires:
+///
+/// * a negotiation response that selects NLA (`HYBRID` or `HYBRID_EX`);
+/// * in Restricted Admin, the `RESTRICTED_ADMIN_MODE_SUPPORTED` flag
+///   ([MS-RDPBCGR] 2.2.1.2.1): without it the target has not agreed to
+///   empty credentials.
+///
+/// A target that cannot do NLA (for example xrdp) is not reachable.
+fn check_negotiation(
+    mode: RdpAuthMode,
+    outcome: Option<NegotiationOutcome>,
+) -> Result<(), &'static str> {
+    let Some(outcome) = outcome else {
+        return Err("the target sent no negotiation response");
+    };
+    if !outcome
+        .selected
+        .intersects(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX)
+    {
+        return Err("the target did not select NLA (no NLA, no session)");
+    }
+    if auth_mode_profile(mode).restricted_admin
+        && !outcome
+            .flags
+            .contains(nego::ResponseFlags::RESTRICTED_ADMIN_MODE_SUPPORTED)
+    {
+        return Err("Restricted Admin: the target did not announce support for the mode");
+    }
+    Ok(())
+}
+
+/// The error for a failed negotiation step. A negotiation failure sent
+/// by the target is an authentication failure with a closed-set reason,
+/// in every mode; anything else stays a connection failure.
+fn negotiation_error(error: &ConnectorError) -> SessionError {
+    let detail = format!("RDP handshake begin failed: {error}");
+    if matches!(error.kind(), ConnectorErrorKind::Negotiation(_)) {
+        SessionError::AuthenticationFailed {
+            reason: RdpAuthFailure::NegotiationRefused,
+            detail,
+        }
+    } else {
+        SessionError::ConnectionFailed(detail)
+    }
+}
+
+/// Remove the password from the credentials IronRDP will put in the
+/// Client Info PDU (`TS_INFO_PACKET`), keeping the user name.
+fn strip_client_info_password(config: &mut connector::Config) {
+    if let Credentials::UsernamePassword { password, .. } = &mut config.credentials {
+        password.clear();
+    }
 }
 
 /// Decode an X.224 Connection Request PDU, OR `extra_flags` into its
@@ -2253,7 +2647,16 @@ where
 {
     let mut buf = WriteBuf::new();
 
-    if connector.should_perform_credssp() {
+    // Defense in depth behind `check_negotiation`: no mode continues a
+    // handshake in which CredSSP is not about to run. Without it the
+    // password would go to the target in the Client Info PDU, with no NLA.
+    if !connector.should_perform_credssp() {
+        return Err(ironrdp::connector::general_err!(
+            "NLA is required: the handshake did not reach CredSSP"
+        ));
+    }
+
+    {
         perform_credssp_step(
             &mut connector,
             framed,
@@ -2316,6 +2719,15 @@ where
         auth_mode,
     )?;
 
+    // Restricted Admin: the CredSSP client now holds its own copy of the
+    // identity (it needs the password for the Kerberos pre-authentication,
+    // in memory). Remove the password from the connector configuration,
+    // which IronRDP would otherwise send to the target after CredSSP, in
+    // the Client Info PDU.
+    if auth_mode_profile(auth_mode).credential_less {
+        strip_client_info_password(&mut connector.config);
+    }
+
     loop {
         let client_state = {
             let mut generator = sequence.process_ts_request(ts_request);
@@ -2366,17 +2778,55 @@ where
     Ok(())
 }
 
-/// Sentinel KDC URL handed to sspi in Kerberos mode.
+/// SPNEGO package list of both Kerberos modes: Kerberos and nothing else.
+/// Naming one package disables the others in sspi (`ntlm`, `pku2u`), so
+/// sspi's own "fall back to NTLM when Kerberos fails" path is closed and a
+/// server that selects NTLM gets an error.
+const KERBEROS_ONLY_PACKAGE_LIST: &str = "kerberos";
+
+/// Sentinel KDC URL handed to sspi in a Kerberos mode, for one realm.
 ///
-/// sspi 0.21.2 resolves the KDC as follows when `KerberosConfig.kdc_url` is
-/// `None`: `SSPI_KDC_URL*` env vars, then `/etc/krb5.conf`, then DNS SRV --
-/// all unavailable inside the sealed sandbox. Providing a `tcp://` URL
-/// short-circuits that detection (`Kerberos::get_kdc` uses the pinned URL
-/// verbatim) and forces every KDC exchange through a
-/// `NetworkRequest { protocol: Tcp, .. }`. The HOST part is meaningless by
-/// design: the supervisor relay ignores it and always connects to its own
-/// `[auth.kerberos]` configured KDC (SSRF-safe by construction).
-const KERBEROS_KDC_SENTINEL_URL: &str = "tcp://kdc-via-supervisor:88";
+/// sspi resolves the KDC as follows when `KerberosConfig.kdc_url` is
+/// `None`: `SSPI_KDC_URL*` env vars, then `/etc/krb5.conf`, then DNS SRV.
+/// Providing a `tcp://` URL short-circuits that detection for the home
+/// realm (`Kerberos::get_kdc` uses the pinned URL verbatim) and forces
+/// every KDC exchange through a `NetworkRequest { protocol: Tcp, .. }`.
+///
+/// The URL is never dialed. Its host only names the realm
+/// (`<realm>.kdc.vauban.invalid`, see `shared::kerberos`), so that
+/// [`KerberosRelayNetworkClient`] can tell which realm an exchange is for
+/// and refuse anything else. The supervisor then connects to the KDC
+/// hosts ITS configuration lists for that realm (SSRF-safe by
+/// construction).
+fn kerberos_kdc_sentinel_url(realm: &shared::kerberos::Realm) -> String {
+    // `realm` is allowlist-validated (`[A-Z0-9.-]`), so the host cannot
+    // carry a URL delimiter.
+    let mut sentinel = String::from("tcp://");
+    sentinel.push_str(&shared::kerberos::kdc_sentinel_host(realm));
+    sentinel.push(':');
+    sentinel.push_str(&shared::kerberos::KDC_SENTINEL_PORT.to_string());
+    sentinel
+}
+
+/// Realm named by the URL of a KDC request, if and only if it is a
+/// sentinel: `tcp://<realm>.kdc.vauban.invalid:88`, no credentials, no
+/// path beyond the root, no query. Any other URL yields `None`.
+fn realm_from_kdc_request(
+    request: &ironrdp::connector::sspi::generator::NetworkRequest,
+) -> Option<shared::kerberos::Realm> {
+    let url = &request.url;
+    if url.scheme() != "tcp"
+        || url.port() != Some(shared::kerberos::KDC_SENTINEL_PORT)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !matches!(url.path(), "" | "/")
+    {
+        return None;
+    }
+    shared::kerberos::realm_from_sentinel_host(url.host_str()?)
+}
 
 /// PDU hint for a CredSSP TsRequest frame (local mirror of the private
 /// upstream `CredsspTsRequestHint`).
@@ -2440,6 +2890,12 @@ enum LocalCredsspState {
 ///   `CredentialLess` (the TSCredentials sent after `pubKeyAuth` carry an
 ///   EMPTY identity; the password only feeds the in-memory AS-REQ
 ///   pre-authentication).
+/// - `Kerberos`: the same Kerberos-only `ClientMode::Negotiate` +
+///   `WithCredentials` (the TSCredentials carry the identity, as in
+///   `Ntlm`). For accounts that are not local administrators of the
+///   target.
+///
+/// The three postures are one table: [`auth_mode_profile`].
 #[derive(Debug)]
 struct LocalCredsspSequence {
     client: CredSspClient,
@@ -2479,29 +2935,45 @@ impl LocalCredsspSequence {
         let server_name = server_name.into_inner();
         let service_principal_name = format!("TERMSRV/{server_name}");
 
-        let (credssp_mode, client_mode) = match auth_mode {
-            RdpAuthMode::Ntlm => (
-                CredSspMode::WithCredentials,
-                sspi_credssp::ClientMode::Ntlm(sspi::ntlm::NtlmConfig::default()),
-            ),
-            RdpAuthMode::KerberosRestrictedAdmin => {
-                let kdc_url = sspi::kerberos::config::parse_kdc_url(KERBEROS_KDC_SENTINEL_URL);
-                let kerberos_config = sspi::KerberosConfig {
-                    kdc_url,
-                    client_computer_name: server_name.clone(),
-                };
-                (
-                    CredSspMode::CredentialLess,
-                    sspi_credssp::ClientMode::Negotiate(sspi::NegotiateConfig {
-                        protocol_config: Box::new(kerberos_config),
-                        // Fail-closed: only the Kerberos package is
-                        // permitted; a server-driven NTLM downgrade aborts
-                        // the sequence.
-                        package_list: Some("kerberos".to_owned()),
-                        client_computer_name: server_name,
-                    }),
-                )
-            }
+        let profile = auth_mode_profile(auth_mode);
+
+        // TSCredentials: empty in Restricted Admin, the identity otherwise.
+        let credssp_mode = if profile.credential_less {
+            CredSspMode::CredentialLess
+        } else {
+            CredSspMode::WithCredentials
+        };
+
+        let client_mode = if profile.kerberos {
+            // The realm comes from the session domain, canonicalized by
+            // the session-open pre-flight. Fail-closed if it is not a
+            // DNS-form realm: no sentinel, no Kerberos, no NTLM.
+            let realm =
+                shared::kerberos::normalize_realm(domain.unwrap_or_default()).map_err(|_| {
+                    ironrdp::connector::general_err!(
+                        "Kerberos mode requires the DNS name of the domain"
+                    )
+                })?;
+            let kdc_url = Some(
+                sspi::kerberos::config::parse_kdc_url(&kerberos_kdc_sentinel_url(&realm))
+                    .ok_or_else(|| {
+                        ironrdp::connector::general_err!("Kerberos KDC sentinel URL is not valid")
+                    })?,
+            );
+            let kerberos_config = sspi::KerberosConfig {
+                kdc_url,
+                client_computer_name: server_name.clone(),
+            };
+            sspi_credssp::ClientMode::Negotiate(sspi::NegotiateConfig {
+                protocol_config: Box::new(kerberos_config),
+                // Fail-closed: only the Kerberos package is permitted; a
+                // server-driven NTLM downgrade aborts the sequence. Same
+                // list for both Kerberos modes.
+                package_list: Some(KERBEROS_ONLY_PACKAGE_LIST.to_owned()),
+                client_computer_name: server_name,
+            })
+        } else {
+            sspi_credssp::ClientMode::Ntlm(sspi::ntlm::NtlmConfig::default())
         };
 
         let client = CredSspClient::new(
@@ -2702,6 +3174,14 @@ fn extract_tls_server_public_key(cert: &pki_types::CertificateDer<'_>) -> Result
         .map(|b| b.to_vec())
         .ok_or_else(|| "Public key BIT STRING is not aligned".to_string())
 }
+
+#[cfg(test)]
+#[path = "session_credssp_loop_tests.rs"]
+mod credssp_loop_tests;
+
+#[cfg(test)]
+#[path = "session_mit_kdc_tests.rs"]
+mod mit_kdc_tests;
 
 #[cfg(test)]
 mod tests {
@@ -3398,17 +3878,23 @@ mod tests {
             "exactly one upstream connect_begin call (cert-fetch) is expected"
         );
         let sel_start = source
-            .find("let extra_nego_flags = match config.auth_mode {")
-            .expect("connect() must select nego flags from auth_mode");
+            .find(
+                "let extra_nego_flags = if auth_mode_profile(config.auth_mode).restricted_admin {",
+            )
+            .expect("connect() must select nego flags from the auth-mode profile");
         let sel = &source[sel_start..sel_start + 320];
-        assert!(
-            sel.contains("RdpAuthMode::Ntlm => nego::RequestFlags::empty()"),
-            "NTLM mode must add no extra nego flag"
-        );
-        assert!(
-            sel.contains("RESTRICTED_ADMIN_MODE_REQUIRED"),
-            "Kerberos mode must set RESTRICTED_ADMIN_MODE_REQUIRED"
-        );
+        let flag = sel
+            .find("nego::RequestFlags::RESTRICTED_ADMIN_MODE_REQUIRED")
+            .expect("the restricted-admin branch must set RESTRICTED_ADMIN_MODE_REQUIRED");
+        let empty = sel
+            .find("nego::RequestFlags::empty()")
+            .expect("every other mode must add no extra nego flag");
+        assert!(flag < empty, "flag in the `if` branch, empty in the `else`");
+        // The flag is tied to Restricted Admin alone: NTLM and plain
+        // Kerberos send none.
+        assert!(auth_mode_profile(RdpAuthMode::KerberosRestrictedAdmin).restricted_admin);
+        assert!(!auth_mode_profile(RdpAuthMode::Ntlm).restricted_admin);
+        assert!(!auth_mode_profile(RdpAuthMode::Kerberos).restricted_admin);
     }
 
     /// Source pin (Kerberos phase A / point 7): the local CredSSP mirror
@@ -3421,20 +3907,106 @@ mod tests {
             .find("impl LocalCredsspSequence {")
             .expect("LocalCredsspSequence must exist");
         let body = &source[fn_start..];
+        let end = body.find("\n    fn next_pdu_hint").expect("end of init");
+        let body = &body[..end];
+        // TSCredentials follow `credential_less`, nothing else.
+        let cl = body
+            .find("let credssp_mode = if profile.credential_less {")
+            .expect("credssp_mode must come from profile.credential_less");
+        let cl_block = &body[cl..cl + 200];
         assert!(
-            body.contains("RdpAuthMode::Ntlm => (")
-                && body.contains("CredSspMode::WithCredentials")
-                && body.contains("ClientMode::Ntlm"),
-            "NTLM mode must keep WithCredentials + ClientMode::Ntlm"
+            cl_block
+                .find("CredSspMode::CredentialLess")
+                .expect("CredentialLess")
+                < cl_block
+                    .find("CredSspMode::WithCredentials")
+                    .expect("WithCredentials"),
+            "CredentialLess in the `if` branch, WithCredentials in the `else`"
+        );
+        // The package follows `kerberos`, nothing else.
+        let km = body
+            .find("let client_mode = if profile.kerberos {")
+            .expect("client_mode must come from profile.kerberos");
+        let k_block = &body[km..];
+        let negotiate = k_block.find("ClientMode::Negotiate(").expect("Negotiate");
+        let ntlm = k_block.find("ClientMode::Ntlm(").expect("Ntlm");
+        assert!(
+            negotiate < ntlm,
+            "Negotiate in the `if` branch, Ntlm in the `else`"
         );
         assert!(
-            body.contains("CredSspMode::CredentialLess"),
-            "Kerberos mode must use CredentialLess (Restricted Admin)"
+            k_block[..ntlm].contains("package_list: Some(KERBEROS_ONLY_PACKAGE_LIST.to_owned())"),
+            "Kerberos modes must fail-closed to the kerberos package (no NTLM downgrade)"
         );
-        assert!(
-            body.contains("package_list: Some(\"kerberos\".to_owned())"),
-            "Kerberos mode must fail-closed to the kerberos package (no NTLM downgrade)"
+        assert_eq!(KERBEROS_ONLY_PACKAGE_LIST, "kerberos");
+        assert_eq!(
+            source.matches("ClientMode::Ntlm(").count(),
+            // One production site, plus the needles in this test.
+            3,
+            "ClientMode::Ntlm must have a single production site: the non-Kerberos branch"
         );
+    }
+
+    /// The profile table agrees with the shared classification of every
+    /// mode, and encodes the three postures.
+    #[test]
+    fn test_auth_mode_profile_table() {
+        for mode in RdpAuthMode::ALL {
+            let profile = auth_mode_profile(mode);
+            assert_eq!(profile.kerberos, mode.uses_kerberos(), "{mode:?}");
+            assert_eq!(
+                profile.credential_less,
+                !mode.delegates_password(),
+                "{mode:?}"
+            );
+            // Restricted Admin and credential-less go together.
+            assert_eq!(
+                profile.restricted_admin, profile.credential_less,
+                "{mode:?}"
+            );
+            // Credential-less CredSSP only exists with Kerberos here.
+            assert!(!profile.credential_less || profile.kerberos, "{mode:?}");
+        }
+        assert_eq!(
+            auth_mode_profile(RdpAuthMode::Kerberos),
+            AuthModeProfile {
+                restricted_admin: false,
+                credential_less: false,
+                kerberos: true,
+            }
+        );
+    }
+
+    /// No mode can reach NTLM except `Ntlm` itself: every Kerberos mode
+    /// builds the Kerberos-only relay or fails, with or without a broker.
+    #[test]
+    fn attack_ntlm_downgrade_in_kerberos_mode_is_rejected() {
+        let (tx, _rx) = mpsc::unbounded_channel::<Message>();
+        let relay = Arc::new(SupervisorRelay::new(tx));
+        for mode in RdpAuthMode::ALL
+            .into_iter()
+            .filter(RdpAuthMode::uses_kerberos)
+        {
+            // No broker: refused, never an NTLM client.
+            let no_relay =
+                SessionNetworkClient::for_auth_mode(mode, None, "s", Some("corp.example.com"));
+            assert!(no_relay.is_err(), "{mode:?} without a broker must fail");
+            // No realm: refused, never an NTLM client.
+            let no_realm =
+                SessionNetworkClient::for_auth_mode(mode, Some(Arc::clone(&relay)), "s", None);
+            assert!(no_realm.is_err(), "{mode:?} without a realm must fail");
+            // Broker and realm: the Kerberos relay.
+            let ok = SessionNetworkClient::for_auth_mode(
+                mode,
+                Some(Arc::clone(&relay)),
+                "s",
+                Some("corp.example.com"),
+            );
+            assert!(
+                matches!(ok, Ok(SessionNetworkClient::KerberosRelay(_))),
+                "{mode:?} must build the Kerberos relay"
+            );
+        }
     }
 
     /// Source pin: the Kerberos relay NetworkClient refuses every non-TCP
@@ -3445,11 +4017,20 @@ mod tests {
         let fn_start = source
             .find("impl NetworkClient for KerberosRelayNetworkClient")
             .expect("KerberosRelayNetworkClient must impl NetworkClient");
-        let body = &source[fn_start..fn_start + 900];
+        let body = &source[fn_start..];
+        let end = body.find("\n}\n").expect("impl end");
+        let body = &body[..end];
         assert!(
             body.contains("NetworkProtocol::Udp | NetworkProtocol::Http | NetworkProtocol::Https"),
             "the relay must explicitly refuse Udp/Http/Https"
         );
+        // The realm check precedes the lease: a URL outside the session
+        // realm never reaches the supervisor.
+        let gate = body
+            .find("realm_from_kdc_request(request).as_ref() != Some(&self.realm)")
+            .expect("the relay must compare the request URL to the session realm");
+        let lease = body.find(".kdc_round_trip(").expect("lease call");
+        assert!(gate < lease, "realm gate must precede the lease");
     }
 
     /// Noop cache mirroring the upstream private `NoopLicenseCache`, used to
@@ -5333,6 +5914,99 @@ mod tests {
 
     /// Invariant-based tests for the Kerberos / Restricted Admin auth mode
     /// (phase A). These pin the fail-closed behaviors on the wire path.
+    mod kerberos_preflight_gate {
+        #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+        use super::*;
+        use proptest::prelude::*;
+        use shared::kerberos::RealmError;
+
+        const KRB: RdpAuthMode = RdpAuthMode::KerberosRestrictedAdmin;
+
+        #[test]
+        fn test_ntlm_passes_the_domain_through_untouched() {
+            for domain in [None, Some("CORP".to_string()), Some(String::new())] {
+                // Isolation is irrelevant to NTLM: checked with both values.
+                for isolated in [true, false] {
+                    assert_eq!(
+                        kerberos_preflight(RdpAuthMode::Ntlm, domain.clone(), isolated),
+                        Ok(domain.clone())
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn test_kerberos_returns_the_canonical_realm() {
+            assert_eq!(
+                kerberos_preflight(KRB, Some(" corp.Example.com ".to_string()), true),
+                Ok(Some("CORP.EXAMPLE.COM".to_string()))
+            );
+        }
+
+        #[test]
+        fn attack_kerberos_without_domain_is_rejected() {
+            for domain in [None, Some(String::new()), Some("  ".to_string())] {
+                assert_eq!(
+                    kerberos_preflight(KRB, domain, true),
+                    Err(KerberosPreflightError::Realm(RealmError::Empty))
+                );
+            }
+        }
+
+        #[test]
+        fn attack_kerberos_with_netbios_domain_is_rejected() {
+            assert_eq!(
+                kerberos_preflight(KRB, Some("CORP".to_string()), true),
+                Err(KerberosPreflightError::Realm(RealmError::NotDnsName))
+            );
+        }
+
+        #[test]
+        fn attack_kerberos_with_ambient_config_is_rejected() {
+            // Checked before the realm: a valid realm does not rescue it.
+            assert_eq!(
+                kerberos_preflight(KRB, Some("corp.example.com".to_string()), false),
+                Err(KerberosPreflightError::AmbientConfigNotIsolated)
+            );
+        }
+
+        #[test]
+        fn test_preflight_messages_echo_no_input() {
+            for err in [
+                KerberosPreflightError::AmbientConfigNotIsolated,
+                KerberosPreflightError::Realm(RealmError::InvalidCharacter),
+            ] {
+                let msg = err.message();
+                assert!(msg.starts_with("Kerberos"));
+                assert!(!msg.contains("{"));
+            }
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(256))]
+
+            /// In a Kerberos mode, whatever the domain, the gate either
+            /// refuses or returns exactly what `normalize_realm` accepts.
+            #[test]
+            fn kerberos_gate_never_forwards_a_raw_domain(raw in "\\PC{0,80}") {
+                let expected = shared::kerberos::normalize_realm(&raw)
+                    .map(|r| Some(r.as_str().to_string()))
+                    .map_err(KerberosPreflightError::Realm);
+                prop_assert_eq!(kerberos_preflight(KRB, Some(raw), true), expected);
+            }
+
+            /// Without isolation a Kerberos mode is always refused.
+            #[test]
+            fn kerberos_gate_refuses_any_domain_without_isolation(raw in "\\PC{0,80}") {
+                prop_assert_eq!(
+                    kerberos_preflight(KRB, Some(raw), false),
+                    Err(KerberosPreflightError::AmbientConfigNotIsolated)
+                );
+            }
+        }
+    }
+
     mod kerberos_auth_mode {
         #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -5340,6 +6014,10 @@ mod tests {
         use ironrdp::connector::sspi::NetworkProtocol;
         use ironrdp::connector::sspi::generator::NetworkRequest;
         use proptest::prelude::*;
+
+        fn test_realm() -> shared::kerberos::Realm {
+            shared::kerberos::normalize_realm("corp.example.com").expect("realm")
+        }
 
         /// The relay refuses any non-TCP transport, for any payload. A
         /// dummy relay channel is fine: non-TCP returns before it is used.
@@ -5350,13 +6028,16 @@ mod tests {
             rt.block_on(async {
                 let (tx, _rx) = mpsc::unbounded_channel::<Message>();
                 let relay = Arc::new(SupervisorRelay::new(tx));
+                let realm = test_realm();
                 let mut client = KerberosRelayNetworkClient {
                     relay,
                     session_id: "sess".to_string(),
+                    realm: realm.clone(),
+                    trace: crate::auth_failure::KdcTrace::default(),
                 };
                 let request = NetworkRequest {
                     protocol,
-                    url: url::Url::parse(KERBEROS_KDC_SENTINEL_URL).expect("url"),
+                    url: url::Url::parse(&kerberos_kdc_sentinel_url(&realm)).expect("url"),
                     data,
                 };
                 let result = client.send(&request).await;
@@ -5401,13 +6082,14 @@ mod tests {
         /// fallback), while NTLM mode always builds its network-less client.
         #[test]
         fn session_network_client_fails_closed_without_relay() {
-            let ntlm = SessionNetworkClient::for_auth_mode(RdpAuthMode::Ntlm, None, "s");
+            let ntlm = SessionNetworkClient::for_auth_mode(RdpAuthMode::Ntlm, None, "s", None);
             assert!(matches!(ntlm, Ok(SessionNetworkClient::NtlmOnly(_))));
 
             let kerb_no_relay = SessionNetworkClient::for_auth_mode(
                 RdpAuthMode::KerberosRestrictedAdmin,
                 None,
                 "s",
+                Some("corp.example.com"),
             );
             assert!(
                 kerb_no_relay.is_err(),
@@ -5418,10 +6100,162 @@ mod tests {
             let relay = Arc::new(SupervisorRelay::new(tx));
             let kerb = SessionNetworkClient::for_auth_mode(
                 RdpAuthMode::KerberosRestrictedAdmin,
-                Some(relay),
+                Some(Arc::clone(&relay)),
                 "s",
+                Some("corp.example.com"),
             );
-            assert!(matches!(kerb, Ok(SessionNetworkClient::KerberosRelay(_))));
+            match kerb {
+                Ok(SessionNetworkClient::KerberosRelay(client)) => {
+                    assert_eq!(client.realm.as_str(), "CORP.EXAMPLE.COM");
+                }
+                _ => panic!("Kerberos mode with a relay and a DNS domain must build the relay"),
+            }
+
+            // A relay is not enough: without a DNS-form domain there is no
+            // realm to lease a KDC for.
+            for domain in [None, Some(""), Some("CORP")] {
+                let refused = SessionNetworkClient::for_auth_mode(
+                    RdpAuthMode::KerberosRestrictedAdmin,
+                    Some(Arc::clone(&relay)),
+                    "s",
+                    domain,
+                );
+                assert!(refused.is_err(), "domain {domain:?} must be refused");
+            }
+        }
+
+        // ------------------------------------------------------------
+        // Realm-carrying sentinel URL and lease (lot 3)
+        // ------------------------------------------------------------
+
+        fn tcp_request(url: &str) -> NetworkRequest {
+            NetworkRequest {
+                protocol: NetworkProtocol::Tcp,
+                url: url::Url::parse(url).expect("url"),
+                data: vec![0, 0, 0, 1, 0x6a],
+            }
+        }
+
+        #[test]
+        fn test_sentinel_url_names_the_realm_and_round_trips() {
+            let realm = test_realm();
+            let sentinel = kerberos_kdc_sentinel_url(&realm);
+            assert_eq!(sentinel, "tcp://corp.example.com.kdc.vauban.invalid:88");
+            assert_eq!(realm_from_kdc_request(&tcp_request(&sentinel)), Some(realm));
+            assert!(
+                sspi::kerberos::config::parse_kdc_url(&sentinel).is_some(),
+                "sspi must accept the sentinel as a KDC URL"
+            );
+        }
+
+        #[test]
+        fn attack_non_sentinel_kdc_url_is_rejected() {
+            // What sspi's own KDC discovery could produce (krb5.conf, DNS
+            // SRV, SSPI_KDC_URL*), plus near-misses of the sentinel.
+            for url in [
+                "tcp://dc1.corp.example.com:88",
+                "tcp://192.0.2.10:88",
+                "tcp://kdc-via-supervisor:88",
+                "tcp://corp.example.com.kdc.vauban.invalid:8888",
+                "tcp://corp.example.com.kdc.vauban.invalid",
+                "tcp://user:pw@corp.example.com.kdc.vauban.invalid:88",
+                "tcp://corp.example.com.kdc.vauban.invalid:88/x",
+                "tcp://corp.example.com.kdc.vauban.invalid:88?realm=other",
+                "tcp://corp.example.com.kdc.vauban.invalid.attacker.test:88",
+                "udp://corp.example.com.kdc.vauban.invalid:88",
+                "https://corp.example.com.kdc.vauban.invalid:88",
+            ] {
+                assert_eq!(realm_from_kdc_request(&tcp_request(url)), None, "{url}");
+            }
+        }
+
+        /// Drive `send` and report whether a lease request reached the
+        /// supervisor channel, and for which realm.
+        fn send_and_capture(session_realm: &str, url: &str) -> (bool, Option<String>) {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .start_paused(true)
+                .build()
+                .expect("runtime");
+            rt.block_on(async {
+                let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
+                let relay = Arc::new(SupervisorRelay::new(tx));
+                let mut client = KerberosRelayNetworkClient {
+                    relay,
+                    session_id: "sess".to_string(),
+                    realm: shared::kerberos::normalize_realm(session_realm).expect("realm"),
+                    trace: crate::auth_failure::KdcTrace::default(),
+                };
+                let request = tcp_request(url);
+                // No supervisor answers: an accepted request parks until the
+                // (virtual) lease timeout, a refused one returns at once.
+                let result = client.send(&request).await;
+                let leased = match rx.try_recv() {
+                    Ok(Message::KerberosKdcLeaseRequest { realm, .. }) => Some(realm),
+                    Ok(other) => panic!("unexpected message: {other:?}"),
+                    Err(_) => None,
+                };
+                (result.is_err(), leased)
+            })
+        }
+
+        #[test]
+        fn test_relay_leases_for_the_session_realm_only() {
+            let (failed, leased) = send_and_capture(
+                "corp.example.com",
+                "tcp://corp.example.com.kdc.vauban.invalid:88",
+            );
+            assert!(failed, "no supervisor answers in this test");
+            assert_eq!(
+                leased.as_deref(),
+                Some("CORP.EXAMPLE.COM"),
+                "the lease must carry the canonical realm"
+            );
+        }
+
+        #[test]
+        fn attack_referral_to_another_realm_is_rejected() {
+            // A cross-realm referral: sspi would ask for the KDC of the
+            // other realm. Even as a well-formed sentinel it is not this
+            // session's realm, so nothing is leased.
+            let (failed, leased) = send_and_capture(
+                "corp.example.com",
+                "tcp://other.example.net.kdc.vauban.invalid:88",
+            );
+            assert!(failed);
+            assert_eq!(leased, None, "no lease request may leave the proxy");
+        }
+
+        #[test]
+        fn attack_discovered_kdc_host_is_never_leased() {
+            let (failed, leased) =
+                send_and_capture("corp.example.com", "tcp://dc1.corp.example.com:88");
+            assert!(failed);
+            assert_eq!(leased, None);
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(128))]
+
+            /// For any URL sspi could hand over, a lease leaves the proxy
+            /// only when the URL is the sentinel of the session realm, and
+            /// then it carries exactly that realm.
+            #[test]
+            fn lease_realm_always_equals_the_session_realm(
+                host in "[a-z0-9.-]{1,40}",
+                port in prop_oneof![Just(88u16), any::<u16>()],
+            ) {
+                let url = format!("tcp://{host}:{port}");
+                prop_assume!(url::Url::parse(&url).is_ok());
+                let (failed, leased) = send_and_capture("corp.example.com", &url);
+                prop_assert!(failed);
+                let is_sentinel = host == "corp.example.com.kdc.vauban.invalid" && port == 88;
+                if is_sentinel {
+                    prop_assert_eq!(leased.as_deref(), Some("CORP.EXAMPLE.COM"));
+                } else {
+                    prop_assert_eq!(leased, None);
+                }
+            }
         }
 
         /// Framed Kerberos TCP I/O on a leased FD (UnixStream stand-in).

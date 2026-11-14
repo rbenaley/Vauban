@@ -42,6 +42,8 @@ pub mod pending_mfa;
 pub mod policy_recheck;
 pub mod rate_limit;
 pub mod rbac;
+pub mod rdp_auth_failure;
+pub mod rdp_auth_mode;
 pub mod recording_hydrator;
 pub mod recording_loss;
 pub mod recording_reaper;

@@ -206,6 +206,17 @@
                                     IACS{% if !asset.iacs_protocol_label.is_empty() %} &middot; {{ asset.iacs_protocol_label }}{% endif %}
                                 </span>
                                 {% endif %}
+                                {# NLA authentication mode of an RDP asset. Amber marks
+                                   the assets still on NTLM; green the Kerberos modes. #}
+                                {% if !asset.rdp_auth_label.is_empty() %}
+                                <span data-rdp-auth-mode-badge
+                                      title="RDP authentication mode"
+                                      class="inline-flex items-center rounded-md px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset
+                                    {% if asset.rdp_uses_kerberos %}bg-green-50 text-green-700 ring-green-700/10 dark:bg-green-900/30 dark:text-green-300 dark:ring-green-300/20
+                                    {% else %}bg-amber-50 text-amber-700 ring-amber-700/10 dark:bg-amber-900/30 dark:text-amber-300 dark:ring-amber-300/20{% endif %}">
+                                    {{ asset.rdp_auth_label }}
+                                </span>
+                                {% endif %}
                             </div>
                             <p class="text-sm text-gray-500 dark:text-gray-400 break-all">
                                 {{ asset.hostname }}:{{ asset.port }}

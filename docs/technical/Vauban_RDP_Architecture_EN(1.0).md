@@ -3,7 +3,8 @@
 **Version:** 1.0  
 **Date:** 21 February 2026  
 **Author:** Richard Ben Aleya  
-**Amended:** 24 July 2026 — Kerberos KDC FD-pass (§11.3.1); crate **0.9.30**
+**Amended:** 24 July 2026 — Kerberos KDC FD-pass (§11.3.1); crate **0.9.30**  
+**Amended:** 14 November 2026 — Kerberos realm table, KDC failover, realm sentinel URL, ambient configuration isolation (§11.3.1)
 
 ---
 
@@ -752,21 +753,257 @@ seals, then enrolled via `AccessGuardWiring::fds` into
 can read/write the access pipe but cannot acquire any new resource —
 the dispatcher and `authorize()` calls run entirely on pre-opened FDs.
 
-#### 11.3.1 Kerberos KDC FD-pass (Restricted Admin)
+#### 11.3.1 Kerberos KDC FD-pass (both Kerberos modes)
 
-In `KerberosRestrictedAdmin` CredSSP mode, sspi issues `NetworkRequest`
-TCP exchanges (typically AS-REQ then TGS-REQ for `TERMSRV/<fqdn>`). The
+An RDP asset has one of three NLA authentication modes. What a mode
+means on the wire is one table, `auth_mode_profile` in
+`vauban-proxy-rdp/src/session.rs`:
+
+| Mode (`rdp_auth_mode`) | X.224 flag | TSCredentials | Package | For |
+|---|---|---|---|---|
+| `ntlm` | none | identity | NTLM | local accounts, hosts outside a domain |
+| `kerberos` | none | identity | Kerberos only | domain accounts that are not local administrators of the target |
+| `kerberos_restricted_admin` | `RESTRICTED_ADMIN_MODE_REQUIRED` | empty | Kerberos only | local administrators of the target |
+
+Neither Kerberos mode falls back to NTLM: the SPNEGO package list is
+`kerberos` alone, so a target that selects NTLM fails the CredSSP
+sequence. In `kerberos` the password is delegated to the target inside
+CredSSP, as in `ntlm`; what changes is that the target is authenticated
+by a service ticket and no NTLM response crosses the network. Only
+`kerberos_restricted_admin` keeps the password off the target.
+
+**Turning NTLM off.** `[rdp] ntlm_policy` is `"allow"` (default) or
+`"deny"`. Under `deny`, a session is opened only for an asset in a
+Kerberos mode; an asset in `ntlm`, with no stored mode, or with a value
+outside the closed set is refused, including assets created before the
+switch. The rule is `NtlmPolicy::permits(mode)` in `shared`, applied in
+two places:
+
+1. `connect_rdp` in vauban-web, after the access rules and before any
+   session record, token or proxy request. It audits `RdpAuthFailed`
+   with the reason `ntlm_forbidden`.
+2. `vauban-proxy-rdp` at `RdpSessionOpen`, before the Kerberos
+   pre-flight and the credentials. A compromised web tier therefore
+   cannot reopen NTLM. The supervisor hands the policy to the proxy in
+   `VAUBAN_RDP_NTLM_POLICY`, which the proxy removes from its
+   environment after reading it.
+
+A value other than `allow` or `deny` is never read as `allow`: the
+supervisor and vauban-web fail to load their configuration, and the
+proxy exits if the variable it receives is absent or not canonical.
+Before the proxy has read its policy, its answer is `deny`.
+
+Under `deny` the asset forms disable the NTLM option and state why. The
+write paths still accept `ntlm` (an API client is told at session open,
+not at write time). The access-posture tile of the dashboard shows
+`RDP assets on NTLM` as `n/total`, in amber while `n` is not zero: the
+assets to migrate before switching to `deny`.
+
+**Setting the mode.** The mode and the domain are stored in
+`connection_config` (`rdp_auth_mode`, `domain`) and written through two
+paths that share one validator, `services::rdp_auth_mode::resolve`:
+
+- the asset form (`/assets/manage/new`, `/assets/manage/{uuid}/edit`);
+- the JSON API: `POST /api/v1/assets/manage` and
+  `PUT /api/v1/assets/manage/{uuid}` accept `rdp_auth_mode` and
+  `rdp_domain`; `GET /api/v1/assets/manage/{uuid}` returns them under
+  `connection_config`.
+
+```json
+{
+  "name": "srv01",
+  "hostname": "srv01.corp.example.com",
+  "asset_type": "rdp",
+  "rdp_auth_mode": "kerberos",
+  "rdp_domain": "corp.example.com"
+}
+```
+
+Rules, identical on both paths:
+
+- `rdp_auth_mode` is one of `ntlm`, `kerberos`,
+  `kerberos_restricted_admin`. Any other value is refused (HTTP 400 on
+  the API, a flash error on the form). It is never stored as `ntlm`.
+- Absent on create, the mode is `ntlm`. Absent on update, the stored
+  mode and domain are kept; an empty `rdp_domain` clears the domain.
+- A Kerberos mode requires a fully-qualified DNS hostname (labels of
+  letters, digits, hyphens and underscores; no IP address in any form,
+  no port, no trailing dot: the name becomes the SPN) and the DNS name
+  of the domain. The check runs on the values the asset will have after
+  the write, so changing only the hostname of a Kerberos asset to an IP
+  address is refused.
+- The two fields are refused on an asset that is not RDP.
+
+The administration command that replaces a whole `connection_config`
+(`UpdateAssetConnectionConfig`, used to re-encrypt stored credentials)
+applies the same rules when it changes the mode or the domain; a
+replacement that leaves both as they are is accepted as is.
+
+The admin asset list (`/assets/manage`) shows the mode of each RDP
+asset as a badge: `NTLM` in amber, `Kerberos` and `Kerberos RA` in
+green.
+
+**NLA is mandatory, in every mode.** The X.224 security negotiation is
+cleartext and precedes TLS, and the proxy advertises TLS next to NLA. A
+target, or anyone on the path, can therefore answer "TLS only"; IronRDP
+accepts that answer and skips CredSSP, after which the password would
+go to the target in the Client Info PDU with no NLA at all. The proxy
+refuses to go on (`check_negotiation`, before the TLS upgrade, reason
+`negotiation_refused`) unless the target selected `HYBRID` or
+`HYBRID_EX`, and, in Restricted Admin, set
+`RESTRICTED_ADMIN_MODE_SUPPORTED` in its response ([MS-RDPBCGR]
+2.2.1.2.1). `connect_finalize` refuses again if CredSSP is not about to
+run. Consequence: a target that cannot do NLA (for example xrdp
+without it) is no longer reachable, in the NTLM mode either. This is a
+behavior change of 0.9.50.
+
+**Restricted Admin and the Client Info PDU.** After CredSSP, RDP sends
+the Client Info PDU (`TS_INFO_PACKET`), which IronRDP fills with the
+configured user name and password. In `kerberos_restricted_admin` the
+proxy removes the password from that configuration as soon as the
+CredSSP client has taken its own copy (`strip_client_info_password`, in
+`perform_credssp_step`, before any I/O), so the target receives neither
+TSCredentials nor a Client Info password. In `kerberos` and `ntlm` the
+password is delegated by design and the PDU carries it.
+
+In either Kerberos mode, sspi issues `NetworkRequest` TCP exchanges (typically AS-REQ then TGS-REQ for `TERMSRV/<fqdn>`). The
 sealed proxy cannot `connect()` to the KDC, so each request leases a
 connected socket from the supervisor:
 
-1. Proxy sends `KerberosKdcRequest` (`data` empty; correlation via
-   `request_id`) — **not** a payload relay.
-2. Supervisor gates on `[auth.kerberos]` (`allows()` + `endpoint()`),
-   connects **only** to its configured KDC (SSRF-safe; token-less;
+1. Proxy sends `KerberosKdcLeaseRequest { request_id, session_id,
+   realm }` — a realm, **not** a payload and **not** a host.
+2. Supervisor (`kdc_broker::select_endpoints`) validates the realm
+   (`shared::kerberos::normalize_realm`) and looks it up in the
+   `[auth.kerberos]` realm table. An unknown or malformed realm is
+   refused before any socket is opened. It then connects **only** to
+   the KDC hosts configured for that realm (SSRF-safe; token-less;
    caller must be `proxy_rdp`), `send_fd` via SCM_RIGHTS, then
    `KerberosKdcResponse { success, data: empty }`.
 3. Proxy `recv_fd_timed`, performs framed Kerberos TCP I/O locally
    (`kdc_framed_round_trip`, `MAX_KDC_REPLY = 256 KiB`), closes the FD.
+
+**Failure reasons.** A failed NLA leg leaves the proxy as
+`RdpSessionOpenFailed { reason: RdpAuthFailure, rdp_auth_mode }`: a
+closed-set reason and the mode, with no text. The error text can quote
+the KDC or the target, so it stays in the `vauban-proxy-rdp` log, keyed
+by session id. `auth_failure::classify` computes the reason from typed
+evidence only, most specific first:
+
+1. the KDC socket lease (the supervisor prefixes a refusal with a
+   `KdcLeaseRefusal` code: realm not configured, KDC unreachable,
+   brokering disabled);
+2. the error code of the last KDC reply, read from the KRB-ERROR on the
+   leased socket. `sspi` folds a wrong password and an unknown SPN into
+   kinds that name neither, so the code is read here and nowhere else;
+3. an AS-REP answering an AS-REQ without pre-authentication (an account
+   exempt from pre-authentication, which `sspi` does not support);
+4. the `sspi` error kind and the CredSSP status of the target.
+
+| Reason | Evidence | Operator action |
+|---|---|---|
+| `kdc_unreachable` | lease failed, or `sspi` found no KDC | KDC hosts and port, network path |
+| `realm_not_configured` | lease refused for the realm | `[[auth.kerberos.realms]]` |
+| `realm_invalid` | pre-flight, or KDC code 68 | DNS name in the asset `Domain` field |
+| `kerberos_broker_unavailable` | brokering disabled, no relay | `[auth.kerberos] enabled` |
+| `clock_skew` | KDC code 37, or `sspi` `TimeSkew` | NTP |
+| `pre_auth_failed` | KDC code 24 | stored password |
+| `client_principal_unknown` | KDC code 6 | username, domain |
+| `service_principal_unknown` | KDC code 7 | asset FQDN, `setspn -Q TERMSRV/<fqdn>` |
+| `account_disabled_or_locked` | KDC code 18 | account state in the domain |
+| `password_expired` | KDC code 23 | password change |
+| `encryption_type_unsupported` | KDC code 14 | enable AES on the account or service |
+| `pre_auth_not_required` | first KDC reply is an AS-REP | clear the pre-authentication exemption |
+| `restricted_admin_refused` | logon refused in Restricted Admin mode | `DisableRestrictedAdmin = 0`, local administrator |
+| `credentials_rejected` | logon refused in another mode | credentials, Remote Desktop logon right |
+| `kerberos_package_refused` | Kerberos mode, token the client cannot use | target joined to the domain |
+| `negotiation_refused` | any mode: the target refused the negotiation, selected TLS only, or (Restricted Admin) did not announce support | enable NLA on the target; check the network path |
+| `ntlm_forbidden` | `[rdp] ntlm_policy = "deny"` and a mode that is not a Kerberos mode | switch the asset to a Kerberos mode |
+| `other` | none of the above | proxy log for the session |
+
+`restricted_admin_refused`, `credentials_rejected` and
+`kerberos_package_refused` are inferred from how the target answers, not
+from a code that names the cause; they have not been checked against a
+real Active Directory.
+
+vauban-web shows the cause and the action to a holder of `assets:manage`
+and one generic sentence to anyone else
+(`services::rdp_auth_failure::message_for`), and emits the audit event
+`RdpAuthFailed` with the asset, the reason and the mode.
+
+**Testing without Active Directory.** No domain controller is available
+in CI. The CredSSP leg is covered by two harnesses in
+`vauban-proxy-rdp/src/test_support`, both compiled for tests only:
+
+- **In-process, in the default suite** (`session::credssp_loop_tests`).
+  The production function `perform_credssp_step` runs with the
+  production Kerberos network client against an in-memory KDC (ported
+  from the test suite of `sspi`) and against `sspi`'s own CredSSP server
+  standing in for the target. It checks that both Kerberos modes
+  complete, that the target receives the identity in `kerberos` and
+  empty TSCredentials in `kerberos_restricted_admin`, that a target
+  offering only NTLM is refused without the client emitting an NTLM
+  token, and that each failure yields its reason.
+- **MIT KDC, opt-in** (`session::mit_kdc_tests`). A throwaway MIT realm
+  on loopback. The proxy obtains a TGT from it through the production
+  path: lease request, a stand-in supervisor that passes the connected
+  socket over `SCM_RIGHTS`, framed I/O on the received descriptor.
+
+  ```bash
+  VAUBAN_TEST_MIT_KDC=1 cargo test --manifest-path vauban-proxy-rdp/Cargo.toml \
+    --target-dir target-rdp -- --ignored mit_kdc --test-threads=1
+  ```
+
+  It needs `krb5kdc`, `kdb5_util` and `kadmin.local` (searched in
+  `/opt/local/sbin`, `/usr/local/sbin`, `/usr/sbin`, or the directory
+  named by `VAUBAN_TEST_MIT_KDC_SBIN`).
+
+What these do not prove: the target is `sspi`'s server, not Windows,
+and the in-memory KDC checks little. They validate how Vauban drives
+`sspi`; interoperability with a domain controller and a Windows target
+is the purpose of the live checklist in
+`docs/runbooks/ironrdp_migration_smoke_test.md`. The MIT harness covers
+the AS exchange only: the service-ticket exchange is user-to-user and
+needs the target to be a principal of the same KDC.
+
+One behavior the in-process harness surfaced: when the asset hostname
+is a name the target does not answer to, the target refuses the
+user-to-user ticket request before any KDC is asked, and the failure is
+reported as `kerberos_package_refused`, not `service_principal_unknown`.
+The latter is reported when the KDC itself does not know
+`TERMSRV/<fqdn>`.
+
+**Realm.** The realm is the asset's domain, validated as a DNS name and
+upper-cased by `shared::kerberos::normalize_realm` (web form at write
+time, proxy pre-flight at session open). A missing domain or a NetBIOS
+short name fails the session; there is no NTLM fallback.
+
+**Realm table and failover.** `[auth.kerberos]` holds one realm through
+its `realm` / `kdc_host` keys and any number through
+`[[auth.kerberos.realms]]`, each with an ordered `kdc_hosts` list.
+`kdc_broker::connect_first_kdc` tries the hosts in order under one
+`timeout_secs` budget, each host getting an equal share, so a dead first
+domain controller does not consume the exchange. A failover is logged at
+`warn`.
+
+**Sentinel URL.** sspi's `NetworkRequest` carries a URL, not a realm.
+The proxy hands sspi `tcp://<realm>.kdc.vauban.invalid:88` as the KDC of
+the session realm; the name is never dialed (`.invalid` cannot resolve).
+`KerberosRelayNetworkClient` reads the realm back from the URL and
+refuses any URL that is not the sentinel of the session realm. A URL
+produced by sspi's own KDC discovery (cross-realm referral, `krb5.conf`,
+DNS SRV, `SSPI_KDC_URL*`) is therefore refused, not followed: cross-realm
+referrals are unsupported and fail closed.
+
+**Ambient configuration.** The supervisor removes `KRB5_CONFIG` and
+`SSPI_KDC_URL*` from the environment its children inherit and starts the
+RDP proxy with `KRB5_CONFIG=/dev/null`; the proxy refuses a Kerberos
+session if that isolation does not hold.
+
+**Wire compatibility.** The realm-less `KerberosKdcRequest` is still
+accepted by the supervisor when exactly one realm is configured, so a
+proxy from the previous release keeps working during a rolling upgrade.
+Current proxies never send it. It is slated for removal one release
+later.
 
 Root never sees AS-REQ / TGS-REQ / ticket bytes. Demux is keyed by
 `request_id` and is distinct from asset `pending_connections[session_id]`
@@ -1021,7 +1258,7 @@ SSH host-key coverage:
 | Lint + Rust wrapper | `scripts/check_rdp_cert_paths.sh`, `tests/web/rdp_cert_lints_test.rs` | Forbids `NoCertificateVerification` on the session path; requires `PinningServerCertVerifier`, the two pre-flight literals, the amber fallback fragment, and the diagnostic-token routing |
 | Source grep | `tests/web/rdp_cert_no_silent_green_test.rs` | Green fragment only inside the `old_spki == remote_spki` branch; pre-flight literals before the first `proxy_sessions` insert |
 | E2E HTTP (`proxy = None`) | `tests/web/rdp_cert_pin_e2e_test.rs` | Cases A-E: amber when proxy down, red on stored mismatch, no-key when absent; `connect-rdp` refuses (0 rows) without a pin and on mismatch |
-| Behavioural (proxy-rdp, `rcgen` TLS) | `session.rs::tests::vau001_cert_pinning` | Deterministic SPKI fingerprint, constant-time compare, verifier accept/reject (MITM wording), real handshake succeeds on match and **fails** on mismatch |
+| Behavioral (proxy-rdp, `rcgen` TLS) | `session.rs::tests::vau001_cert_pinning` | Deterministic SPKI fingerprint, constant-time compare, verifier accept/reject (MITM wording), real handshake succeeds on match and **fails** on mismatch |
 | Satellites | `tests/security/security_test.rs` | IPC wire format, proxy verifier, web handlers and IPC client grep pins |
 
 ---

@@ -15,8 +15,20 @@ fail() {
     errors=1
 }
 
-if ! grep -Eq 'KerberosKdcRequest' "${SRC}/session.rs"; then
-    fail "proxy-rdp must send KerberosKdcRequest to lease a KDC FD"
+if ! grep -Eq 'Message::KerberosKdcLeaseRequest \{' "${SRC}/session.rs"; then
+    fail "proxy-rdp must send KerberosKdcLeaseRequest (realm-keyed) to lease a KDC FD"
+fi
+
+# The legacy realm-less lease must not be sent anymore: it can only reach
+# a single KDC and is ambiguous once several realms are configured.
+if grep -Eq 'Message::KerberosKdcRequest \{' "${SRC}/session.rs"; then
+    fail "proxy-rdp must not send the legacy realm-less KerberosKdcRequest"
+fi
+
+# A KDC URL that is not the session realm's sentinel must be refused
+# before any lease (sspi's own KDC discovery is never followed).
+if ! grep -Eq 'realm_from_kdc_request\(request\)\.as_ref\(\) != Some\(&self\.realm\)' "${SRC}/session.rs"; then
+    fail "KerberosRelayNetworkClient must gate the request URL on the session realm"
 fi
 
 if ! grep -Eq 'recv_fd_timed' "${SRC}/main.rs"; then

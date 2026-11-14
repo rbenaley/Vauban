@@ -1139,6 +1139,7 @@ fn audit_event_type_allowed(event_type: AuditEventType) -> bool {
             | AuditEventType::LdapAggregationPurgedFailsafe
             | AuditEventType::McpToolCallUpstreamFailed
             | AuditEventType::McpToolDefinitionDrift
+            | AuditEventType::RdpAuthFailed
     )
 }
 

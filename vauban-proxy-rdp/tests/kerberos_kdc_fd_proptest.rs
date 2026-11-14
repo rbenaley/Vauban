@@ -43,18 +43,23 @@ fn framed_round_trip_helper_bounds_reply() {
 }
 
 #[test]
-fn request_data_field_is_default_empty_on_lease() {
+fn lease_request_carries_a_realm_and_no_payload() {
     let session = include_str!("../src/session.rs");
     let idx = session
-        .find("let request = Message::KerberosKdcRequest")
-        .expect("KerberosKdcRequest construction in kdc_round_trip");
-    let ctor = &session[idx..idx + 400];
+        .find("let request = Message::KerberosKdcLeaseRequest")
+        .expect("KerberosKdcLeaseRequest construction in kdc_round_trip");
+    let ctor = &session[idx..];
+    let ctor = &ctor[..ctor.find("};").expect("ctor end")];
     assert!(
-        ctor.contains("SensitiveBytes::default()"),
-        "lease request must send empty data"
+        ctor.contains("realm: realm.as_str().to_string()"),
+        "lease request must carry the validated realm"
     );
     assert!(
-        !ctor.contains("SensitiveBytes::new("),
-        "lease request must not pack sspi payload into IPC data"
+        !ctor.contains("SensitiveBytes") && !ctor.contains("data"),
+        "lease request must not pack sspi payload into IPC"
+    );
+    assert!(
+        !session.contains("Message::KerberosKdcRequest {"),
+        "the legacy realm-less lease must not be sent by the proxy"
     );
 }

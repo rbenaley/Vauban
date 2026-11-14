@@ -34,6 +34,11 @@ pub struct ManageAssetItem {
     pub iacs_protocol_label: String,
     pub status: String,
     pub group_name: Option<String>,
+    /// NLA authentication mode badge of an RDP asset (`NTLM`,
+    /// `Kerberos`, `Kerberos RA`). Empty for every other asset type.
+    pub rdp_auth_label: String,
+    /// Tint of the badge: Kerberos modes in green, NTLM in amber.
+    pub rdp_uses_kerberos: bool,
 }
 
 #[derive(Template)]
