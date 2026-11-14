@@ -1300,38 +1300,35 @@ mod host_key_behavioural_tests {
         }
     }
 
+    /// Since 0.9.48 the proxy itself refuses a session when no host key
+    /// is pinned: it no longer relies on vauban-web's pre-flight alone. An
+    /// absent pin, and a blank one, abort the key exchange before any
+    /// authentication packet. `fetch_host_key` (the first-pin path) uses
+    /// its own handler and is not concerned.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn connect_with_no_expected_key_passes_kex_at_proxy_layer() {
-        // Issue #34 strict-pin policy is enforced ONE level up
-        // (vauban-web `connect_ssh` pre-flight refuses when no key is
-        // pinned). At this layer we keep the historical "warn but
-        // accept" behaviour so admins can still call `fetch_host_key`
-        // for the very first pin. This test pins down that contract.
-        let host_key = fresh_ed25519_key();
-        let (addr, _shutdown) = spawn_fake_ssh_server(host_key).await;
+    async fn attack_session_without_pinned_host_key_is_rejected() {
+        for expected_host_key in [None, Some(String::new()), Some("   ".to_string())] {
+            let host_key = fresh_ed25519_key();
+            let (addr, _shutdown) = spawn_fake_ssh_server(host_key).await;
 
-        let config = ssh_session_config(addr, None);
-        let result = SshSession::connect(config).await;
+            let config = ssh_session_config(addr, expected_host_key.clone());
+            let result = SshSession::connect(config).await;
 
-        match result {
-            Err(SessionError::AuthenticationFailed(_)) => {
-                // KEX accepted (no pin, warning path), auth refused.
+            match result {
+                Err(SessionError::ConnectionFailed(_)) => {
+                    // KEX aborted by `check_server_key`: nothing was sent
+                    // to authenticate.
+                }
+                Err(SessionError::AuthenticationFailed(_)) => panic!(
+                    "{expected_host_key:?}: the key exchange was accepted \
+                     without a pinned host key"
+                ),
+                Err(other) => panic!(
+                    "{expected_host_key:?}: expected ConnectionFailed (KEX \
+                     aborted), got {other:?}"
+                ),
+                Ok(_) => panic!("{expected_host_key:?}: a session without a pin must not open"),
             }
-            Err(SessionError::ConnectionFailed(e)) => panic!(
-                "expected proxy layer to accept KEX when no key is \
-                 pinned (the strict pin gate lives in vauban-web), got \
-                 ConnectionFailed: {}",
-                e
-            ),
-            Err(other) => panic!(
-                "expected AuthenticationFailed (KEX accepted, auth \
-                 refused), got {:?}",
-                other
-            ),
-            Ok(_) => panic!(
-                "fake server refuses every auth, so SshSession::connect \
-                 must NOT return Ok"
-            ),
         }
     }
 
