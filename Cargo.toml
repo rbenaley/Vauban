@@ -55,7 +55,6 @@ config = { version = "0.15", default-features = false, features = ["toml"] }
 
 # Async runtime - used by vauban-web and proxy services (vauban-proxy-ssh, vauban-proxy-rdp)
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time"] }
-tokio-util = { version = "0.7", features = ["codec"] }
 
 # SSH client (async, pure Rust) - used by vauban-proxy-ssh
 # Note: russh 0.57+ includes keys module directly (no separate russh-keys crate)
@@ -91,8 +90,6 @@ hkdf = "0.12"
 sha3 = "0.10"
 base64 = "0.22"
 totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
-qrcode = "0.14"
-image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Centralized clippy security lints (deny instead of warn)
 [workspace.lints.clippy]

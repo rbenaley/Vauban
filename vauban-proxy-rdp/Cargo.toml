@@ -40,12 +40,10 @@ blake3 = "1"
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time"] }
-tokio-util = { version = "0.7", features = ["codec"] }
 
 # RDP client (async, pure Rust)
 ironrdp = { version = "0.17", features = ["connector", "session", "graphics", "input", "dvc", "displaycontrol"] }
 ironrdp-tokio = "0.10"
-ironrdp-tls = { version = "0.2", features = ["rustls"] }
 
 # TLS for RDP connection upgrade
 tokio-rustls = "0.26"

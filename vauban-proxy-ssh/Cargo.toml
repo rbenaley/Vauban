@@ -28,12 +28,10 @@ blake3.workspace = true
 
 # Async runtime (exception to minimalist philosophy for proxy services)
 tokio.workspace = true
-tokio-util.workspace = true
 
 # SSH client (async, pure Rust)
 # Note: russh 0.57+ includes keys module directly
 russh.workspace = true
-async-trait.workspace = true
 
 # Secret management
 secrecy.workspace = true

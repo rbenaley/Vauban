@@ -12,7 +12,6 @@ workspace = true
 
 [dependencies]
 shared.workspace = true
-vauban-db.workspace = true
 libc.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

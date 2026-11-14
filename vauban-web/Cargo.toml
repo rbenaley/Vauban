@@ -41,15 +41,6 @@ totp-rs = { version = "5.6", features = ["qr", "gen_secret"] }
 secrecy = { version = "0.10", features = ["serde"] }
 zeroize = { version = "1.8", features = ["derive"] }
 
-# OAuth2 client. openidconnect is not declared: 4.0 pulls p256 0.13 /
-# crypto-bigint 0.5 (RUSTSEC-2026-0387), and 4.1 needs ed25519-dalek
-# 3.0.0, which Cargo will not resolve next to russh 0.61's exact
-# 3.0.0-rc pin.
-oauth2 = "5"
-
-# Sessions
-tower-sessions = "0.14"
-
 # Validation
 validator = { version = "0.20", features = ["derive"] }
 
@@ -62,7 +53,6 @@ ml-kem = { version = "0.3.2", features = ["zeroize", "getrandom"] }
 ml-dsa = { version = "0.1.1", features = ["zeroize"] }
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
-aes-gcm = "0.10"
 sha1 = "0.10"
 sha3 = "0.10"
 blake3 = "1.5"
@@ -91,7 +81,6 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 async-trait = "0.1"
 time = "0.3"
-bcrypt = "0.18"
 rand = "0.8"
 hex = "0.4"
 url = "2.5"
@@ -108,10 +97,6 @@ regex = "1"         # Regular expressions for input validation
 
 # Configuration
 config = "0.15"
-dotenvy = "0.15"
-
-# HTTP client
-reqwest = { version = "0.13", features = ["json", "rustls"] }
 
 # WebSocket & Cookies
 axum-extra = { version = "0.12", features = ["cookie", "typed-header"] }
@@ -126,7 +111,6 @@ rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "
 # supervisor-brokered TCP socket via STARTTLS. Pinned to 0.26 to match
 # what `vauban-proxy-rdp` already audits.
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs"] }
-webpki-roots = "1"
 
 # Streaming ZIP for the RDP recording bundle download. `tokio` feature
 # enables a tokio-friendly async writer; we use the `Stored` compression
