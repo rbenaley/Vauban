@@ -17,7 +17,7 @@ use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -26,6 +26,19 @@ use shared::messages::{ControlMessage, Message, SensitiveString, ServiceStats};
 use shared::session_token::TokenKey;
 
 const BOOT: Duration = Duration::from_secs(20);
+
+/// Serializes "create the pipes, fork, exec" across the threads of this
+/// test binary.
+///
+/// macOS has no `pipe2(2)`: `IpcChannel::pair` and the pipe that
+/// `Command::spawn` uses to report an exec failure are both created
+/// with `pipe()` and only then marked close-on-exec. A fork from another
+/// thread in between hands that descriptor, still inheritable, to an
+/// unrelated leaf. The leaf keeps it open for its whole life, so the
+/// `spawn()` that owns the pipe does not return until that leaf exits
+/// (30 s, its identity timeout) and every boot deadline is missed.
+/// The supervisor forks from a single thread and is not exposed.
+static SPAWN: Mutex<()> = Mutex::new(());
 
 struct LeafHarness {
     child: Child,
@@ -38,6 +51,9 @@ struct LeafHarness {
 
 impl LeafHarness {
     fn spawn() -> Self {
+        // A panic while holding the lock (a failed spawn) must not turn
+        // every other test into a poisoned-lock failure.
+        let _spawn = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
         let (sup, sup_leaf) = IpcChannel::pair().unwrap();
         let (data, data_leaf) = IpcChannel::pair().unwrap();
         let (access, access_leaf) = IpcChannel::pair().unwrap();
