@@ -254,7 +254,7 @@ async fn test_update_asset_success() {
         .put(&format!("/api/v1/assets/manage/{}", asset.asset.uuid))
         .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
-            "name": "updated-asset-name",
+            "name": unique_name("test-updated-asset-name"),
             "status": "maintenance"
         }))
         .await;
@@ -280,12 +280,13 @@ async fn test_update_asset_with_multiple_fields_persists_to_database() {
     let asset = create_test_ssh_asset(&mut conn, &unique_name("test-multi-asset")).await;
 
     // Execute: PUT /api/v1/assets/{uuid} with multiple fields
+    let updated_name = unique_name("test-multi-updated-asset");
     let response = app
         .server
         .put(&format!("/api/v1/assets/manage/{}", asset.asset.uuid))
         .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
-            "name": "multi-updated-asset",
+            "name": updated_name,
             "port": 2222,
             "status": "maintenance"
         }))
@@ -296,7 +297,7 @@ async fn test_update_asset_with_multiple_fields_persists_to_database() {
     let json: serde_json::Value = response.json();
     assert_eq!(
         json.get("name").and_then(|v| v.as_str()),
-        Some("multi-updated-asset"),
+        Some(updated_name.as_str()),
         "Response should contain the updated name"
     );
     assert_eq!(

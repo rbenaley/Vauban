@@ -666,6 +666,7 @@ async fn iacs_edit_can_change_industrial_protocol_in_place() {
     .await;
     let csrf = app.generate_csrf_token();
     let (asset_uuid, hostname) = seed_iacs_asset(&mut conn, AssetType::IacsModbus, 502).await;
+    let retargeted_name = unique_name("test-Retargeted PLC");
 
     let response = app
         .server
@@ -673,7 +674,7 @@ async fn iacs_edit_can_change_industrial_protocol_in_place() {
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
-            ("name", "Retargeted PLC"),
+            ("name", retargeted_name.as_str()),
             ("hostname", &hostname),
             ("port", "4840"),
             ("asset_type", "iacs_opcua"),
@@ -686,7 +687,7 @@ async fn iacs_edit_can_change_industrial_protocol_in_place() {
         .await
         .expect("updated asset row");
     assert_eq!(row.asset_type, AssetType::IacsOpcua);
-    assert_eq!(row.name, "Retargeted PLC");
+    assert_eq!(row.name, retargeted_name);
 }
 
 /// Tampered-submit guard: IACS assets cannot be downgraded to SSH.
@@ -710,7 +711,7 @@ async fn iacs_edit_rejects_non_iacs_protocol_retrofit() {
         .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
         .form(&[
             ("csrf_token", csrf.as_str()),
-            ("name", "Still Modbus"),
+            ("name", unique_name("test-Still Modbus").as_str()),
             ("hostname", &hostname),
             ("port", "502"),
             ("asset_type", "ssh"),

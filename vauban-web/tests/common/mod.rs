@@ -1644,7 +1644,12 @@ pub mod test_db {
             .execute(conn)
             .await
             .ok();
-        diesel::sql_query("DELETE FROM assets WHERE name LIKE 'test-%'")
+        // Every asset, not only `test-%`: no migration seeds an asset, and
+        // a name filter left behind every row a test had named otherwise.
+        // Those rows piled up run after run until a page of the asset
+        // list no longer showed the row a test had just created. The two
+        // tables that reference `assets` cascade.
+        diesel::sql_query("DELETE FROM assets")
             .execute(conn)
             .await
             .ok();

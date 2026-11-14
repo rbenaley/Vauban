@@ -2908,7 +2908,10 @@ async fn test_xss_sanitized_in_web_asset_create() {
     let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
     let csrf_token = app.generate_csrf_token();
 
-    let xss_name = "<script>alert('xss')</script>Server01";
+    let xss_name = format!(
+        "<script>alert('xss')</script>{}",
+        unique_name("test-Server01")
+    );
     let xss_desc = "<img src=x onerror=steal()>Production server";
     let asset_hostname = format!("{}.example.com", unique_name("xss-host"));
 
@@ -2921,7 +2924,7 @@ async fn test_xss_sanitized_in_web_asset_create() {
         )
         .form(&[
             ("csrf_token", csrf_token.as_str()),
-            ("name", xss_name),
+            ("name", xss_name.as_str()),
             ("hostname", asset_hostname.as_str()),
             ("port", "22"),
             ("asset_type", "ssh"),
@@ -3076,7 +3079,10 @@ async fn test_xss_sanitized_in_api_create_asset() {
         .post("/api/v1/assets/manage")
         .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
         .json(&json!({
-            "name": "<script>alert('xss')</script>APIServer",
+            "name": format!(
+                "<script>alert('xss')</script>{}",
+                unique_name("test-APIServer")
+            ),
             "hostname": asset_hostname,
             "port": 22,
             "asset_type": "ssh",

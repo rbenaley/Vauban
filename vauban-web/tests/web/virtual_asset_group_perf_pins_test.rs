@@ -86,9 +86,12 @@ async fn p55_perf_list_accessible_asset_ids_under_budget() {
         .await
         .expect("ag id");
 
+    // Per-run tag: a fixed name collides with rows of that name still in
+    // the table (`idx_assets_name_active`).
+    let stamp = chrono::Utc::now().timestamp_millis();
     sql_query(format!(
         "INSERT INTO assets (uuid, name, hostname, port, asset_type, status, connection_username, connection_config, created_by_id)
-         SELECT gen_random_uuid(), 'p55-asset-' || gs::text, 'p55-host-' || gs::text || '-' || (extract(epoch from now())*1000)::bigint::text, 22, 'ssh', 'online', 'root', '{{}}'::jsonb, {admin}
+         SELECT gen_random_uuid(), 'test-p55-asset-{stamp}-' || gs::text, 'p55-host-' || gs::text || '-' || (extract(epoch from now())*1000)::bigint::text, 22, 'ssh', 'online', 'root', '{{}}'::jsonb, {admin}
          FROM generate_series(1, 1000) gs",
         admin = admin.user.id
     ))
@@ -97,7 +100,7 @@ async fn p55_perf_list_accessible_asset_ids_under_budget() {
     .expect("bulk insert");
     sql_query(format!(
         "INSERT INTO asset_asset_groups (asset_id, asset_group_id)
-         SELECT a.id, {ag_id} FROM assets a WHERE a.name LIKE 'p55-asset-%'"
+         SELECT a.id, {ag_id} FROM assets a WHERE a.name LIKE 'test-p55-asset-{stamp}-%'"
     ))
     .execute(&mut conn)
     .await

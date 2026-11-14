@@ -68,12 +68,13 @@ async fn assets_read_all_filters_for_regular_user() {
         .filter_map(|a| a.get("name").and_then(|v| v.as_str()).map(String::from))
         .collect();
     assert!(
-        names.iter().any(|n| n == &visible_asset),
+        // The fixture appends a per-row suffix to the name it stores.
+        names.iter().any(|n| n.starts_with(&visible_asset)),
         "user should see asset reachable via access rule, got: {:?}",
         names
     );
     assert!(
-        names.iter().all(|n| n != &hidden_asset),
+        names.iter().all(|n| !n.starts_with(&hidden_asset)),
         "regular user (no assets:read_all) MUST NOT see assets outside their \
          access rules; got: {:?}",
         names

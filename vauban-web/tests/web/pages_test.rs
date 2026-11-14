@@ -7097,7 +7097,7 @@ async fn test_asset_create_after_tombstone_yields_fresh_uuid() {
         .await
         .expect("Failed to insert tombstone (CHECK requires connection_config = {})");
 
-    let new_asset_name = "Fresh Asset After Tombstone";
+    let new_asset_name = unique_name("test-Fresh Asset After Tombstone");
     let response = app
         .server
         .post("/assets/manage/new")
@@ -7107,7 +7107,7 @@ async fn test_asset_create_after_tombstone_yields_fresh_uuid() {
         )
         .form(&[
             ("csrf_token", csrf_token.as_str()),
-            ("name", new_asset_name),
+            ("name", new_asset_name.as_str()),
             ("hostname", &asset_hostname),
             ("port", "22"),
             ("asset_type", "ssh"),
@@ -7199,7 +7199,7 @@ async fn test_asset_create_fails_for_active_duplicate() {
     diesel::insert_into(assets::table)
         .values((
             assets::uuid.eq(original_uuid),
-            assets::name.eq("Active Asset"),
+            assets::name.eq(unique_name("test-Active Asset")),
             assets::hostname.eq(&asset_hostname),
             assets::port.eq(22),
             assets::asset_type.eq(AssetType::Ssh),

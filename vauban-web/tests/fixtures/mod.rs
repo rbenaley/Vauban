@@ -480,7 +480,7 @@ pub async fn create_test_ssh_asset(conn: &mut AsyncPgConnection, name: &str) -> 
 
     let new_asset = NewAsset {
         uuid: asset_uuid,
-        name: name.to_string(),
+        name: unique_asset_name(name, &asset_uuid),
         hostname: format!("{}.test.vauban.io", name.replace("test-", "")),
         port: 22,
         asset_type: AssetType::Ssh,
@@ -508,7 +508,7 @@ pub async fn create_test_rdp_asset(conn: &mut AsyncPgConnection, name: &str) -> 
 
     let new_asset = NewAsset {
         uuid: asset_uuid,
-        name: name.to_string(),
+        name: unique_asset_name(name, &asset_uuid),
         hostname: format!("{}.test.vauban.io", name.replace("test-", "")),
         port: 3389,
         asset_type: AssetType::Rdp,
@@ -560,6 +560,25 @@ pub async fn create_test_asset_group(conn: &mut AsyncPgConnection, group_name: &
     );
 
     group_uuid
+}
+
+/// Name for an asset row created by a fixture: the caller's name followed
+/// by eight hex digits of the row UUID.
+///
+/// `idx_assets_name_active` makes the name of a live asset unique. A
+/// fixture that stored the caller's literal name collided with any row of
+/// that name still in the table: one left by an earlier run, or by a test
+/// that panicked before its final `test_db::cleanup`.
+///
+/// The caller's name stays the prefix, so `body.contains(name)` and
+/// `starts_with(name)` assertions keep working; an exact comparison does
+/// not. `assets.name` is `varchar(100)`: the caller's part is cut to fit.
+pub fn unique_asset_name(name: &str, asset_uuid: &Uuid) -> String {
+    const SUFFIX_LEN: usize = 9; // '-' + 8 hex digits
+    const MAX_LEN: usize = 100;
+    let head: String = name.chars().take(MAX_LEN - SUFFIX_LEN).collect();
+    let id = asset_uuid.simple().to_string();
+    format!("{head}-{}", &id[..8])
 }
 
 /// Generate unique test name with timestamp.
@@ -662,7 +681,7 @@ pub async fn create_simple_ssh_asset(
 
     let new_asset = NewAsset {
         uuid: asset_uuid,
-        name: name.to_string(),
+        name: unique_asset_name(name, &asset_uuid),
         hostname: unique_hostname,
         port: 22,
         asset_type: AssetType::Ssh,
@@ -701,7 +720,7 @@ pub async fn create_simple_iacs_asset(
 
     let new_asset = NewAsset {
         uuid: asset_uuid,
-        name: name.to_string(),
+        name: unique_asset_name(name, &asset_uuid),
         hostname: unique_hostname,
         port: 502,
         asset_type: AssetType::IacsModbus,
@@ -734,7 +753,7 @@ pub async fn create_simple_rdp_asset(
 
     let new_asset = NewAsset {
         uuid: asset_uuid,
-        name: name.to_string(),
+        name: unique_asset_name(name, &asset_uuid),
         hostname: unique_hostname,
         port: 3389,
         asset_type: AssetType::Rdp,
@@ -1434,7 +1453,7 @@ pub async fn create_test_asset_in_group(
 
     let new_asset = NewAsset {
         uuid: asset_uuid,
-        name: name.to_string(),
+        name: unique_asset_name(name, &asset_uuid),
         hostname: unique_hostname,
         port: 22,
         asset_type: AssetType::Ssh,
@@ -1503,7 +1522,7 @@ pub async fn create_test_asset_in_group_with_type(
 
     let new_asset = NewAsset {
         uuid: asset_uuid,
-        name: name.to_string(),
+        name: unique_asset_name(name, &asset_uuid),
         hostname: unique_hostname,
         port,
         asset_type,
@@ -2267,7 +2286,6 @@ pub async fn create_provenance_asset(
     fingerprint: Option<&str>,
 ) -> (i32, Uuid) {
     let asset_uuid = Uuid::new_v4();
-    // "test-" prefix: matched by `test_db::cleanup`'s asset sweep.
     let unique_name = format!("test-prov-{}_{}", name_hint, &asset_uuid.to_string()[..8]);
 
     let pin_key = match asset_type {
