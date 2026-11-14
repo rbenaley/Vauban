@@ -81,7 +81,9 @@ lint:
         bash "${script}"
     # Prune .cursor: the MCP lab archive lives there and is not the
     # product tree. Its check_*.sh would lint that copy and fail validate.
-    done < <(find . \( -path ./target -o -path ./.git -o -path ./.cursor \) -prune -o -path '*/scripts/check_*.sh' -print | sort)
+    # Prune .claude: agent worktrees (.claude/worktrees/*) are full copies
+    # of the repo; their check_*.sh would run a second time on a copy.
+    done < <(find . \( -path ./target -o -path ./.git -o -path ./.cursor -o -path ./.claude \) -prune -o -path '*/scripts/check_*.sh' -print | sort)
     # Packaging pin lives next to pkg/, not under scripts/, so the find
     # above does not see it. One run, with the other structural checks.
     just check-mcp-pkg

@@ -43,6 +43,14 @@ if ! awk '/^lint:/{p=1;next} p && /^[a-zA-Z]/{exit} p' "${JUST}" | grep -q 'path
     exit 1
 fi
 
+# Agent worktrees under .claude/worktrees/ are full copies of the repo.
+# Their check_*.sh must not run from the main checkout: they would lint
+# a copy, and tree-wide lints would see that copy as product code.
+if ! awk '/^lint:/{p=1;next} p && /^[a-zA-Z]/{exit} p' "${JUST}" | grep -q 'path \./\.claude'; then
+    echo "[lint] just lint must prune .claude so agent worktrees are not linted" >&2
+    exit 1
+fi
+
 # MCP packaging dry-check (Mac-safe) runs once, with the other lints.
 # Live FreeBSD A–C stays in the staging runbook.
 if ! awk '/^lint:/{p=1;next} p && /^[a-zA-Z]/{exit} p' "${JUST}" | grep -q 'just check-mcp-pkg'; then

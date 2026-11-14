@@ -45,12 +45,12 @@ while IFS= read -r manifest; do
         echo "$bad" >&2
         fail=1
     fi
-done < <(find . \( -path ./target -o -path ./.git -o -path ./.cursor -o -path '*/target' \) -prune \
+done < <(find . \( -path ./target -o -path ./.git -o -path ./.cursor -o -path ./.claude -o -path '*/target' \) -prune \
     -o -name Cargo.toml -print | sort)
 
 # 2. The feature gate lives in shared only.
 gates="$(grep -rn --include='*.rs' 'feature *= *"test-seams"' . \
-    --exclude-dir=target --exclude-dir=.git --exclude-dir=.cursor \
+    --exclude-dir=target --exclude-dir=.git --exclude-dir=.cursor --exclude-dir=.claude \
     | grep -v '^\./shared/src/' || true)"
 if [[ -n "$gates" ]]; then
     echo "ERROR: cfg(feature = \"test-seams\") outside shared/src/:" >&2
@@ -79,7 +79,7 @@ while IFS= read -r file; do
         fail=1
     fi
 done < <(grep -rlE --include='*.rs' '(init_with_key|AccessGuard::from_fds)\(' . \
-    --exclude-dir=target --exclude-dir=.git --exclude-dir=.cursor | sort)
+    --exclude-dir=target --exclude-dir=.git --exclude-dir=.cursor --exclude-dir=.claude | sort)
 
 if [[ "$fail" -ne 0 ]]; then
     exit 1
