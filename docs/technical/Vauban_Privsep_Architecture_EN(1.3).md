@@ -551,10 +551,41 @@ reason to ask. The second check is a single table in
 | Delete a recording | `RecordingDeleteRequest` | `web` |
 | Compress a capture (retired) | `RecordingFileGzipRequest` | none |
 
-The table decides by service, not by session: a service allowed to
-write recordings may ask for the file of any session whose path is well
-formed. Binding a recording to the service that owns its session is an
-open item.
+A write lease passes a third check, by file
+(`file_broker::write_lease`). The path must be
+`YYYY/MM/<session_id>/<file>`, with the session identifier as a whole
+directory name, and each service may only name the files of its own
+format:
+
+| Caller | Files | Open mode |
+|--------|-------|-----------|
+| `proxy_ssh` | `session.cast` | create only |
+| `proxy_rdp` | `NNN.mp4` | create only |
+| `proxy_mcp` | `session.mcp.jsonl`, `session.cast`, `meta.json` | create only |
+| `audit` | `channels/NNN.pcap`, `channels/NNN.pcap.gz`, `meta.json` | create only |
+| `audit` | `session.json` | rewrite |
+
+"Create only" is `O_CREAT | O_EXCL`: the lease fails with
+`recording_file_exists` when the file is already there. No service can
+therefore obtain a descriptor on an existing recording, so none can
+truncate it or read what is appended to it, whichever session it
+belongs to. Any other path is answered with
+`recording_path_not_allowed` and creates nothing. Only the audit service
+may rewrite a file, and only IACS `session.json`, which is written at
+session start and again at session end. The audit service in turn
+refuses a recording-end message whose metadata path is not a
+`meta.json`. The unlink broker applies the same shape rule: it removes
+`YYYY/MM/<session_id>/channels/NNN.pcap` and nothing else.
+
+Three limits remain. The supervisor does not know which service serves
+which session: a proxy that learns a session identifier before the
+recording starts can create that session's file first, and the real
+lease is then refused (the recording fails closed; nothing is
+disclosed). The audit service writes `meta.json` on a message from a
+proxy without knowing which proxy serves the session, so a proxy can
+have the `meta.json` of a session that has none yet created with
+content of its choosing; an existing one cannot be replaced. And a
+recorder whose lease reply is lost cannot ask again for the same file.
 
 A TCP connection to a target that needs no session token has one caller
 as well: only `mailer` may ask for the SMTP relay and only `auth` for

@@ -1567,6 +1567,18 @@ fn handle_recording_message(
             total_frames,
             total_bytes,
         } => {
+            // The path comes from the proxy. This handler writes metadata
+            // and nothing else: without the check a proxy could have the
+            // audit service rewrite `session.json` of an IACS session.
+            if !names_meta_json(&meta_json_relative_path) {
+                error!(
+                    session_id = ?session_id,
+                    path = ?meta_json_relative_path,
+                    "Refused recording end: the metadata path is not a meta.json"
+                );
+                state.requests_failed += 1;
+                return Ok(());
+            }
             #[derive(serde::Serialize)]
             struct RdpMeta<'a> {
                 segments: &'a [shared::messages::RdpRecordingSegment],
@@ -1660,6 +1672,18 @@ fn handle_ssh_recording_message(
             height,
             meta_json_relative_path,
         } => {
+            // The path comes from the proxy. This handler writes metadata
+            // and nothing else: without the check a proxy could have the
+            // audit service rewrite `session.json` of an IACS session.
+            if !names_meta_json(&meta_json_relative_path) {
+                error!(
+                    session_id = ?session_id,
+                    path = ?meta_json_relative_path,
+                    "Refused recording end: the metadata path is not a meta.json"
+                );
+                state.requests_failed += 1;
+                return Ok(());
+            }
             let result = SshEndSessionResult {
                 relative_path: String::new(),
                 meta_json_relative_path,
@@ -2161,6 +2185,11 @@ fn request_unlink_from_supervisor(
             }
         }
     }
+}
+
+/// Whether a proxy-supplied metadata path names a `meta.json`.
+fn names_meta_json(relative_path: &str) -> bool {
+    relative_path.ends_with("/meta.json")
 }
 
 /// Request a file from the supervisor via IPC + SCM_RIGHTS.
@@ -2783,6 +2812,94 @@ mod tests {
         assert_eq!(meta["total_events"], 3);
         assert_eq!(meta["width"], 120);
         assert_eq!(meta["height"], 40);
+    }
+
+    /// A proxy supplies the metadata path. Without the check it could
+    /// point the audit service, which may rewrite metadata, at the
+    /// `session.json` of an IACS session or at a capture.
+    #[test]
+    fn attack_recording_end_with_a_non_meta_path_requests_no_file() {
+        let (supervisor_channel, audit_channel) = IpcChannel::pair().unwrap();
+        let mut state = ServiceState::default();
+        let mut ssh_mgr = Some(SshRecordingManager::new());
+
+        for path in [
+            "2026/07/victim/session.json",
+            "2026/07/victim/channels/001.pcap.gz",
+            "2026/07/victim/session.cast",
+            "2026/07/victim/meta.json.bak",
+            "meta.json",
+        ] {
+            handle_ssh_recording_message(
+                &mut state,
+                &mut ssh_mgr,
+                &audit_channel,
+                None,
+                Message::SshRecordingEnd {
+                    session_id: "victim".to_string(),
+                    blake3_hex: "ab".repeat(32),
+                    total_bytes: 1,
+                    total_events: 1,
+                    duration_secs: 1.0,
+                    width: 80,
+                    height: 24,
+                    meta_json_relative_path: path.to_string(),
+                },
+            )
+            .unwrap();
+            assert!(
+                supervisor_channel.try_recv().is_err(),
+                "{path}: no file may be requested from the supervisor"
+            );
+        }
+        assert_eq!(state.requests_failed, 5);
+        assert!(names_meta_json("2026/07/victim/meta.json"));
+    }
+
+    #[test]
+    fn attack_rdp_recording_end_with_a_non_meta_path_requests_no_file() {
+        let (supervisor_channel, audit_channel) = IpcChannel::pair().unwrap();
+        let mut state = ServiceState::default();
+        let mut recording_mgr = Some(RecordingManager::new());
+        handle_recording_message(
+            &mut state,
+            &mut recording_mgr,
+            &audit_channel,
+            None,
+            Message::RdpRecordingEnd {
+                session_id: "victim".to_string(),
+                segments: Vec::new(),
+                meta_json_relative_path: "2026/07/victim/session.json".to_string(),
+                total_frames: 0,
+                total_bytes: 0,
+            },
+        )
+        .unwrap();
+        assert!(supervisor_channel.try_recv().is_err());
+        assert_eq!(state.requests_failed, 1);
+    }
+
+    /// Both handlers that take a metadata path from a proxy check it.
+    #[test]
+    fn test_proxy_supplied_meta_paths_are_checked() {
+        let source = prod_source();
+        // The body of each match arm, up to the next arm of the same match.
+        for arm in [
+            "\n        Message::RdpRecordingEnd {\n",
+            "\n        Message::SshRecordingEnd {\n",
+        ] {
+            assert_eq!(source.matches(arm).count(), 1, "one arm for {arm:?}");
+            let body = source.split(arm).nth(1).expect("counted above");
+            let end = body.find("\n        }\n").expect("the arm closes");
+            let body = &body[..end];
+            let lease = body
+                .find("request_file_from_supervisor(")
+                .unwrap_or_else(|| panic!("{arm:?} leases a file"));
+            let check = body
+                .find("names_meta_json(&meta_json_relative_path)")
+                .unwrap_or_else(|| panic!("{arm:?} must check the path"));
+            assert!(check < lease, "{arm:?}: check before lease");
+        }
     }
 
     fn walkdir(root: &std::path::Path, filename: &str) -> Vec<std::path::PathBuf> {

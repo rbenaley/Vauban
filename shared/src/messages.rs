@@ -3325,14 +3325,20 @@ pub enum Message {
 
     // ========== Recording File Requests (Service -> Supervisor) ==========
     /// Request the supervisor to open/create a recording file and send its FD
-    /// via SCM_RIGHTS. Used by audit (create, write) and web (open, read-only).
+    /// via SCM_RIGHTS. Used by the session proxies and audit (write) and by
+    /// web (open, read-only).
+    ///
+    /// A write lease must name `YYYY/MM/<session_id>/<file>` with a file of
+    /// the caller's own format, and creates it exclusively: it fails with
+    /// `recording_file_exists` when the file is already there. Only audit
+    /// may rewrite a file, and only `session.json`.
     RecordingFileRequest {
         request_id: u64,
         session_id: String,
         /// Path relative to the recording storage root (e.g. "2026/02/session.mp4").
         relative_path: String,
         /// When true, opens an existing file read-only (web playback).
-        /// When false, creates a new file for writing (audit recording).
+        /// When false, creates a new file for writing.
         read_only: bool,
     },
 

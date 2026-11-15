@@ -87,7 +87,14 @@ Skip when `[server.tls.acme] enabled = false`.
    them, and play both recordings back. **Expected:** recording and
    playback work as before, and the supervisor log has no
    `Refused file broker request` line.
-2. **Expected over a day of normal use:** that line never appears. Each
+   The same holds for `Refused recording write lease`.
+2. Open an RDP session with recording on and resize the window twice.
+   **Expected:** the session directory holds `001.mp4`, `002.mp4`,
+   `003.mp4` and a `meta.json` listing the three segments.
+3. Open an IACS session with one channel and close it. **Expected:**
+   `session.json` has an end time and a reason (it is the one file
+   written twice), and `channels/001.pcap.gz` exists.
+4. **Expected over a day of normal use:** that line never appears. Each
    occurrence names a service and an operation; a service that is not a
    proxy asking for `recording_write`, or anything but `audit` asking
    for `audit_log_segment`, is a finding to report.

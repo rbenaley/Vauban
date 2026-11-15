@@ -3494,21 +3494,34 @@ fn handle_kerberos_kdc_request(
     drop(connection);
 }
 
+/// How `handle_recording_file_request` opens the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecordingOpen {
+    /// Playback: open an existing file read-only.
+    Read,
+    /// Write lease, opened as `file_broker::write_lease` decided.
+    Write(file_broker::WriteLease),
+}
+
 /// Handle a RecordingFileRequest from a sandboxed service.
 ///
-/// When `read_only` is false (audit): creates the file and parent directories,
-/// sends the writable FD via SCM_RIGHTS.
-/// When `read_only` is true (web): opens an existing file for reading,
+/// `RecordingOpen::Write`: creates the parent directories and the file,
+/// sends the read-write FD via SCM_RIGHTS. A `CreateNew` lease fails when
+/// the file exists (`O_EXCL`): no caller obtains a descriptor on an
+/// existing recording. Only a `Rewrite` lease (IACS `session.json`,
+/// audit only) truncates.
+/// `RecordingOpen::Read` (web): opens an existing file for reading,
 /// sends the read-only FD via SCM_RIGHTS.
 fn handle_recording_file_request(
     request_id: u64,
     session_id: &str,
     relative_path: &str,
-    read_only: bool,
+    open: RecordingOpen,
     storage_base: &str,
     requester_state: &ChildState,
 ) {
     use std::os::unix::io::AsRawFd;
+    let read_only = open == RecordingOpen::Read;
 
     // VAU-006 (INV-1/INV-2/INV-3): validate + anchor + confine the
     // untrusted relative_path through the single shared seam BEFORE any
@@ -3535,23 +3548,25 @@ fn handle_recording_file_request(
         }
     };
 
-    let file = if read_only {
-        match std::fs::File::open(&full_path) {
-            Ok(f) => f,
-            Err(e) => {
-                error!(session_id, path = %full_path.display(), error = %e, "Failed to open recording file");
-                let _ = requester_state
-                    .channel
-                    .send(&Message::RecordingFileResponse {
-                        request_id,
-                        session_id: session_id.to_string(),
-                        success: false,
-                        error: Some(format!("open: {e}")),
-                    });
-                return;
-            }
+    // Looked up before the file is opened: a request that cannot be
+    // answered must not create or truncate anything.
+    let fd_socket = match &requester_state.fd_passing_socket {
+        Some(sock) => sock.as_raw_fd(),
+        None => {
+            error!(session_id, "No FD passing socket for requesting service");
+            let _ = requester_state
+                .channel
+                .send(&Message::RecordingFileResponse {
+                    request_id,
+                    session_id: session_id.to_string(),
+                    success: false,
+                    error: Some("no fd_passing socket".to_string()),
+                });
+            return;
         }
-    } else {
+    };
+
+    let file = if let RecordingOpen::Write(lease) = open {
         if let Some(parent) = full_path.parent()
             && let Err(e) = std::fs::create_dir_all(parent)
         {
@@ -3569,14 +3584,33 @@ fn handle_recording_file_request(
 
         // O_RDWR so audit can seek+read the raw IACS `.pcap` FD for
         // in-process gzip after ChannelEnd (Capsicum: no second open).
-        match std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&full_path)
-        {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true);
+        match lease {
+            // O_EXCL: never a descriptor on a file that already exists,
+            // and never through a symlink planted at the target.
+            file_broker::WriteLease::CreateNew => options.create_new(true),
+            file_broker::WriteLease::Rewrite => options.create(true).truncate(true),
+        };
+        match options.open(&full_path) {
             Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                warn!(
+                    session_id,
+                    service = %requester_state.service_key,
+                    path = %full_path.display(),
+                    "Refused recording write lease: the file already exists"
+                );
+                let _ = requester_state
+                    .channel
+                    .send(&Message::RecordingFileResponse {
+                        request_id,
+                        session_id: session_id.to_string(),
+                        success: false,
+                        error: Some(file_broker::FILE_EXISTS.to_string()),
+                    });
+                return;
+            }
             Err(e) => {
                 error!(session_id, path = %full_path.display(), error = %e, "Failed to create recording file");
                 let _ = requester_state
@@ -3590,26 +3624,31 @@ fn handle_recording_file_request(
                 return;
             }
         }
-    };
-
-    let fd_socket = match &requester_state.fd_passing_socket {
-        Some(sock) => sock.as_raw_fd(),
-        None => {
-            error!(session_id, "No FD passing socket for requesting service");
-            let _ = requester_state
-                .channel
-                .send(&Message::RecordingFileResponse {
-                    request_id,
-                    session_id: session_id.to_string(),
-                    success: false,
-                    error: Some("no fd_passing socket".to_string()),
-                });
-            return;
+    } else {
+        match std::fs::File::open(&full_path) {
+            Ok(f) => f,
+            Err(e) => {
+                error!(session_id, path = %full_path.display(), error = %e, "Failed to open recording file");
+                let _ = requester_state
+                    .channel
+                    .send(&Message::RecordingFileResponse {
+                        request_id,
+                        session_id: session_id.to_string(),
+                        success: false,
+                        error: Some(format!("open: {e}")),
+                    });
+                return;
+            }
         }
     };
 
     if let Err(e) = send_fd(fd_socket, file.as_raw_fd()) {
         error!(session_id, error = %e, "Failed to send recording file fd via SCM_RIGHTS");
+        // The file was created by this request and nobody holds it: remove
+        // it so the caller's next attempt is not refused as "exists".
+        if open == RecordingOpen::Write(file_broker::WriteLease::CreateNew) {
+            let _ = std::fs::remove_file(&full_path);
+        }
         let _ = requester_state
             .channel
             .send(&Message::RecordingFileResponse {
@@ -4167,11 +4206,35 @@ fn dispatch_service_message(
                 });
                 return;
             }
+            let open = if read_only {
+                RecordingOpen::Read
+            } else {
+                match file_broker::write_lease(service_key, &session_id, &relative_path) {
+                    Some(lease) => RecordingOpen::Write(lease),
+                    None => {
+                        // The path is request data: logged as Debug so a
+                        // newline in it cannot forge a log line.
+                        warn!(
+                            service = service_key,
+                            session_id = ?session_id,
+                            path = ?relative_path,
+                            "Refused recording write lease: path not allowed for this service"
+                        );
+                        let _ = state.channel.send(&Message::RecordingFileResponse {
+                            request_id,
+                            session_id,
+                            success: false,
+                            error: Some(file_broker::PATH_NOT_ALLOWED.to_string()),
+                        });
+                        return;
+                    }
+                }
+            };
             handle_recording_file_request(
                 request_id,
                 &session_id,
                 &relative_path,
-                read_only,
+                open,
                 recording_storage_path,
                 state,
             );
@@ -4247,6 +4310,21 @@ fn dispatch_service_message(
                     session_id,
                     success: false,
                     error: Some(file_broker::CALLER_NOT_ALLOWED.to_string()),
+                });
+                return;
+            }
+            if !file_broker::is_raw_capture(&session_id, &relative_path) {
+                warn!(
+                    service = service_key,
+                    session_id = ?session_id,
+                    path = ?relative_path,
+                    "Refused recording unlink: not a raw capture of this session"
+                );
+                let _ = state.channel.send(&Message::RecordingFileUnlinkResponse {
+                    request_id,
+                    session_id,
+                    success: false,
+                    error: Some(file_broker::PATH_NOT_ALLOWED.to_string()),
                 });
                 return;
             }
@@ -5584,6 +5662,317 @@ mod tests {
             replies.push(reply);
         }
         replies
+    }
+
+    /// A `ChildState` like `broker_test_child`, with a descriptor-passing
+    /// socket, so a granted lease goes all the way to `send_fd`.
+    fn dispatch_with_fd_socket(
+        service_key: &str,
+        msg: Message,
+        storage: &std::path::Path,
+    ) -> (Vec<Message>, Option<std::fs::File>) {
+        let (mut state, service_channel) = broker_test_child(service_key);
+        let (supervisor_end, service_end) = socketpair_for_fd_passing().unwrap();
+        state.fd_passing_socket = Some(supervisor_end);
+        let mut children = HashMap::new();
+        children.insert(service_key.to_string(), state);
+        let storage = storage.to_str().unwrap();
+        process_service_messages(
+            &children,
+            storage,
+            storage,
+            &crate::config::MailerConfig::default(),
+            &crate::config::LdapConfig::default(),
+            &crate::config::KerberosConfig::default(),
+            &crate::config::TlsCertPaths::default(),
+            &IacsTunnelGuards::from_config(&crate::config::IacsTunnelSupervisorConfig::default()),
+            &McpConnectGuards::from_config(&crate::config::McpConfig::default(), 443),
+            vec![(service_key.to_string(), msg)],
+        );
+        let mut replies = Vec::new();
+        while let Ok(reply) = service_channel.try_recv() {
+            replies.push(reply);
+        }
+        let granted = matches!(
+            replies.as_slice(),
+            [Message::RecordingFileResponse { success: true, .. }]
+        );
+        let file = granted.then(|| {
+            let fd = shared::recording_fd::recv_fd_timed(
+                service_end.as_raw_fd(),
+                Instant::now() + Duration::from_secs(2),
+            )
+            .expect("a granted lease sends its descriptor first");
+            std::fs::File::from(fd)
+        });
+        (replies, file)
+    }
+
+    const LEASE_SID: &str = "8f1c2a34-5b6d-4e7f-8a9b-0c1d2e3f4a5b";
+
+    fn write_request(session_id: &str, relative_path: &str) -> Message {
+        Message::RecordingFileRequest {
+            request_id: 9,
+            session_id: session_id.to_string(),
+            relative_path: relative_path.to_string(),
+            read_only: false,
+        }
+    }
+
+    fn seed(dir: &std::path::Path, relative: &str, content: &[u8]) -> std::path::PathBuf {
+        let file = dir.join(relative);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, content).unwrap();
+        file
+    }
+
+    /// The finding this closes: a proxy asked for the recording of a
+    /// session it does not serve, and the lease truncated it and handed
+    /// over a read-write descriptor.
+    #[test]
+    fn attack_proxy_write_lease_on_an_existing_recording_is_rejected() {
+        for (proxy, file) in [
+            ("proxy_ssh", "session.cast"),
+            ("proxy_rdp", "001.mp4"),
+            ("proxy_mcp", "session.mcp.jsonl"),
+            ("proxy_mcp", "session.cast"),
+            ("proxy_mcp", "meta.json"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let relative = format!("2026/11/{LEASE_SID}/{file}");
+            let on_disk = seed(dir.path(), &relative, b"evidence");
+            let (replies, fd) =
+                dispatch_with_fd_socket(proxy, write_request(LEASE_SID, &relative), dir.path());
+            assert_eq!(
+                recording_refusal(&replies).as_deref(),
+                Some(file_broker::FILE_EXISTS),
+                "{proxy} {file}"
+            );
+            assert!(fd.is_none(), "{proxy} {file}: no descriptor may be sent");
+            assert_eq!(
+                std::fs::read(&on_disk).unwrap(),
+                b"evidence",
+                "{proxy} {file}: the recording must be intact"
+            );
+        }
+    }
+
+    #[test]
+    fn attack_audit_write_lease_on_an_existing_capture_or_seal_is_rejected() {
+        for file in ["channels/001.pcap", "channels/001.pcap.gz", "meta.json"] {
+            let dir = tempfile::tempdir().unwrap();
+            let relative = format!("2026/11/{LEASE_SID}/{file}");
+            let on_disk = seed(dir.path(), &relative, b"capture");
+            let (replies, fd) =
+                dispatch_with_fd_socket("audit", write_request(LEASE_SID, &relative), dir.path());
+            assert_eq!(
+                recording_refusal(&replies).as_deref(),
+                Some(file_broker::FILE_EXISTS),
+                "{file}"
+            );
+            assert!(fd.is_none());
+            assert_eq!(std::fs::read(&on_disk).unwrap(), b"capture", "{file}");
+        }
+    }
+
+    /// `relative_path.contains(session_id)` used to be the whole anchor.
+    #[test]
+    fn attack_write_lease_with_a_substring_session_id_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let relative = format!("2026/11/{LEASE_SID}/session.cast");
+        let on_disk = seed(dir.path(), &relative, b"evidence");
+        for forged in ["2", "8f1c", "session", "2026"] {
+            let (replies, fd) =
+                dispatch_with_fd_socket("proxy_ssh", write_request(forged, &relative), dir.path());
+            assert_eq!(
+                recording_refusal(&replies).as_deref(),
+                Some(file_broker::PATH_NOT_ALLOWED),
+                "{forged}"
+            );
+            assert!(fd.is_none());
+        }
+        assert_eq!(std::fs::read(&on_disk).unwrap(), b"evidence");
+    }
+
+    #[test]
+    fn attack_write_lease_on_a_file_of_another_format_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        for (service, file) in [
+            ("proxy_ssh", "001.mp4"),
+            ("proxy_ssh", "meta.json"),
+            ("proxy_rdp", "session.cast"),
+            ("proxy_rdp", "meta.json"),
+            ("proxy_mcp", "001.mp4"),
+            ("proxy_ssh", "channels/001.pcap"),
+            ("audit", "session.cast"),
+            ("audit", "001.mp4"),
+            ("audit", "session.mcp.jsonl"),
+        ] {
+            let relative = format!("2026/11/{LEASE_SID}/{file}");
+            let (replies, fd) =
+                dispatch_with_fd_socket(service, write_request(LEASE_SID, &relative), dir.path());
+            assert_eq!(
+                recording_refusal(&replies).as_deref(),
+                Some(file_broker::PATH_NOT_ALLOWED),
+                "{service} {file}"
+            );
+            assert!(fd.is_none());
+        }
+        assert!(
+            std::fs::read_dir(dir.path()).unwrap().next().is_none(),
+            "a refused lease must not create a directory"
+        );
+    }
+
+    /// The legitimate flows still work: each recorder creates its file
+    /// once and writes through the descriptor it receives.
+    #[test]
+    fn test_write_lease_creates_each_recorder_file_once() {
+        use std::io::Write;
+        for (service, file) in [
+            ("proxy_ssh", "session.cast"),
+            ("proxy_rdp", "001.mp4"),
+            ("proxy_rdp", "002.mp4"),
+            ("proxy_mcp", "session.mcp.jsonl"),
+            ("proxy_mcp", "session.cast"),
+            ("proxy_mcp", "meta.json"),
+            ("audit", "channels/001.pcap"),
+            ("audit", "channels/001.pcap.gz"),
+            ("audit", "meta.json"),
+            ("audit", "session.json"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let relative = format!("2026/11/{LEASE_SID}/{file}");
+            let (replies, fd) =
+                dispatch_with_fd_socket(service, write_request(LEASE_SID, &relative), dir.path());
+            assert!(
+                matches!(
+                    replies.as_slice(),
+                    [Message::RecordingFileResponse { success: true, .. }]
+                ),
+                "{service} {file}: {replies:?}"
+            );
+            fd.expect("descriptor").write_all(b"data").unwrap();
+            assert_eq!(
+                std::fs::read(dir.path().join(&relative)).unwrap(),
+                b"data",
+                "{service} {file}"
+            );
+        }
+    }
+
+    /// The one rewrite a legitimate flow needs: the audit service writes
+    /// IACS `session.json` at session start and again at session end.
+    #[test]
+    fn test_audit_may_rewrite_session_json() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let relative = format!("2026/11/{LEASE_SID}/session.json");
+        let on_disk = seed(dir.path(), &relative, b"{\"started\":true,\"padding\":1}");
+        let (replies, fd) =
+            dispatch_with_fd_socket("audit", write_request(LEASE_SID, &relative), dir.path());
+        assert!(
+            matches!(
+                replies.as_slice(),
+                [Message::RecordingFileResponse { success: true, .. }]
+            ),
+            "{replies:?}"
+        );
+        fd.expect("descriptor").write_all(b"{}").unwrap();
+        assert_eq!(std::fs::read(&on_disk).unwrap(), b"{}");
+    }
+
+    /// A lease that cannot be answered leaves nothing behind.
+    #[test]
+    fn test_write_lease_without_fd_socket_touches_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let relative = format!("2026/11/{LEASE_SID}/session.json");
+        let on_disk = seed(dir.path(), &relative, b"sealed");
+        let replies = dispatch_as(
+            "audit",
+            write_request(LEASE_SID, &relative),
+            dir.path(),
+            &crate::config::TlsCertPaths::default(),
+        );
+        assert_eq!(
+            recording_refusal(&replies).as_deref(),
+            Some("no fd_passing socket")
+        );
+        assert_eq!(std::fs::read(&on_disk).unwrap(), b"sealed");
+
+        let fresh = format!("2026/11/{LEASE_SID}/session.cast");
+        let replies = dispatch_as(
+            "proxy_ssh",
+            write_request(LEASE_SID, &fresh),
+            dir.path(),
+            &crate::config::TlsCertPaths::default(),
+        );
+        assert_eq!(
+            recording_refusal(&replies).as_deref(),
+            Some("no fd_passing socket")
+        );
+        assert!(!dir.path().join(&fresh).exists());
+    }
+
+    /// The unlink broker used the same substring anchor as the write
+    /// lease: any short identifier matched any capture.
+    #[test]
+    fn attack_audit_unlink_with_a_substring_session_id_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let relative = format!("2026/11/{LEASE_SID}/channels/001.pcap");
+        let on_disk = seed(dir.path(), &relative, b"capture");
+        let sealed = format!("2026/11/{LEASE_SID}/session.pcap");
+        let other = seed(dir.path(), &sealed, b"capture");
+        for (session_id, path) in [
+            ("p", relative.as_str()),
+            ("channels", relative.as_str()),
+            (LEASE_SID, sealed.as_str()),
+        ] {
+            let replies = dispatch_as(
+                "audit",
+                Message::RecordingFileUnlinkRequest {
+                    request_id: 13,
+                    session_id: session_id.to_string(),
+                    relative_path: path.to_string(),
+                },
+                dir.path(),
+                &crate::config::TlsCertPaths::default(),
+            );
+            match replies.as_slice() {
+                [
+                    Message::RecordingFileUnlinkResponse {
+                        success: false,
+                        error,
+                        ..
+                    },
+                ] => assert_eq!(
+                    error.as_deref(),
+                    Some(file_broker::PATH_NOT_ALLOWED),
+                    "{session_id} {path}"
+                ),
+                other => panic!("expected one refusal, got {other:?}"),
+            }
+        }
+        assert!(on_disk.exists() && other.exists());
+
+        let replies = dispatch_as(
+            "audit",
+            Message::RecordingFileUnlinkRequest {
+                request_id: 13,
+                session_id: LEASE_SID.to_string(),
+                relative_path: relative.clone(),
+            },
+            dir.path(),
+            &crate::config::TlsCertPaths::default(),
+        );
+        assert!(
+            matches!(
+                replies.as_slice(),
+                [Message::RecordingFileUnlinkResponse { success: true, .. }]
+            ),
+            "{replies:?}"
+        );
+        assert!(!on_disk.exists(), "the real capture is still unlinked");
     }
 
     fn recording_request(read_only: bool) -> Message {

@@ -81,6 +81,23 @@ fn broker_validates_before_fs_calls() {
         "write path MUST open O_RDWR via OpenOptions (audit gzip on same FD)."
     );
     assert!(
+        body.contains(".create_new(true)"),
+        "media and capture leases MUST open O_EXCL: no descriptor on an existing recording."
+    );
+    assert_eq!(
+        body.matches(".truncate(true)").count(),
+        1,
+        "exactly one truncating open, reserved to WriteLease::Rewrite."
+    );
+    let rewrite_at = body
+        .find("WriteLease::Rewrite =>")
+        .expect("the Rewrite arm must be present");
+    let truncate_at = body.find(".truncate(true)").expect("checked above");
+    assert!(
+        rewrite_at < truncate_at && truncate_at - rewrite_at < 80,
+        "the truncating open MUST sit in the WriteLease::Rewrite arm."
+    );
+    assert!(
         !body.contains("File::create"),
         "write path MUST NOT use bare File::create (O_WRONLY would break audit gzip)."
     );
