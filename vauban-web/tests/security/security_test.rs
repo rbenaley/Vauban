@@ -2273,9 +2273,11 @@ fn test_resolve_client_ip_trusts_xff_from_trusted_proxy() {
     );
 }
 
-/// Test that only the first IP in the XFF chain is used (leftmost = original client).
+/// The XFF chain is read from the right: the entry our trusted proxy
+/// appended is the client. The entries to its left were sent by that
+/// client and could name any address.
 #[test]
-fn test_resolve_client_ip_uses_first_xff_entry() {
+fn attack_resolve_client_ip_ignores_client_supplied_leftmost_xff_entry() {
     use axum::http::HeaderMap;
     use std::net::IpAddr;
 
@@ -2291,8 +2293,8 @@ fn test_resolve_client_ip_uses_first_xff_entry() {
 
     assert_eq!(
         result.to_string(),
-        "203.0.113.50",
-        "Should use the leftmost (original client) IP from the XFF chain"
+        "150.172.238.178",
+        "Should use the address the trusted proxy appended, not the leftmost one"
     );
 }
 

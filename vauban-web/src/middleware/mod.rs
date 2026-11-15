@@ -81,38 +81,85 @@ pub fn unauthenticated_response_for(request: &Request) -> Response {
 
 /// Resolve the real client IP address.
 ///
-/// Proxy headers (`X-Forwarded-For`, `X-Real-IP`) are only trusted when the
-/// direct TCP connection originates from an address listed in `trusted_proxies`.
-/// If the list is empty or the connection does not come from a trusted proxy,
-/// the raw TCP peer address is returned.  This prevents clients from spoofing
-/// their source IP by injecting these headers directly.
+/// Proxy headers are read only when the TCP peer is one of
+/// `trusted_proxies`. Otherwise the peer address is the answer: a client
+/// that connects directly cannot choose its address with a header.
+///
+/// `X-Forwarded-For` is read from the right. Each proxy appends the
+/// address it received the request from, so the rightmost entries are
+/// the ones our own proxies wrote, and everything to their left came
+/// from the client. The answer is the first entry, walking leftward,
+/// that is not a trusted proxy: the address the outermost trusted proxy
+/// saw. Taking the leftmost entry, as this function once did, let a
+/// client behind an appending proxy send `X-Forwarded-For: <any address>`
+/// and be taken for that address by the rate limiter, the lockout, the
+/// client ACL and the audit trail.
+///
+/// Consequence for operators: with several proxies in a row, each must be
+/// listed in `trusted_proxies`, or the walk stops at the first unlisted
+/// one and that proxy's address is used.
+///
+/// The header is untrusted input. An entry that is not an address (with
+/// an optional port) ends the walk and the peer address is returned:
+/// what lies to the left of a hop we cannot read is not evidence.
+///
+/// `X-Real-IP` is read only when no `X-Forwarded-For` header is present.
 pub fn resolve_client_ip(
     headers: &HeaderMap,
     connect_ip: IpAddr,
     trusted_proxies: &[IpAddr],
 ) -> IpAddr {
-    // Only trust proxy headers when the direct connection is from a trusted proxy
-    if !trusted_proxies.is_empty() && trusted_proxies.contains(&connect_ip) {
-        // Try X-Forwarded-For first (comma-separated list, first is original client)
-        if let Some(xff) = headers.get("X-Forwarded-For")
-            && let Ok(xff_str) = xff.to_str()
-            && let Some(first_ip) = xff_str.split(',').next()
-            && let Ok(ip) = first_ip.trim().parse::<IpAddr>()
-        {
-            return ip;
-        }
-
-        // Try X-Real-IP
-        if let Some(real_ip) = headers.get("X-Real-IP")
-            && let Ok(ip_str) = real_ip.to_str()
-            && let Ok(ip) = ip_str.parse::<IpAddr>()
-        {
-            return ip;
-        }
+    if trusted_proxies.is_empty() || !trusted_proxies.contains(&connect_ip) {
+        return connect_ip;
     }
 
-    // Default: use the actual TCP connection address
+    let mut forwarded = headers.get_all("X-Forwarded-For").iter().peekable();
+    if forwarded.peek().is_some() {
+        // Several header lines are one list, in order (RFC 9110, 5.3).
+        let mut hops: Vec<&str> = Vec::new();
+        for value in forwarded {
+            let Ok(text) = value.to_str() else {
+                return connect_ip;
+            };
+            hops.extend(text.split(','));
+        }
+        for hop in hops.into_iter().rev() {
+            let Some(ip) = parse_forwarded_hop(hop) else {
+                return connect_ip;
+            };
+            if !trusted_proxies.contains(&ip) {
+                return ip;
+            }
+        }
+        // Every hop is one of our proxies: the request started there.
+        return connect_ip;
+    }
+
+    if let Some(real_ip) = headers.get("X-Real-IP")
+        && let Ok(text) = real_ip.to_str()
+        && let Some(ip) = parse_forwarded_hop(text)
+    {
+        return ip;
+    }
+
     connect_ip
+}
+
+/// One `X-Forwarded-For` entry: an address, optionally with a port
+/// (`203.0.113.7`, `203.0.113.7:4711`, `2001:db8::1`, `[2001:db8::1]`,
+/// `[2001:db8::1]:4711`). Anything else is `None`.
+fn parse_forwarded_hop(hop: &str) -> Option<IpAddr> {
+    let hop = hop.trim();
+    if let Ok(ip) = hop.parse::<IpAddr>() {
+        return Some(ip);
+    }
+    if let Ok(addr) = hop.parse::<std::net::SocketAddr>() {
+        return Some(addr.ip());
+    }
+    hop.strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .and_then(|inner| inner.parse::<std::net::Ipv6Addr>().ok())
+        .map(IpAddr::V6)
 }
 
 #[cfg(test)]
@@ -193,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_first_ip_from_xff_chain() {
+    fn test_resolve_rightmost_untrusted_ip_from_xff_chain() {
         let mut headers = HeaderMap::new();
         headers.insert(
             "X-Forwarded-For",
@@ -203,8 +250,203 @@ mod tests {
         let connect_ip: IpAddr = "10.0.0.1".parse().unwrap();
         let trusted: Vec<IpAddr> = vec!["10.0.0.1".parse().unwrap()];
 
+        // The proxy at 10.0.0.1 appended 150.172.238.178: that is the
+        // address it saw. The two entries to its left came from there.
         let result = resolve_client_ip(&headers, connect_ip, &trusted);
-        assert_eq!(result.to_string(), "203.0.113.50");
+        assert_eq!(result.to_string(), "150.172.238.178");
+    }
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    fn xff(values: &[&str]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for value in values {
+            headers.append("X-Forwarded-For", value.parse().unwrap());
+        }
+        headers
+    }
+
+    #[test]
+    fn attack_spoofed_leftmost_xff_is_ignored() {
+        // The client sends its own header; the proxy appends the truth.
+        let headers = xff(&["10.9.9.9, 198.51.100.7"]);
+        let trusted = [ip("10.0.0.1")];
+        assert_eq!(
+            resolve_client_ip(&headers, ip("10.0.0.1"), &trusted),
+            ip("198.51.100.7"),
+            "the address the proxy appended wins over the one the client sent"
+        );
+
+        // Claiming to be a trusted proxy on the left changes nothing.
+        let headers = xff(&["10.0.0.1, 198.51.100.7"]);
+        assert_eq!(
+            resolve_client_ip(&headers, ip("10.0.0.1"), &trusted),
+            ip("198.51.100.7")
+        );
+
+        // Nor does a long forged chain.
+        let headers = xff(&["1.1.1.1, 2.2.2.2, 3.3.3.3, 198.51.100.7"]);
+        assert_eq!(
+            resolve_client_ip(&headers, ip("10.0.0.1"), &trusted),
+            ip("198.51.100.7")
+        );
+    }
+
+    #[test]
+    fn attack_xff_from_untrusted_peer_is_ignored() {
+        let headers = xff(&["203.0.113.50"]);
+        for trusted in [&[][..], &[ip("192.168.1.1")][..]] {
+            assert_eq!(
+                resolve_client_ip(&headers, ip("198.51.100.7"), trusted),
+                ip("198.51.100.7")
+            );
+        }
+    }
+
+    #[test]
+    fn attack_spoofed_xff_in_a_second_header_line_is_ignored() {
+        // Two lines are one list. The proxy's line comes last.
+        let headers = xff(&["10.9.9.9", "198.51.100.7"]);
+        let trusted = [ip("10.0.0.1")];
+        assert_eq!(
+            resolve_client_ip(&headers, ip("10.0.0.1"), &trusted),
+            ip("198.51.100.7")
+        );
+    }
+
+    #[test]
+    fn attack_x_real_ip_does_not_override_xff() {
+        let mut headers = xff(&["198.51.100.7"]);
+        headers.insert("X-Real-IP", "10.9.9.9".parse().unwrap());
+        let trusted = [ip("10.0.0.1")];
+        assert_eq!(
+            resolve_client_ip(&headers, ip("10.0.0.1"), &trusted),
+            ip("198.51.100.7")
+        );
+
+        // An unreadable XFF does not make X-Real-IP the fallback either.
+        let mut headers = xff(&["garbage"]);
+        headers.insert("X-Real-IP", "10.9.9.9".parse().unwrap());
+        assert_eq!(
+            resolve_client_ip(&headers, ip("10.0.0.1"), &trusted),
+            ip("10.0.0.1")
+        );
+    }
+
+    #[test]
+    fn attack_unreadable_hop_stops_the_walk() {
+        let trusted = [ip("10.0.0.1"), ip("10.0.0.2")];
+        // The hop between our proxy and the claimed client is not an
+        // address: what is to its left is not believed.
+        for value in [
+            "203.0.113.50, garbage, 10.0.0.2",
+            "203.0.113.50, , 10.0.0.2",
+            "203.0.113.50, 999.1.1.1, 10.0.0.2",
+            "203.0.113.50, 198.51.100.7 extra, 10.0.0.2",
+            "203.0.113.50, unknown, 10.0.0.2",
+        ] {
+            assert_eq!(
+                resolve_client_ip(&xff(&[value]), ip("10.0.0.1"), &trusted),
+                ip("10.0.0.1"),
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_chain_of_trusted_proxies_is_skipped() {
+        let trusted = [ip("10.0.0.1"), ip("10.0.0.2")];
+        let headers = xff(&["203.0.113.50, 10.0.0.2"]);
+        assert_eq!(
+            resolve_client_ip(&headers, ip("10.0.0.1"), &trusted),
+            ip("203.0.113.50")
+        );
+        // An inner proxy that is not listed is where the walk stops.
+        let headers = xff(&["203.0.113.50, 10.0.0.3"]);
+        assert_eq!(
+            resolve_client_ip(&headers, ip("10.0.0.1"), &trusted),
+            ip("10.0.0.3")
+        );
+        // Only trusted hops: the request started at a proxy.
+        let headers = xff(&["10.0.0.2"]);
+        assert_eq!(
+            resolve_client_ip(&headers, ip("10.0.0.1"), &trusted),
+            ip("10.0.0.1")
+        );
+    }
+
+    #[test]
+    fn test_hop_with_port_or_brackets_is_read() {
+        let trusted = [ip("10.0.0.1")];
+        for (value, expected) in [
+            ("198.51.100.7:4711", "198.51.100.7"),
+            ("[2001:db8::1]:4711", "2001:db8::1"),
+            ("[2001:db8::1]", "2001:db8::1"),
+            ("2001:db8::1", "2001:db8::1"),
+            ("  198.51.100.7  ", "198.51.100.7"),
+        ] {
+            assert_eq!(
+                resolve_client_ip(&xff(&[value]), ip("10.0.0.1"), &trusted),
+                ip(expected),
+                "{value:?}"
+            );
+        }
+    }
+
+    use proptest::prelude::*;
+
+    proptest::proptest! {
+        /// Whatever the header says, the answer is the TCP peer or an
+        /// entry of the list that is an address and not one of our
+        /// proxies. A client can never make the function return a
+        /// trusted proxy's address other than the peer, nor an address
+        /// that is not in the header.
+        #[test]
+        fn prop_answer_is_the_peer_or_an_untrusted_hop(
+            hops in proptest::collection::vec(
+                proptest::prop_oneof![
+                    (0u8..4, 0u8..4).prop_map(|(a, b)| format!("10.0.{a}.{b}")),
+                    (1u8..255).prop_map(|a| format!("198.51.100.{a}")),
+                    "[a-z ,:\\[\\]0-9.]{0,12}",
+                ],
+                0..6,
+            ),
+            peer_is_trusted in proptest::bool::ANY,
+        ) {
+            let trusted = [ip("10.0.0.1"), ip("10.0.0.2")];
+            let peer = if peer_is_trusted { ip("10.0.0.1") } else { ip("198.51.100.250") };
+            let mut headers = HeaderMap::new();
+            let line = hops.join(",");
+            if let Ok(value) = line.parse() {
+                headers.insert("X-Forwarded-For", value);
+            }
+            let answer = resolve_client_ip(&headers, peer, &trusted);
+            if !peer_is_trusted {
+                prop_assert_eq!(answer, peer);
+            } else if answer != peer {
+                prop_assert!(!trusted.contains(&answer));
+                prop_assert!(
+                    line.split(',').any(|h| parse_forwarded_hop(h) == Some(answer)),
+                    "{answer} is not a hop of {line:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn attack_non_ascii_xff_is_ignored() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-Forwarded-For",
+            axum::http::HeaderValue::from_bytes(b"198.51.100.7\xff").unwrap(),
+        );
+        let trusted = [ip("10.0.0.1")];
+        assert_eq!(
+            resolve_client_ip(&headers, ip("10.0.0.1"), &trusted),
+            ip("10.0.0.1")
+        );
     }
 
     #[test]

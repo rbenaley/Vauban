@@ -2286,11 +2286,12 @@ mod tests {
         );
 
         let fallback_addr: SocketAddr = unwrap_ok!("192.168.1.1:12345".parse());
-        // Connection from trusted proxy -> XFF honoured
+        // Connection from trusted proxy -> XFF honoured, read from the
+        // right: the proxy appended the last entry.
         let trusted = vec![unwrap_ok!("192.168.1.1".parse())];
         let ip = extract_client_ip(&headers, fallback_addr, &trusted);
 
-        assert_eq!(ip.ip().to_string(), "203.0.113.50");
+        assert_eq!(ip.ip().to_string(), "150.172.238.178");
     }
 
     #[test]
@@ -2458,7 +2459,7 @@ mod tests {
         let trusted = vec![unwrap_ok!("10.0.0.1".parse())];
         let ip = extract_client_ip(&headers, fallback, &trusted);
 
-        assert_eq!(ip.ip().to_string(), "1.2.3.4");
+        assert_eq!(ip.ip().to_string(), "5.6.7.8");
     }
 
     #[test]
@@ -2466,7 +2467,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             "X-Forwarded-For",
-            unwrap_ok!("::ffff:192.168.1.1, 10.0.0.1".parse()),
+            unwrap_ok!("10.0.0.1, ::ffff:192.168.1.1".parse()),
         );
 
         let fallback: SocketAddr = unwrap_ok!("127.0.0.1:8080".parse());

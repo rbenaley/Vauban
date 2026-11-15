@@ -160,6 +160,9 @@ max_concurrent_sessions_per_asset = 20
 # Trusted reverse proxy IPs. X-Forwarded-For / X-Real-IP headers are only
 # honoured when the TCP connection originates from one of these addresses.
 # Empty list = proxy headers are never trusted (safe default).
+# X-Forwarded-For is read from the right: the client address is the first
+# entry, walking leftward, that is not listed here. With several proxies
+# in a row, list every one of them.
 trusted_proxies = []
 # Global client IP ACL (CIDR allowlist). Empty list = disabled (allow all).
 # See config/vauban.conf for the full documentation. Loopback is always
