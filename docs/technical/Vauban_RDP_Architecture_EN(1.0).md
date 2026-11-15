@@ -1147,14 +1147,45 @@ flowchart TD
     E --> F{old_spki != new_spki and !confirm?}
     F -->|Yes| G["Mismatch fragment - no DB write"]
     F -->|No| H["Persist fingerprint+spki, clear mismatch"]
-    G --> I["Admin: Accept New Cert ?confirm=true"] --> H
+    G --> I["Admin: Accept New Cert (confirm=true in the form)"] --> H
     M["User: POST connect-rdp"] --> N{Pre-flight}
     N -->|no pin or mismatch| O["Refuse fail-closed"]
     N -->|OK| P["expected_cert_fingerprint -> RdpSessionOpen"]
     P --> Q{Pinning verifier: SPKI match?}
-    Q -->|No| R["Err mismatch -> web sets rdp_server_cert_mismatch"]
+    Q -->|No| R["server_certificate_mismatch -> web sets rdp_server_cert_mismatch"]
     Q -->|Yes| S["TLS OK -> CredSSP"]
 ```
+
+#### Pin requests carry the CSRF token (0.9.51)
+
+`POST /assets/manage/{uuid}/fetch-rdp-cert`, like its SSH counterpart
+`fetch-host-key`, sets a trust anchor. Both handlers take
+`PinTrustAnchorForm` and validate the double-submit CSRF token before
+anything else. The confirmation that replaces a changed pin is the
+`confirm` field of that form; a `confirm` in the query string is not
+read. The fragments send both through `hx-vals`.
+`check_pin_routes_csrf.sh` and `tests/web/pin_csrf_test.rs` pin this,
+and the test file also checks that every state-changing route of the
+web zone validates the token.
+
+#### What a proxy returns is checked and escaped (0.9.51)
+
+The key, the SPKI, and the fingerprint a proxy returns are stored on the
+asset and shown in the admin pages. vauban-web refuses an answer that is
+not shaped like them (`services::pin_shape`: `SHA256:` plus base64, a
+base64 SPKI, an OpenSSH key line), and every value placed into a pin
+fragment is HTML-escaped (`html_text`). The fragments are plain files
+with placeholders, not templates, so nothing else escapes for them.
+
+#### A mismatch is a typed signal (0.9.51)
+
+The pinning verifier sets a flag when it refuses a certificate for a
+pin mismatch. The session code reads the flag after a failed handshake
+and reports `server_certificate_mismatch`, one of the closed-set codes
+of Appendix B. vauban-web sets `rdp_server_cert_mismatch` on that exact
+code only. Before 0.9.51 it searched the text of the error for
+"certificate mismatch" or "MITM", so text written by the target could
+mark an asset as mismatched.
 
 #### Privilege separation
 
@@ -1357,11 +1388,37 @@ flowchart TB
 |-------|-------|----------|
 | DNS resolution failure | Supervisor | `TcpConnectResponse(success=false)` |
 | TCP connection refused | Supervisor | `TcpConnectResponse(success=false)` |
-| RDP authentication failure | Proxy | `RdpSessionOpened(success=false, error)` |
-| TLS handshake failure | Proxy | `RdpSessionOpened(success=false, error)` |
+| RDP authentication failure (NLA) | Proxy | `RdpSessionOpenFailed(reason)`, see 11.3.1 |
+| Any other open failure | Proxy | `RdpSessionOpened(success=false, error=code)` |
 | Session disconnected | Proxy | Session cleanup, WebSocket close |
 | H.264 encoder failure | Proxy | Log error, encoder thread exits |
 | WebSocket disconnected | Web | Session cleanup, `RdpSessionClose` sent to proxy |
 | IPC pipe broken | Supervisor | Linked group restart (Web + ProxyRdp) |
+
+### B.1 Open failure codes (0.9.51)
+
+The `error` field of `RdpSessionOpened` and `RdpServerCertResult` is a
+string on the wire and only ever holds one of the codes below
+(`shared::messages::RdpOpenFailure`). The text of the underlying error
+can quote the target or the TLS stack: it stays in the
+`vauban-proxy-rdp` log, in its Debug form, keyed by session id.
+
+| Code | Meaning |
+|------|---------|
+| `access_denied` | The proxy's own access check refused the session |
+| `draining` | The proxy is restarting and takes no new session |
+| `no_pinned_certificate` | The asset has no pinned server certificate |
+| `credentials_unavailable` | The proxy could not obtain the target's credentials |
+| `server_certificate_mismatch` | The target presented a certificate other than the pinned one |
+| `tls_failed` | The TLS handshake failed for another reason |
+| `connection_failed` | The connection to the target failed or was lost |
+| `session_failed` | The RDP exchange failed after the transport was up |
+| `internal` | Anything else |
+
+vauban-web turns a code into a constant sentence
+(`services::rdp_open_failure`). A value that is not a code, for example
+the text an older proxy would send, is read as `internal` and is never
+shown. Failures of the web tier itself (supervisor connect, IPC) are
+answered with a constant sentence as well.
 
 ---

@@ -551,6 +551,15 @@ reason to ask. The second check is a single table in
 | Delete a recording | `RecordingDeleteRequest` | `web` |
 | Compress a capture (retired) | `RecordingFileGzipRequest` | none |
 
+The table decides by service, not by session: a service allowed to
+write recordings may ask for the file of any session whose path is well
+formed. Binding a recording to the service that owns its session is an
+open item.
+
+A TCP connection to a target that needs no session token has one caller
+as well: only `mailer` may ask for the SMTP relay and only `auth` for
+the directory, before the host whitelist is consulted.
+
 A request from any other service is answered with the fixed text
 `caller_not_allowed` and touches no file. The caller is the service key
 the supervisor assigned to the pipe the message arrived on, not a field

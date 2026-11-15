@@ -844,6 +844,33 @@ CREATE INDEX idx_auth_sessions_last_activity
 | `device_info` | Browser fingerprint derived from `User-Agent` by `AuthSession::parse_device_info`. **Made `NOT NULL DEFAULT 'Unknown browser'`** so the index is deterministic even when the UA is missing or unparseable. |
 | `ip_address` | Resolved client IP after honoring trusted proxies (`extract_client_ip`). |
 
+How the client IP is resolved (`middleware::resolve_client_ip`, the one
+place that reads proxy headers):
+
+- If the TCP peer is not in `trusted_proxies`, the peer address is the
+  client. Headers are ignored.
+- Otherwise `X-Forwarded-For` is read from the right. Each proxy appends
+  the address it received the request from, so the client is the first
+  entry, walking leftward, that is not itself in `trusted_proxies`. The
+  entries further left were sent by the client and can name any address.
+- An entry that is not an address, optionally with a port, ends the
+  walk and the peer address is used.
+- Exactly one header is read, chosen by `[security] client_ip_header`:
+  `"x-forwarded-for"` (default) or `"x-real-ip"`. In `x-real-ip` mode
+  the proxy's single `X-Real-IP` value is the client and
+  `X-Forwarded-For` is ignored. A proxy that sets only `X-Real-IP`
+  usually forwards the client's own `X-Forwarded-For` untouched, so it
+  must be declared in that mode. An unknown value stops the service at
+  boot.
+- Addresses are compared in canonical form: a peer reported as
+  `::ffff:a.b.c.d` by a dual-stack socket matches `a.b.c.d`.
+
+With several reverse proxies in a row, list each of them in
+`trusted_proxies`. An inner proxy that is not listed is taken for the
+client. Before 0.9.51 the leftmost entry was used, which let a client
+behind an appending proxy choose the address seen by the login rate
+limiter, the lockout, the client IP ACL, and the audit trail.
+
 The invariant is enforced by **three coordinated layers**:
 
 1. **At login** — `handlers::auth::insert_session_with_purge` runs
@@ -1367,9 +1394,37 @@ sequenceDiagram
 
 Superusers and staff see all assets; regular users see only assets in groups they have access to via active access rules.
 
+What an asset response contains (0.9.51). The database row is not
+serializable. A response is built from one of two types
+(`models::asset`):
+
+| Type | Returned by | Fields |
+|------|-------------|--------|
+| `AssetSummary` | `GET /api/v1/assets` (`assets:read`) | `id`, `uuid`, `name`, `hostname`, `port`, `asset_type`, `status` |
+| `AssetDetail` | `/api/v1/assets/manage` (`assets:manage`) | every column, `connection_config` without secrets, and `credentials_present` |
+
+`connection_config` holds the credentials the bastion uses to log in
+to a target, as vault ciphertext. `public_connection_config` removes,
+at the top level, a key named like a secret (`password`, `private_key`,
+`passphrase`, and any key containing `password`, `passphrase`,
+`private_key`, `secret`, `token`, or `hmac`), and, at every depth, any
+string that is vault ciphertext, whatever its key. The name rule stops
+at the top level because nested objects describe other things: the
+input schema of an MCP tool can have a property called `token`. `credentials_present` lists which
+of `password`, `private_key`, and `passphrase` are set, without their
+value. Before 0.9.51 both endpoints returned the row, ciphertext
+included.
+
 ### 9.5 CSRF Protection
 
-Access rule forms use the Alpine.js double-submit cookie pattern for CSRF protection:
+Every state-changing route of the web zone checks the double-submit
+token, including the two routes that pin a trust anchor on an asset
+(`fetch-host-key`, `fetch-rdp-cert`) since 0.9.51.
+`tests/web/pin_csrf_test.rs` reads the router and fails when such a
+route has a handler that does not check it. The JSON API authenticates
+with API keys only and is not concerned.
+
+Forms use the Alpine.js double-submit cookie pattern for CSRF protection:
 
 1. Server generates a CSRF token and sets it as a cookie
 2. Alpine.js reads the cookie and includes the token in the form submission

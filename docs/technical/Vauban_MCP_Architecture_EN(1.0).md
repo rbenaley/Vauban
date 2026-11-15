@@ -372,8 +372,9 @@ Hop-2 limits (web `[mcp]`, mirrored to the leaf by the supervisor):
 | `Authorization` header | 8 KiB (others 1 KiB) | web | 431 |
 | WebSocket frame | 192 KiB (one pipe chunk) | web | frame refused; an oversize pipe message closes only its own relay or tunnel |
 
-The client IP behind these per-IP limits is the socket peer, or the
-`X-Forwarded-For` value only when the peer is in `trusted_proxies`.
+The client IP behind these per-IP limits is the socket peer, or, only
+when the peer is in `trusted_proxies`, the rightmost `X-Forwarded-For`
+entry that is not itself a trusted proxy.
 
 Two things hold in every design and are not specific to this one. The
 web process is the human interface, so it already carries the HITL
