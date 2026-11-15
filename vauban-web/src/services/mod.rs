@@ -50,6 +50,7 @@ pub mod recording_hydrator;
 pub mod recording_loss;
 pub mod recording_reaper;
 pub mod role_invariants;
+pub mod rule_revoke;
 pub mod secret_access;
 pub mod session_access;
 pub mod session_activity;

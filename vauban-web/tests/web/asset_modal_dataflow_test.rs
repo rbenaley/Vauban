@@ -162,7 +162,7 @@ fn asset_list_buttons_call_open_with_per_row_data() {
 /// The Alpine stores MUST expose an `open(...)` function that is the
 /// single entry point for populating the per-asset fields.  The
 /// `connectUrl()` method on `justificationModal` MUST switch on
-/// `asset_type === 'rdp'` to return the right backend route.  The
+/// `asset_type` to return the SSH, RDP or MCP backend route.  The
 /// legacy hash router (`#request-access` / `#justify`) MUST NOT be
 /// re-introduced.
 #[test]
@@ -190,6 +190,10 @@ fn alpine_stores_expose_open_and_connect_url() {
     assert!(
         COMPONENTS_JS.contains("'connect-rdp'"),
         "connectUrl() must select 'connect-rdp' for RDP assets"
+    );
+    assert!(
+        COMPONENTS_JS.contains("'connect-mcp'"),
+        "connectUrl() must select 'connect-mcp' for MCP assets"
     );
     // Legacy hash router MUST be gone.
     assert!(

@@ -139,6 +139,21 @@ pub async fn open_mcp_session(
         )));
     }
 
+    // VAU-012: same caps as SSH, RDP, and IACS. After access is granted,
+    // before the proxy_sessions INSERT, so a denial allocates no row.
+    match crate::services::session_limits::enforce_session_creation(
+        &state,
+        &mut conn,
+        user_id,
+        asset.id,
+        client_addr.addr().ip(),
+    )
+    .await?
+    {
+        Ok(()) => {}
+        Err(denied) => return Err(AppError::TooManyRequests(denied.message)),
+    }
+
     let ttl = clamp_ttl_capped(
         request.requested_duration_seconds,
         access_result.max_session_duration,

@@ -340,8 +340,7 @@ diesel::table! {
         recording_lossy -> Bool,
         #[max_length = 64]
         decision_id -> Nullable<Varchar>,
-        #[max_length = 64]
-        termination_reason -> Nullable<Varchar>,
+        termination_reason -> Nullable<Text>,
         #[max_length = 128]
         decision_actor -> Nullable<Varchar>,
         decision_at -> Nullable<Timestamptz>,

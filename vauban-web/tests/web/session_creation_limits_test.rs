@@ -4,11 +4,11 @@
 //! These drive the real production code path
 //! ([`vauban_web::services::session_limits::enforce_session_creation`]) against
 //! the test Postgres database. The handlers (`connect_ssh`, `connect_rdp`,
-//! `connect_iacs`) all funnel through this single seam right before the
-//! `proxy_sessions` INSERT (pinned structurally by
-//! `session_creation_limits_invariants_test`), so exercising the seam with
-//! seeded rows covers all three protocols deterministically without standing
-//! up SSH/RDP/IACS proxy backends.
+//! `connect_iacs`, `connect_mcp`, `open_mcp_session`) all funnel through
+//! this single seam right before the `proxy_sessions` INSERT (pinned
+//! structurally by `session_creation_limits_invariants_test`). Exercising
+//! the seam covers every protocol. The MCP handlers are also driven over
+//! HTTP in `hop1_and_connect_return_429_when_the_live_cap_is_full`.
 //!
 //! Each test uses its OWN fresh in-memory rate limiter and tailored thresholds
 //! so neither the shared `TestApp` singleton nor sibling tests can pollute the

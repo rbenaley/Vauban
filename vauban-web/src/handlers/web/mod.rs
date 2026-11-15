@@ -97,28 +97,55 @@ pub use mcp_discover::*;
 pub use mcp_hitl::*;
 
 pub(crate) async fn broadcast_mcp_hitl_badge(state: &crate::AppState) {
-    let count = state
+    broadcast_mcp_badges(state).await;
+}
+
+/// Sidebar sum plus the HITL and contestation tab pills.
+///
+/// Pages outside the MCP zone have no tab spans; HTMX ignores those swaps,
+/// as for the IACS badge.
+pub(crate) async fn broadcast_mcp_badges(state: &crate::AppState) {
+    let hitl = state
         .proxy_mcp
         .as_ref()
         .map(|p| p.list_hitl_pendings().len() as i64)
         .unwrap_or(0);
-    let html = mcp_badge_html(count);
+    let contestations = crate::services::access_contestation::count_reviewable(state, None)
+        .await
+        .unwrap_or(0);
+    let html = mcp_badge_html(hitl, contestations);
     let _ = state.broadcast.send_raw("notifications", html).await;
 }
 
-/// `#sidebar-mcp-badge`, rendered only for `sessions_supervise` (other
-/// pages have no target and ignore the swap, as for the IACS badge).
-pub(crate) fn mcp_badge_html(count: i64) -> String {
+/// `#sidebar-mcp-badge` is the sum. `#mcp-tab-hitl-badge` and
+/// `#mcp-tab-contestation-badge` are each queue. A zero leaves an empty
+/// span so a later OOB swap still finds the node.
+pub(crate) fn mcp_badge_html(hitl: i64, contestations: i64) -> String {
+    const SIDEBAR: &str = "ml-auto inline-flex items-center rounded-full bg-vauban-600 px-2 py-0.5 text-xs font-medium text-white";
+    const TAB: &str = "ml-2 inline-flex items-center rounded-full bg-white px-2 py-0.5 text-xs font-medium text-vauban-700 ring-1 ring-inset ring-vauban-600 dark:bg-gray-900 dark:text-white";
+    format!(
+        "{}{}{}",
+        mcp_badge_span(
+            "sidebar-mcp-badge",
+            hitl.saturating_add(contestations),
+            SIDEBAR
+        ),
+        mcp_badge_span("mcp-tab-hitl-badge", hitl, TAB),
+        mcp_badge_span("mcp-tab-contestation-badge", contestations, TAB),
+    )
+}
+
+fn mcp_badge_span(id: &str, count: i64, class_when_set: &str) -> String {
     if count > 0 {
         format!(
-            r#"<span id="sidebar-mcp-badge" hx-swap-oob="outerHTML" data-testid="sidebar-mcp-badge" class="ml-auto inline-flex items-center rounded-full bg-vauban-600 px-2 py-0.5 text-xs font-medium text-white">{count}</span>"#
+            r#"<span id="{id}" hx-swap-oob="outerHTML" data-testid="{id}" class="{class_when_set}">{count}</span>"#
         )
     } else {
-        r#"<span id="sidebar-mcp-badge" hx-swap-oob="outerHTML" data-testid="sidebar-mcp-badge"></span>"#.to_string()
+        format!(r#"<span id="{id}" hx-swap-oob="outerHTML" data-testid="{id}"></span>"#)
     }
 }
 
-/// Same MCP sidebar signal as [`broadcast_mcp_hitl_badge`].
+/// Same MCP queue signal as [`broadcast_mcp_hitl_badge`].
 pub(crate) async fn broadcast_contestation_badge(state: &crate::AppState) {
     broadcast_mcp_hitl_badge(state).await;
 }
@@ -252,8 +279,16 @@ pub(crate) async fn apply_sidebar_rbac(
     let supervise = perms.sessions_supervise;
     let mut base = base.with_perms(perms);
 
-    if supervise && let Some(proxy) = state.proxy_mcp.as_ref() {
-        base = base.with_pending_mcp_count(proxy.list_hitl_pendings().len() as i64);
+    if supervise {
+        let hitl = state
+            .proxy_mcp
+            .as_ref()
+            .map(|p| p.list_hitl_pendings().len() as i64)
+            .unwrap_or(0);
+        let contestations = crate::services::access_contestation::count_reviewable(state, None)
+            .await
+            .unwrap_or(0);
+        base = base.with_pending_mcp_counts(hitl, contestations);
     }
 
     if iacs_manage && let Ok(mut conn) = state.db_pool.get().await {

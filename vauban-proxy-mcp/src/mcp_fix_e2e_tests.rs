@@ -30,6 +30,7 @@ pub(crate) fn e2e_session(sid: &str, token: &str) -> Session {
         on_exceed: "throttle".into(),
         call_times: VecDeque::new(),
         terminated: false,
+        close_message: None,
         suspended: false,
         justification: "e2e".into(),
         user_id: Some("user-e2e".into()),
@@ -1470,4 +1471,176 @@ async fn e2e_hitl_approve_installs_mission_seal() {
     let (_, out) = e.call("echo", json!({"msg": "off-contract"})).await;
     assert_eq!(out["error"]["code"], -32033, "{out}");
     assert_eq!(e.up.tool_calls(), 1, "drift must not reach upstream");
+}
+
+fn echo_mission(summary: &str) -> Value {
+    json!({
+        "story": {
+            "summary": summary,
+            "context": "Local MCP lab asset used for Mission Seal tests.",
+            "objective": "Prove a finished mission can be sealed again.",
+            "risks": "A spent approval must not deny the next mission."
+        },
+        "contract": {
+            "approval": "mission",
+            "edges": [],
+            "steps": [{
+                "step_id": "1",
+                "intent": "Echo the sealed message",
+                "operation": "echo",
+                "mode": "literal",
+                "arguments": {"msg": "seal-ok"}
+            }]
+        }
+    })
+}
+
+/// After the last step, the Approved ticket stays. The next Story + Contract
+/// must open a new approval (`-32030`), not `-32032`. Same with the access
+/// PDP Replace path.
+#[tokio::test]
+async fn e2e_finished_plan_opens_a_new_approval() {
+    let mut e = hitl_session(true).await;
+    let pid = first_hitl_call(
+        &mut e,
+        json!({"msg": "seal-ok", "vauban": echo_mission("Seal the lab echo a first time.")}),
+    )
+    .await;
+    decide(&e, &pid, "approve", "admin-e2e").await;
+    let (_, out) = e.call("echo", json!({"msg": "seal-ok"})).await;
+    assert!(out.get("error").is_none(), "{out}");
+    assert_eq!(e.up.tool_calls(), 1);
+    assert_eq!(
+        pending_status(&e, &pid),
+        Some(HitlStatus::Approved),
+        "the successful step must not consume the approval ticket"
+    );
+
+    let (_, out) = e
+        .call(
+            "echo",
+            json!({"msg": "seal-ok", "vauban": echo_mission("Seal the lab echo a second time.")}),
+        )
+        .await;
+    assert_eq!(out["error"]["code"], -32030, "{out}");
+    let pid2 = out["error"]["data"]["pending_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(pid2, pid);
+    assert!(pending_status(&e, &pid).is_none());
+    assert_eq!(e.up.tool_calls(), 1, "a new seal must not reach upstream");
+
+    decide(&e, &pid2, "approve", "admin-e2e").await;
+    let (_, out) = e.call("echo", json!({"msg": "seal-ok"})).await;
+    assert!(out.get("error").is_none(), "{out}");
+    assert_eq!(e.up.tool_calls(), 2);
+
+    e.state.access_guard = Some(granting_access_guard());
+    let (_, out) = e
+        .call(
+            "echo",
+            json!({"msg": "seal-ok", "vauban": echo_mission("Seal the lab echo a third time.")}),
+        )
+        .await;
+    assert_eq!(out["error"]["code"], -32030, "{out}");
+    assert_eq!(e.up.tool_calls(), 2);
+}
+
+async fn approved_echo_plan(e: &mut E2e) -> String {
+    let pid = first_hitl_call(
+        e,
+        json!({
+            "msg": "seal-ok",
+            "vauban": echo_mission("Seal the lab echo before the ticket is spent.")
+        }),
+    )
+    .await;
+    decide(e, &pid, "approve", "admin-e2e").await;
+    assert_eq!(pending_status(e, &pid), Some(HitlStatus::Approved));
+    pid
+}
+
+/// The mandate is already gone and the Approved ticket is still there.
+/// This call must open a new seal, not answer `-32032`.
+#[tokio::test]
+async fn e2e_spent_ticket_without_mandate_opens_a_new_seal() {
+    let mut e = hitl_session(true).await;
+    let pid = approved_echo_plan(&mut e).await;
+    e.state
+        .lock_inner()
+        .sessions
+        .get_mut(&e.sid)
+        .unwrap()
+        .mandate = None;
+
+    let (_, out) = e
+        .call(
+            "echo",
+            json!({"msg": "seal-ok", "vauban": echo_mission("Seal the lab echo once the mandate is gone.")}),
+        )
+        .await;
+    assert_eq!(out["error"]["code"], -32030, "{out}");
+    assert_ne!(out["error"]["data"]["pending_id"].as_str().unwrap(), pid);
+    assert!(pending_status(&e, &pid).is_none());
+    assert_eq!(e.up.tool_calls(), 0);
+}
+
+/// An expired mission drops its Approved ticket, then the next Story can seal.
+#[tokio::test]
+async fn e2e_expired_plan_drops_the_spent_ticket() {
+    let mut e = hitl_session(true).await;
+    let pid = approved_echo_plan(&mut e).await;
+    e.state
+        .lock_inner()
+        .sessions
+        .get_mut(&e.sid)
+        .unwrap()
+        .mandate
+        .as_mut()
+        .unwrap()
+        .expires_at = 0.0;
+
+    let (_, out) = e.call("echo", json!({"msg": "seal-ok"})).await;
+    assert_eq!(
+        out["error"]["code"],
+        shared::mcp_mandate::ERR_MISSION_EXPIRED,
+        "{out}"
+    );
+    assert_eq!(out["error"]["message"], "mission_expired");
+    assert!(e.state.lock_inner().sessions[&e.sid].mandate.is_none());
+    assert!(pending_status(&e, &pid).is_none());
+    assert_eq!(e.up.tool_calls(), 0);
+
+    let (_, out) = e
+        .call(
+            "echo",
+            json!({"msg": "seal-ok", "vauban": echo_mission("Seal the lab echo after the mission expired.")}),
+        )
+        .await;
+    assert_eq!(out["error"]["code"], -32030, "{out}");
+    assert_eq!(e.up.tool_calls(), 0);
+}
+
+/// Access answers `mission_expired`: the local ticket is dropped with the mandate.
+#[tokio::test]
+async fn e2e_pdp_mission_expired_drops_the_spent_ticket() {
+    let mut e = hitl_session(true).await;
+    let pid = approved_echo_plan(&mut e).await;
+    e.state.access_guard = Some(scripted_access_guard(|_| {
+        shared::messages::AccessResponse::McpCheckStepDenied {
+            reason: "mission_expired".into(),
+        }
+    }));
+
+    let (_, out) = e.call("echo", json!({"msg": "seal-ok"})).await;
+    assert_eq!(
+        out["error"]["code"],
+        shared::mcp_mandate::ERR_MISSION_EXPIRED,
+        "{out}"
+    );
+    assert_eq!(out["error"]["message"], "mission_expired");
+    assert!(e.state.lock_inner().sessions[&e.sid].mandate.is_none());
+    assert!(pending_status(&e, &pid).is_none());
+    assert_eq!(e.up.tool_calls(), 0);
 }

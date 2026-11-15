@@ -73,6 +73,10 @@ vauban-supervisor/src/main.rs:~c.record(&token.session_id, &token.nonce, token.e
 # gwt_an_unreachable_database_is_logged_not_fatal.
 vauban-web/src/services/session_termination.rs:~Err(e) => tracing::warn!(
 vauban-web/src/services/session_termination.rs:~resend terminate: list failed
+# Same class inside the MCP rule revoke: the open-ticket list loaded, then
+# terminating one row failed. An unreachable database before the first query
+# returns from revoke_sessions_for_rule_change itself and never reaches this warn.
+vauban-web/src/services/rule_revoke.rs:~Err(e) => tracing::warn!(
 vauban-web/src/services/session_termination.rs:305
 vauban-web/src/services/session_termination.rs:307
 vauban-web/src/handlers/web/manage_assets.rs:2053

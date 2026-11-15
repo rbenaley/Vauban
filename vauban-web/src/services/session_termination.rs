@@ -182,12 +182,16 @@ pub async fn terminate_live_session(
                     "mcp: terminate IPC dispatch failed"
                 );
             }
+            // The sentence, when this cut is an access-rule change; otherwise
+            // the machine code. The IPC above still carries the wire form so
+            // proxy-mcp can split the code from the sentence.
+            let shown = shared::access_rule_revoke::client_message(reason).unwrap_or(reason);
             let decision_id = crate::services::access_decision::mint_decision_id();
             let _ =
                 diesel::update(proxy_sessions::table.filter(proxy_sessions::uuid.eq(session.uuid)))
                     .set((
                         proxy_sessions::decision_id.eq(&decision_id),
-                        proxy_sessions::termination_reason.eq(reason),
+                        proxy_sessions::termination_reason.eq(shown),
                         proxy_sessions::decision_actor
                             .eq(crate::services::access_decision::ACTOR_TERMINATE_LIVE),
                         proxy_sessions::decision_at.eq(now),
@@ -199,7 +203,7 @@ pub async fn terminate_live_session(
                 &decision_id,
                 &session_uuid_str,
                 None,
-                reason,
+                shown,
                 "terminate_live_session",
             )
             .await;
@@ -291,7 +295,9 @@ pub async fn resend_lost_terminates(state: &AppState) -> usize {
             assets::is_deleted
                 .eq(true)
                 .or(proxy_sessions::termination_reason.eq(REASON_ASSET_RECONFIGURED))
-                .or(proxy_sessions::decision_actor.eq(ACTOR_MCP_RECHECK)),
+                .or(proxy_sessions::decision_actor.eq(ACTOR_MCP_RECHECK))
+                .or(proxy_sessions::termination_reason
+                    .like("Session closed because the access rule %")),
         )
         .select((
             proxy_sessions::uuid,

@@ -65,6 +65,9 @@ pub mod mcp_policy;
 /// Mission Seal first-drift IAM knob (`access_rules.mcp_drift_iam`).
 pub mod mcp_drift_iam;
 
+/// Sentence shown when an MCP visit is revoked because its access rule changed.
+pub mod access_rule_revoke;
+
 // Cryptographic session-token gate (BLAKE3-keyed MAC binding every
 // session-open to a fresh access decision). Pulled in by vauban-access
 // (mints), vauban-supervisor and the protocol proxies (verify).

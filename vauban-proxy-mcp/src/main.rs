@@ -62,7 +62,7 @@ use mcp_recording::RecordingLeaseReq;
 use phase_c::{
     ClientInfo, HITL_MAX_PENDING_PER_SESSION, HitlPending, HitlStatus, args_blake3,
     extract_pending_id, hitl_decision_blocked, hitl_pending_ttl_secs, purge_expired_hitl,
-    validate_on_exceed,
+    retire_spent_plan_tickets, validate_on_exceed,
 };
 use serde_json::{Value, json};
 use shared::access_guard::{AccessGuard, AccessGuardMetrics, AccessGuardWiring, PROTOCOL_MCP};
@@ -138,6 +138,9 @@ struct Session {
     on_exceed: String,
     call_times: VecDeque<f64>,
     terminated: bool,
+    /// Sentence shown on the next call when an access rule change closed
+    /// this visit. Other cuts leave this empty and answer `session_terminated`.
+    close_message: Option<String>,
     /// Phase C: reversible pause (`tools/call` → `-32031`).
     suspended: bool,
     justification: String,
@@ -320,11 +323,8 @@ impl GatewayState {
             ));
         }
         if sess.terminated {
-            return Err(session_error(
-                rpc_codes::SESSION_TERMINATED,
-                "session_terminated",
-                StatusCode::UNAUTHORIZED,
-            ));
+            let close = sess.close_message.clone();
+            return Err(terminated_http_error(close.as_deref()));
         }
         let now = unix_now();
         if now > sess.expires_at {
@@ -349,6 +349,7 @@ impl GatewayState {
             on_exceed: sess.on_exceed.clone(),
             call_times: sess.call_times.clone(),
             terminated: sess.terminated,
+            close_message: sess.close_message.clone(),
             suspended: sess.suspended,
             justification: sess.justification.clone(),
             user_id: sess.user_id.clone(),
@@ -389,6 +390,8 @@ impl GatewayState {
             let mut guard = self.lock_inner();
             match guard.sessions.get_mut(session_id) {
                 Some(sess) if !sess.terminated => {
+                    sess.close_message =
+                        shared::access_rule_revoke::client_message(reason).map(str::to_string);
                     sess.mark_terminated();
                     sess.user_id.clone()
                 }
@@ -546,14 +549,66 @@ impl GatewayState {
 }
 
 fn session_error(code: i32, message: &str, status: StatusCode) -> (StatusCode, Json<Value>) {
+    session_error_with(code, message, None, status)
+}
+
+fn session_error_with(
+    code: i32,
+    message: &str,
+    data: Option<Value>,
+    status: StatusCode,
+) -> (StatusCode, Json<Value>) {
+    let mut error = json!({ "code": code, "message": message });
+    if let Some(d) = data {
+        error["data"] = d;
+    }
     (
         status,
         Json(json!({
             "jsonrpc": "2.0",
             "id": null,
-            "error": { "code": code, "message": message }
+            "error": error
         })),
     )
+}
+
+/// `-32004` with the access-rule sentence, or the bare `session_terminated` token.
+fn terminated_http_error(close_message: Option<&str>) -> (StatusCode, Json<Value>) {
+    match close_message {
+        Some(sentence) => session_error_with(
+            rpc_codes::SESSION_TERMINATED,
+            sentence,
+            Some(json!({ "reason": shared::access_rule_revoke::REASON })),
+            StatusCode::UNAUTHORIZED,
+        ),
+        None => session_error(
+            rpc_codes::SESSION_TERMINATED,
+            "session_terminated",
+            StatusCode::UNAUTHORIZED,
+        ),
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct RelayRefusal {
+    code: i32,
+    message: String,
+    data: Option<Value>,
+}
+
+fn terminated_refusal(close_message: Option<&str>) -> RelayRefusal {
+    match close_message {
+        Some(sentence) => RelayRefusal {
+            code: rpc_codes::SESSION_TERMINATED,
+            message: sentence.to_string(),
+            data: Some(json!({ "reason": shared::access_rule_revoke::REASON })),
+        },
+        None => RelayRefusal {
+            code: rpc_codes::SESSION_TERMINATED,
+            message: "session_terminated".into(),
+            data: None,
+        },
+    }
 }
 
 fn clientinfo_pin_from_env() -> bool {
@@ -684,12 +739,20 @@ fn jsonrpc_err(id: Value, code: i32, message: &str, data: Option<Value>) -> Valu
 /// `sess` is a snapshot taken when the request arrived; the PDP wait may
 /// have outlived a suspend or terminate. Re-read the live state under the
 /// lock right before the relay.
-fn live_relay_refusal(state: &GatewayState, session_id: &str) -> Option<(i32, &'static str)> {
+fn live_relay_refusal(state: &GatewayState, session_id: &str) -> Option<RelayRefusal> {
     let g = state.lock_inner();
     match g.sessions.get(session_id) {
-        None => Some((rpc_codes::SESSION_UNKNOWN, "session_unknown")),
-        Some(s) if s.terminated => Some((rpc_codes::SESSION_TERMINATED, "session_terminated")),
-        Some(s) if s.suspended => Some((rpc_codes::SESSION_SUSPENDED, "session_suspended")),
+        None => Some(RelayRefusal {
+            code: rpc_codes::SESSION_UNKNOWN,
+            message: "session_unknown".into(),
+            data: None,
+        }),
+        Some(s) if s.terminated => Some(terminated_refusal(s.close_message.as_deref())),
+        Some(s) if s.suspended => Some(RelayRefusal {
+            code: rpc_codes::SESSION_SUSPENDED,
+            message: "session_suspended".into(),
+            data: None,
+        }),
         Some(_) => None,
     }
 }
@@ -882,6 +945,13 @@ enum PdpGate {
     ContinueLocal,
 }
 
+/// Forget the local mandate and the Approved plan ticket that authorized it.
+/// The next Story + Contract opens a new approval instead of `-32032`.
+fn clear_local_mandate(live: &mut Session) -> usize {
+    live.mandate = None;
+    retire_spent_plan_tickets(&mut live.hitl_pendings)
+}
+
 /// Mirror an access PDP Allow onto `Session.mandate` (consumed + inflight).
 fn sync_local_mandate_after_pdp_allow(
     state: &GatewayState,
@@ -949,10 +1019,17 @@ async fn pdp_check_via_access(
     };
     if matches!(plan, mandate::MandatePdpPlan::Replace) {
         guard.clear_mcp_mandate(&sess.session_id).await;
-        let mut g = state.lock_inner();
-        if let Some(live) = g.sessions.get_mut(&sess.session_id) {
-            live.mandate = None;
-        }
+        let retired = {
+            let mut g = state.lock_inner();
+            g.sessions
+                .get_mut(&sess.session_id)
+                .map_or(0, clear_local_mandate)
+        };
+        info!(
+            session_id = %sess.session_id,
+            retired,
+            "Mission Seal complete; accepting new seal"
+        );
         return PdpGate::ContinueLocal;
     }
     if !matches!(plan, mandate::MandatePdpPlan::CheckStep) {
@@ -1038,7 +1115,7 @@ async fn pdp_check_via_access(
                 {
                     let mut g = state.lock_inner();
                     if let Some(live) = g.sessions.get_mut(&sess.session_id) {
-                        live.mandate = None;
+                        clear_local_mandate(live);
                     }
                 }
                 let deny = jsonrpc_err(
@@ -1118,6 +1195,8 @@ async fn pdp_check_via_access(
 /// Classic HITL: one-shot Approve then re-emit (pending_id or tool+digest match).
 /// Mission Seal (`require_plan`): first call seals Contract → -32030; after
 /// Approve, CheckStep enforces literal bindings (-32033 on drift).
+/// A finished mission's Approved ticket is not a deny: the next Story and
+/// Contract opens a new approval.
 #[allow(clippy::too_many_arguments, clippy::let_and_return)]
 async fn handle_hitl_tools_call(
     state: &GatewayState,
@@ -1172,17 +1251,18 @@ async fn handle_hitl_tools_call(
                     session_id = %sess.session_id,
                     "Mission Seal mandate expired; clearing"
                 );
-                live.mandate = None;
+                clear_local_mandate(live);
                 clear_access_mandate = true;
                 mandate_audit = MandateAudit::Expired;
             } else {
                 match mandate::plan_mandate_pdp(live.mandate.as_ref(), require_plan, params) {
                     mandate::MandatePdpPlan::Replace => {
+                        let retired = clear_local_mandate(live);
                         info!(
                             session_id = %sess.session_id,
+                            retired,
                             "Mission Seal complete; accepting new seal"
                         );
-                        live.mandate = None;
                     }
                     mandate::MandatePdpPlan::CheckStep
                     | mandate::MandatePdpPlan::Inactive
@@ -1386,7 +1466,25 @@ async fn handle_hitl_tools_call(
                 .map(|p| p.pending_id.clone())
         });
 
-        if let Some(pid) = resolved_pid {
+        // Approved plan ticket, mandate already gone: it belongs to the
+        // previous mission. Drop it and seal again in this same call.
+        let spent_plan = resolved_pid.as_deref().is_some_and(|pid| {
+            live.hitl_pendings.get(pid).is_some_and(|p| {
+                p.status == HitlStatus::Approved
+                    && !p.plan_contract_json.is_empty()
+                    && live.mandate.is_none()
+            })
+        });
+        if spent_plan && let Some(pid) = resolved_pid.as_deref() {
+            live.hitl_pendings.remove(pid);
+            info!(
+                session_id = %sess.session_id,
+                tool = %name,
+                "spent Mission Seal approval dropped; opening a new seal"
+            );
+        }
+
+        if let Some(pid) = resolved_pid.filter(|_| !spent_plan) {
             let outcome = match live.hitl_pendings.get(&pid).cloned() {
                 None => HitlCallOutcome::DeniedExhausted,
                 Some(p) if p.tool != name => HitlCallOutcome::DeniedExhausted,
@@ -2123,9 +2221,9 @@ async fn handle_mcp(
         .unwrap_or("")
         .to_string();
     if method == "tools/call"
-        && let Some((code, reason)) = live_relay_refusal(&state, &sess.session_id)
+        && let Some(refusal) = live_relay_refusal(&state, &sess.session_id)
     {
-        warn!(session_id = %sess.session_id, tool = %call_tool_name, reason, "tools/call stopped before relay");
+        warn!(session_id = %sess.session_id, tool = %call_tool_name, reason = %refusal.message, "tools/call stopped before relay");
         if hitl_oneshot {
             finalize_mandate_upstream(&state, &sess.session_id, &Value::Null, false).await;
         }
@@ -2140,7 +2238,7 @@ async fn handle_mcp(
                 sess.user_id.as_deref(),
                 &call_tool_name,
                 "deny",
-                reason,
+                refusal.message.as_str(),
                 args.as_ref(),
                 None,
             )
@@ -2148,7 +2246,13 @@ async fn handle_mcp(
         {
             return jsonl_sync_failed(req_id, e);
         }
-        return Json(jsonrpc_err(req_id, code, reason, None)).into_response();
+        return Json(jsonrpc_err(
+            req_id,
+            refusal.code,
+            refusal.message.as_str(),
+            refusal.data,
+        ))
+        .into_response();
     }
     if method == "tools/call" && sess.upstream_stream.is_some() {
         let args = params
@@ -2907,6 +3011,7 @@ async fn handle_mcp_session_open(
         on_exceed: envelope_on_exceed,
         call_times: VecDeque::new(),
         terminated: false,
+        close_message: None,
         suspended: false,
         justification,
         user_id: Some(user_id.clone()),
@@ -3063,6 +3168,8 @@ fn handle_mcp_session_terminate(state: &GatewayState, msg: Message) {
         let mut guard = state.lock_inner();
         match guard.sessions.get_mut(&session_id) {
             Some(sess) if !sess.terminated => {
+                sess.close_message =
+                    shared::access_rule_revoke::client_message(&reason).map(str::to_string);
                 sess.mark_terminated();
                 info!(session_id = %session_id, reason = %reason, "MCP session terminated via supervisor IPC");
                 sess.user_id.clone()
@@ -4254,6 +4361,7 @@ mod gwt_tests {
             on_exceed: "throttle".into(),
             call_times: VecDeque::new(),
             terminated: false,
+            close_message: None,
             suspended: false,
             justification: "gwt".into(),
             user_id: Some("user-1".into()),
@@ -4560,6 +4668,7 @@ mod gwt_tests {
                 on_exceed: self.on_exceed.clone(),
                 call_times: self.call_times.clone(),
                 terminated: self.terminated,
+                close_message: self.close_message.clone(),
                 suspended: self.suspended,
                 justification: self.justification.clone(),
                 user_id: self.user_id.clone(),

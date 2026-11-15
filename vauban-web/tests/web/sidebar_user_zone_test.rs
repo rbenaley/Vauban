@@ -113,6 +113,8 @@ fn make_sidebar(user: UserContext, perms: PermissionContext) -> SidebarContentTe
         is_iacs: false,
         pending_approval_count: 0,
         pending_iacs_count: 0,
+        pending_mcp_hitl_count: 0,
+        pending_mcp_contestation_count: 0,
         pending_mcp_count: 0,
         perms,
     }

@@ -38,6 +38,11 @@ pub fn mint_decision_id() -> String {
 /// Operator-facing label for a stored `termination_reason` code.
 #[must_use]
 pub fn reason_label(reason: &str) -> &'static str {
+    if reason == shared::access_rule_revoke::REASON
+        || shared::access_rule_revoke::client_message(reason).is_some()
+    {
+        return "Session closed because an access rule was changed. Open a new session to continue.";
+    }
     match reason {
         "user_terminated" => "Ended by an administrator or API call",
         "account_deactivated" => "User account was deactivated",
@@ -234,5 +239,10 @@ mod tests {
         assert!(!actor_label(ACTOR_TERMINATE_LIVE).contains("terminate_live"));
         assert!(reason_label("api_key_inactive").contains("revoked or rotated"));
         assert!(reason_label("user_deleted").contains("soft-deleted"));
+        assert!(reason_label(shared::access_rule_revoke::REASON).contains("access rule"));
+        assert!(
+            reason_label(&shared::access_rule_revoke::sentence("Night shift"))
+                .contains("Open a new session")
+        );
     }
 }

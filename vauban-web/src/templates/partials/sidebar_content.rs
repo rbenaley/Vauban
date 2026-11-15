@@ -39,8 +39,12 @@ pub struct SidebarContentTemplate {
     /// admins). Loaded by [`crate::handlers::web::apply_sidebar_rbac`]
     /// in the same pass as `pending_approval_count`.
     pub pending_iacs_count: i64,
-    /// MCP tool calls waiting for a HITL decision (badge next to the MCP
-    /// entry for `sessions_supervise`).
+    /// MCP tool calls waiting for a HITL decision.
+    pub pending_mcp_hitl_count: i64,
+    /// Open and under-review access contestations, including the viewer's own.
+    pub pending_mcp_contestation_count: i64,
+    /// Sum of the two MCP queues (badge next to the MCP sidebar entry
+    /// for `sessions_supervise`).
     pub pending_mcp_count: i64,
     /// Casbin-backed permission context. Sole source of truth for UI gates.
     pub perms: PermissionContext,
@@ -98,6 +102,8 @@ mod tests {
             is_iacs: false,
             pending_approval_count: 0,
             pending_iacs_count: 0,
+            pending_mcp_hitl_count: 0,
+            pending_mcp_contestation_count: 0,
             pending_mcp_count: 0,
             perms,
         }

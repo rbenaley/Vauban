@@ -169,6 +169,8 @@ impl BaseTemplate {
             is_iacs: false,
             pending_approval_count: 0,
             pending_iacs_count: 0,
+            pending_mcp_hitl_count: 0,
+            pending_mcp_contestation_count: 0,
             pending_mcp_count: 0,
             perms: PermissionContext::default(),
         });
@@ -249,6 +251,8 @@ impl BaseTemplate {
                 is_iacs: path.starts_with("/iacs"),
                 pending_approval_count: 0,
                 pending_iacs_count: 0,
+                pending_mcp_hitl_count: 0,
+                pending_mcp_contestation_count: 0,
                 pending_mcp_count: 0,
                 perms: preserved_perms,
             });
@@ -284,10 +288,12 @@ impl BaseTemplate {
         self
     }
 
-    /// Set the count of pending MCP HITL decisions (MCP sidebar badge).
-    pub fn with_pending_mcp_count(mut self, count: i64) -> Self {
+    /// Set the MCP queue sizes. The sidebar pill is their sum.
+    pub fn with_pending_mcp_counts(mut self, hitl: i64, contestations: i64) -> Self {
         if let Some(ref mut sidebar) = self.sidebar_content {
-            sidebar.pending_mcp_count = count;
+            sidebar.pending_mcp_hitl_count = hitl;
+            sidebar.pending_mcp_contestation_count = contestations;
+            sidebar.pending_mcp_count = hitl.saturating_add(contestations);
         }
         self
     }

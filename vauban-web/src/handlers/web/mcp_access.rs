@@ -716,7 +716,15 @@ pub async fn create_mcp_access_rule_web(
         .await
     {
         Ok(info) => {
-            crate::services::mcp_recheck::notify_policy_changed(&state).await;
+            let _ = crate::services::rule_revoke::revoke_sessions_for_rule_change(
+                &state,
+                &info.name,
+                &[crate::services::rule_revoke::RuleCohort {
+                    user_group_id: info.user_group_id,
+                    asset_group_id: info.asset_group_id,
+                }],
+            )
+            .await;
             flash_redirect(
                 flash.success(format!("MCP access rule '{}' created", info.name)),
                 &format!("/sessions/mcp/access/{}", info.uuid),
@@ -1003,7 +1011,22 @@ pub async fn update_mcp_access_rule_web(
                 )
                 .user(auth_user.uuid.clone()),
             );
-            crate::services::mcp_recheck::notify_policy_changed(&state).await;
+            let mut cohorts = vec![crate::services::rule_revoke::RuleCohort {
+                user_group_id: before.user_group_id,
+                asset_group_id: before.asset_group_id,
+            }];
+            if data.user_group_id != before.user_group_id
+                || data.asset_group_id != before.asset_group_id
+            {
+                cohorts.push(crate::services::rule_revoke::RuleCohort {
+                    user_group_id: data.user_group_id,
+                    asset_group_id: data.asset_group_id,
+                });
+            }
+            let _ = crate::services::rule_revoke::revoke_sessions_for_rule_change(
+                &state, &data.name, &cohorts,
+            )
+            .await;
             flash_redirect(
                 flash.success(format!("MCP access rule '{}' updated", data.name)),
                 &format!("/sessions/mcp/access/{uuid_str}"),
@@ -1045,12 +1068,23 @@ pub async fn delete_mcp_access_rule_web(
             "/sessions/mcp/access",
         );
     }
-    if let Err(msg) = load_mcp_rule(&state, &uuid_str).await {
-        return htmx_or_flash_redirect(&headers, flash.error(msg), "/sessions/mcp/access");
-    }
+    let previous = match load_mcp_rule(&state, &uuid_str).await {
+        Ok(rule) => rule,
+        Err(msg) => {
+            return htmx_or_flash_redirect(&headers, flash.error(msg), "/sessions/mcp/access");
+        }
+    };
     match state.access_client.delete_access_rule(&uuid_str).await {
         Ok(()) => {
-            crate::services::mcp_recheck::notify_policy_changed(&state).await;
+            let _ = crate::services::rule_revoke::revoke_sessions_for_rule_change(
+                &state,
+                &previous.name,
+                &[crate::services::rule_revoke::RuleCohort {
+                    user_group_id: previous.user_group_id,
+                    asset_group_id: previous.asset_group_id,
+                }],
+            )
+            .await;
             htmx_or_flash_redirect(
                 &headers,
                 flash.success("MCP access rule deleted"),

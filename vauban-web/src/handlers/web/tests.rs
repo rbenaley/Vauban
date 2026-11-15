@@ -1,5 +1,43 @@
 use super::*;
 
+#[test]
+fn mcp_badges_html_sums_hitl_and_contestations() {
+    let html = mcp_badge_html(2, 1);
+    assert!(
+        html.contains(r#"id="sidebar-mcp-badge""#) && html.contains(">3<"),
+        "sidebar pill is the sum: {html}"
+    );
+    assert!(
+        html.contains(r#"id="mcp-tab-hitl-badge""#) && html.contains(">2<"),
+        "HITL tab is only the HITL queue: {html}"
+    );
+    assert!(
+        html.contains(r#"id="mcp-tab-contestation-badge""#) && html.contains(">1<"),
+        "contestation tab is only that queue: {html}"
+    );
+}
+
+#[test]
+fn mcp_badges_html_zero_leaves_empty_spans() {
+    let html = mcp_badge_html(0, 0);
+    for id in [
+        "sidebar-mcp-badge",
+        "mcp-tab-hitl-badge",
+        "mcp-tab-contestation-badge",
+    ] {
+        assert!(
+            html.contains(&format!(
+                r#"id="{id}" hx-swap-oob="outerHTML" data-testid="{id}"></span>"#
+            )),
+            "zero must keep an empty span for {id}: {html}"
+        );
+    }
+    assert!(
+        !html.contains(">0<"),
+        "a zero must not render a pill: {html}"
+    );
+}
+
 // ==================== user_context_from_auth Tests ====================
 
 fn create_test_auth_user() -> AuthUser {

@@ -276,7 +276,7 @@
                         {# `htmx-request` is added by HTMX to the form (it carries `hx-post`),  #}
                         {# so all Tailwind selectors driving the spinner use the descendant     #}
                         {# combinator `[.htmx-request_&]:...` to reach into button + spans.     #}
-                        <form hx-post="/assets/{{ asset.uuid }}/{%- if asset.asset_type == "rdp" -%}connect-rdp{%- else -%}connect{%- endif -%}"
+                        <form hx-post="/assets/{{ asset.uuid }}/{%- if asset.asset_type == "rdp" -%}connect-rdp{%- else if asset.asset_type == "mcp" -%}connect-mcp{%- else -%}connect{%- endif -%}"
                               hx-swap="none"
                               x-data="csrf"
                               class="inline">

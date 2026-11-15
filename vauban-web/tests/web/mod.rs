@@ -156,6 +156,7 @@ pub mod redis_removal_lints_test;
 pub mod responsive_templates_test;
 pub mod role_invariants_test;
 pub mod routing_test;
+pub mod rule_revoke_proptest;
 pub mod self_hosted_assets_e2e_test;
 pub mod session_creation_limits_invariants_test;
 pub mod session_creation_limits_test;

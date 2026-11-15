@@ -11,12 +11,13 @@
 use std::path::{Path, PathBuf};
 
 /// Shared seams that end or tighten live sessions in DB **and** proxy.
-const SEAMS: [&str; 8] = [
+const SEAMS: [&str; 9] = [
     "terminate_live_session",
     "api::sessions::terminate_session(",
     "terminate_open_sessions_on_asset",
     "end_visits_on_reconfigured_asset",
     "notify_policy_changed",
+    "revoke_sessions_for_rule_change",
     "deactivate_user(",
     "after_api_key_invalidated(",
     "cascade_terminate_grant_sessions(",
@@ -369,5 +370,78 @@ fn proxy_mcp_terminate_is_idempotent() {
         guards >= 2,
         "both proxy-mcp terminate paths must ignore an already-ended visit \
          (a resend must not finalize the recording twice); found {guards}"
+    );
+}
+
+#[test]
+fn mcp_rule_writes_revoke_covered_visits_and_leave_other_rules_on_recheck() {
+    let mcp = read("handlers/web/mcp_access.rs");
+    for func in [
+        "create_mcp_access_rule_web",
+        "update_mcp_access_rule_web",
+        "delete_mcp_access_rule_web",
+    ] {
+        let body = fn_body(prod(&mcp), func).unwrap_or_else(|| panic!("{func} missing"));
+        assert!(
+            body.contains("revoke_sessions_for_rule_change"),
+            "{func} must revoke the covered MCP visits"
+        );
+        assert!(
+            !body.contains("notify_policy_changed"),
+            "{func} must not narrow the visit in place"
+        );
+        assert!(
+            !body.contains(r#"status.eq("terminated")"#),
+            "{func} must not flip sessions by hand"
+        );
+    }
+
+    let web = read("handlers/web/access_rules.rs");
+    for func in [
+        "create_access_rule_web",
+        "update_access_rule_web",
+        "delete_access_rule_web",
+    ] {
+        let body = fn_body(prod(&web), func).unwrap_or_else(|| panic!("{func} missing"));
+        assert!(
+            body.contains("notify_policy_changed"),
+            "{func} stays on the recheck"
+        );
+        assert!(
+            !body.contains("revoke_sessions_for_rule_change"),
+            "{func} must not revoke SSH, RDP or tunnel tickets"
+        );
+    }
+
+    let api = read("handlers/api/access_rules.rs");
+    for func in [
+        "create_access_rule",
+        "update_access_rule",
+        "delete_access_rule",
+    ] {
+        let body = fn_body(prod(&api), func).unwrap_or_else(|| panic!("{func} missing"));
+        assert!(
+            body.contains("revoke_sessions_for_rule_change")
+                && body.contains("notify_policy_changed")
+                && body.contains("\"mcp\""),
+            "{func} revokes only when the rule allows MCP, and recomputes otherwise"
+        );
+    }
+
+    let seam = read("services/rule_revoke.rs");
+    let body = fn_body(prod(&seam), "revoke_sessions_for_rule_change").expect("seam");
+    assert!(body.contains("terminate_live_session(") && body.contains("wire_reason"));
+    let select = fn_body(prod(&seam), "covered_ticket_ids").expect("select");
+    assert!(
+        select.contains("ticket.mcp"),
+        "the cohort match must skip SSH, RDP and tunnels"
+    );
+    assert!(
+        fn_body(
+            prod(&read("services/session_termination.rs")),
+            "resend_lost_terminates"
+        )
+        .is_some_and(|b| b.contains("Session closed because the access rule %")),
+        "a lost MCP rule-change IPC is resent"
     );
 }

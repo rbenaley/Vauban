@@ -5,10 +5,11 @@
 //! after the resource allocation (which would re-open the DoS vector) or
 //! reorder the four controls.
 //!
-//! INV-12-1: every `connect_*` handler calls `enforce_session_creation`
-//! BEFORE the `proxy_sessions` INSERT (the first backend resource
-//! allocation). INV order: global rate -> per-user rate -> per-user
-//! concurrency -> per-asset concurrency.
+//! INV-12-1: every session-creation handler (`connect_ssh`, `connect_rdp`,
+//! `connect_iacs`, `connect_mcp`, `open_mcp_session`) calls
+//! `enforce_session_creation` BEFORE the `proxy_sessions` INSERT (the first
+//! backend resource allocation). INV order: global rate -> per-user rate ->
+//! per-user concurrency -> per-asset concurrency.
 
 const SSH_SRC: &str = include_str!("../../src/handlers/web/ssh.rs");
 const RDP_SRC: &str = include_str!("../../src/handlers/web/rdp.rs");
@@ -42,6 +43,58 @@ fn rdp_enforces_limits_before_insert() {
 #[test]
 fn iacs_enforces_limits_before_insert() {
     assert_enforce_before_insert("connect_iacs", IACS_SRC);
+}
+
+#[test]
+fn mcp_hop1_enforces_limits_before_insert() {
+    let src = include_str!("../../src/handlers/api/mcp_sessions.rs");
+    let start = src
+        .find("pub async fn open_mcp_session")
+        .expect("open_mcp_session");
+    let body = &src[start..];
+    let end = body.find("\nfn hop1_metadata").expect("hop1_metadata");
+    let body = &body[..end];
+    let enforce = body.find("enforce_session_creation").unwrap_or_else(|| {
+        panic!("open_mcp_session: must call enforce_session_creation (VAU-012, INV-12-1)")
+    });
+    let insert = body
+        .find("diesel::insert_into(crate::schema::proxy_sessions::table)")
+        .expect("open_mcp_session INSERT");
+    assert!(
+        enforce < insert,
+        "open_mcp_session: enforce_session_creation must run before the proxy_sessions INSERT"
+    );
+    let denied = body
+        .find("TooManyRequests")
+        .expect("open_mcp_session denial must be AppError::TooManyRequests");
+    assert!(
+        denied < insert,
+        "open_mcp_session: a denial must return before the proxy_sessions INSERT"
+    );
+}
+
+#[test]
+fn mcp_connect_enforces_limits_before_insert() {
+    let src = include_str!("../../src/handlers/web/mcp.rs");
+    let start = src.find("pub async fn connect_mcp").expect("connect_mcp");
+    let body = &src[start..];
+    let enforce = body.find("enforce_session_creation").unwrap_or_else(|| {
+        panic!("connect_mcp: must call enforce_session_creation (VAU-012, INV-12-1)")
+    });
+    let insert = body
+        .find("diesel::insert_into(crate::schema::proxy_sessions::table)")
+        .expect("connect_mcp INSERT");
+    assert!(
+        enforce < insert,
+        "connect_mcp: enforce_session_creation must run before the proxy_sessions INSERT"
+    );
+    let response = body
+        .find("connect_limit_response")
+        .expect("connect_mcp denial must use connect_limit_response");
+    assert!(
+        response < insert,
+        "connect_mcp: a denial must return before the proxy_sessions INSERT"
+    );
 }
 
 #[test]

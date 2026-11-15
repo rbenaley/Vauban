@@ -288,8 +288,11 @@ fn gwt_sidebar_mcp_badges_broadcast_oob_on_notifications() {
         web.contains("fn broadcast_mcp_hitl_badge")
             && web.contains("fn broadcast_contestation_badge")
             && web.contains("sidebar-mcp-badge")
+            && web.contains("mcp-tab-hitl-badge")
+            && web.contains("mcp-tab-contestation-badge")
+            && web.contains("count_reviewable")
             && web.contains("send_raw"),
-        "MCP HITL and contestation must share one send_raw OOB sidebar pill"
+        "MCP HITL and contestation must share one send_raw OOB update of the sidebar sum and both tab pills"
     );
     let pending = include_str!("../../src/ipc/proxy_mcp.rs");
     assert!(
@@ -474,6 +477,11 @@ fn gwt_mcp_zone_nest_and_require_plan_policy() {
             && !matrix_form.contains("name=\"mcp_hitl_tools\"")
             && !matrix_form.contains("type=\"checkbox\" name=\"mcp_"),
         "MCP tool matrix must be one select per tool, grouped by asset, not three checkboxes"
+    );
+    let list_page = include_str!("../../templates/mcp/access_list.html");
+    assert!(
+        list_page.contains("/sessions/mcp/access/{{ r.uuid }}/edit") && list_page.contains("Edit"),
+        "each MCP access rule row must link to its edit page"
     );
     let detail_page = include_str!("../../templates/mcp/access_detail.html");
     assert!(
@@ -671,8 +679,10 @@ fn gwt_contestation_badge_matches_broadcast() {
     assert!(
         web.contains("fn broadcast_contestation_badge")
             && web.contains("sidebar-mcp-badge")
+            && web.contains("mcp-tab-contestation-badge")
+            && web.contains("count_reviewable")
             && web.contains("send_raw"),
-        "sidebar contestation count must match global OOB broadcast"
+        "sidebar and contestation-tab counts must match the global OOB broadcast"
     );
 }
 
@@ -680,8 +690,10 @@ fn gwt_contestation_badge_matches_broadcast() {
 fn gwt_mcp_nav_hides_supervise_tabs() {
     let nav = include_str!("../../templates/mcp/nav.html");
     assert!(
-        nav.contains("mcp_can_supervise"),
-        "HITL/contestation tabs must be gated for access_rules:read-only users"
+        nav.contains("mcp_can_supervise")
+            && nav.contains("mcp-tab-hitl-badge")
+            && nav.contains("mcp-tab-contestation-badge"),
+        "HITL/contestation tabs must be gated and carry their queue pills"
     );
 }
 

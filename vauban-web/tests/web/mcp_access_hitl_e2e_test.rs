@@ -20,7 +20,8 @@ use vauban_web::services::mcp_session::{
 
 use crate::common::{TestApp, assertions::*, test_db};
 use crate::fixtures::{
-    create_admin_user, create_test_asset_group, create_test_vauban_group, unique_name,
+    create_admin_user, create_test_asset_group, create_test_session, create_test_vauban_group,
+    unique_name,
 };
 
 fn auth_csrf_cookie(token: &str, csrf: &str) -> String {
@@ -1348,6 +1349,169 @@ async fn mcp_effective_tools_need_every_active_rule_and_the_catalogue() {
         vec!["delete_task".to_string(), "echo".to_string()],
         "an inactive rule does not apply"
     );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// VAU-012 at the handler. The shared seam is tested in
+/// `session_creation_limits_test`; this drives hop 1 and Connect through
+/// the router once the user is already at the live-session cap. A denial
+/// is 429 (toast when the request is HTMX) and inserts no row.
+#[tokio::test]
+#[serial]
+async fn hop1_and_connect_return_429_when_the_live_cap_is_full() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("mcp_cap")).await;
+    let ug = create_test_vauban_group(&mut conn, &unique_name("mcp-cap-ug")).await;
+    crate::fixtures::add_user_to_vauban_group(&mut conn, admin.user.id, &ug).await;
+    let ug_id: i32 = vauban_groups::table
+        .filter(vauban_groups::uuid.eq(ug))
+        .select(vauban_groups::id)
+        .first(&mut conn)
+        .await
+        .unwrap();
+    let ag = create_test_asset_group(&mut conn, &unique_name("mcp-cap-ag")).await;
+    let ag_id: i32 = asset_groups::table
+        .filter(asset_groups::uuid.eq(ag))
+        .select(asset_groups::id)
+        .first(&mut conn)
+        .await
+        .unwrap();
+    let asset: Asset = diesel::insert_into(assets::table)
+        .values(&NewAsset {
+            uuid: Uuid::new_v4(),
+            name: unique_name("mcp-cap-asset"),
+            hostname: format!("{}.mcp.test", unique_name("up")),
+            port: 19001,
+            asset_type: AssetType::Mcp,
+            status: "online".into(),
+            description: None,
+            connection_config: serde_json::json!({ "allowed_tools": ["echo"] }),
+            created_by_id: None,
+            updated_by_id: None,
+            connection_username: String::new(),
+        })
+        .get_result(&mut conn)
+        .await
+        .unwrap();
+    diesel::insert_into(asset_asset_groups::table)
+        .values(&NewAssetAssetGroup {
+            asset_id: asset.id,
+            asset_group_id: ag_id,
+        })
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    diesel::insert_into(access_rules::table)
+        .values(&NewAccessRule {
+            uuid: Uuid::new_v4(),
+            name: unique_name("mcp-cap-rule"),
+            description: None,
+            user_group_id: ug_id,
+            asset_group_id: ag_id,
+            allowed_protocols: vec![Some("mcp".into())],
+            valid_from: None,
+            valid_until: None,
+            require_mfa: false,
+            require_approval: false,
+            max_session_duration: None,
+            is_active: true,
+            priority: 0,
+            created_by_id: None,
+            mcp_allowed_tools: Some(vec![Some("echo".into())]),
+            mcp_hitl_tools: None,
+            mcp_require_plan_tools: None,
+            mcp_drift_iam: "suspend_group".to_string(),
+        })
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+    let cap = app.config.security.max_concurrent_sessions_per_user;
+    assert!(cap >= 1, "the live-session cap must be on for this test");
+    for _ in 0..cap {
+        create_test_session(&mut conn, admin.user.id, asset.id, "ssh", "active").await;
+    }
+
+    let hop1 = app
+        .server
+        .post("/api/v1/mcp/sessions")
+        .add_header(AUTHORIZATION, app.api_key_header(&admin.api_key))
+        .json(&serde_json::json!({
+            "asset_id": asset.uuid,
+            "justification": "hop 1 while the live cap is already full",
+        }))
+        .await;
+    assert_eq!(hop1.status_code().as_u16(), 429, "{}", hop1.text());
+    let hop1_body: serde_json::Value = serde_json::from_str(&hop1.text()).expect("429 json");
+    assert!(
+        hop1_body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("maximum number of concurrent sessions"),
+        "{}",
+        hop1.text()
+    );
+    assert_eq!(hop1_body["status"].as_u64(), Some(429));
+    let after_hop1: i64 = proxy_sessions::table
+        .filter(proxy_sessions::user_id.eq(admin.user.id))
+        .count()
+        .get_result(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(after_hop1, cap, "a 429 hop 1 must not insert a row");
+
+    let csrf = app.generate_csrf_token();
+    let connect = app
+        .server
+        .post(&format!("/assets/{}/connect-mcp", asset.uuid))
+        .add_header(AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            (
+                "justification",
+                "connect while the live cap is already full",
+            ),
+        ])
+        .await;
+    assert_eq!(connect.status_code().as_u16(), 429, "{}", connect.text());
+    assert!(
+        connect
+            .text()
+            .contains("maximum number of concurrent sessions"),
+        "{}",
+        connect.text()
+    );
+
+    let csrf = app.generate_csrf_token();
+    let htmx = app
+        .server
+        .post(&format!("/assets/{}/connect-mcp", asset.uuid))
+        .add_header(AUTHORIZATION, app.auth_header(&admin.token))
+        .add_header(COOKIE, auth_csrf_cookie(&admin.token, &csrf))
+        .add_header("HX-Request", "true")
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("justification", "htmx connect while the live cap is full"),
+        ])
+        .await;
+    assert_eq!(htmx.status_code().as_u16(), 200, "{}", htmx.text());
+    let trigger = format!("{:?}", htmx.headers());
+    assert!(
+        trigger.contains("maximum number of concurrent sessions"),
+        "HTMX denial must be the error toast: {trigger}"
+    );
+
+    let after: i64 = proxy_sessions::table
+        .filter(proxy_sessions::user_id.eq(admin.user.id))
+        .count()
+        .get_result(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(after, cap, "neither Connect denial inserts a row");
 
     test_db::cleanup(&mut conn).await;
 }

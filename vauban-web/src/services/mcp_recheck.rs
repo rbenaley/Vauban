@@ -1,9 +1,12 @@
 //! MCP mid-session policy recheck (M9 / Borne).
 //!
-//! **Primary path (instant):** [`notify_policy_changed`] runs on every
-//! access-rule create/update/delete. It recomputes ∩ tools and pushes
-//! `McpSessionUpdate` over IPC **immediately** — the proxy refuses a
-//! removed tool on the next `tools/call` (`-32001`). No 30 s wait.
+//! **Primary path (instant):** [`notify_policy_changed`] runs when a grant
+//! changes but the ticket stays (group membership, asset group, a non-MCP
+//! access rule). It recomputes ∩ tools and pushes `McpSessionUpdate` over
+//! IPC **immediately** — the proxy refuses a removed tool on the next
+//! `tools/call` (`-32001`). Creating, editing or deleting an MCP access
+//! rule does not come here: those visits are revoked by
+//! [`crate::services::rule_revoke`]. No 30 s wait.
 //!
 //! **Safety net:** a background loop still runs every
 //! [`RECHECK_INTERVAL_SECS`] for external / missed mutations.

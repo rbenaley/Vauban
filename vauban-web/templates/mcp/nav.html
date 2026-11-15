@@ -1,4 +1,5 @@
-{# Shared MCP zone header. Parent must set `mcp_nav` and `mcp_can_supervise`. #}
+{# Shared MCP zone header. Parent must set `mcp_nav`, `mcp_can_supervise`,
+   and `sidebar_content` (the queue sizes live on the sidebar). #}
 <div class="mt-4 flex flex-wrap gap-2 md:ml-4 md:mt-0">
     {% if mcp_can_supervise %}
     <a href="/sessions/mcp"
@@ -6,6 +7,9 @@
               {% if mcp_nav == "hitl" %}bg-vauban-600 text-white ring-vauban-600
               {% else %}bg-white dark:bg-gray-700 text-gray-900 dark:text-white ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600{% endif %}">
         HITL
+        {% if let Some(sc) = sidebar_content.as_ref() %}
+        <span id="mcp-tab-hitl-badge" data-testid="mcp-tab-hitl-badge"{% if sc.pending_mcp_hitl_count > 0 %} class="ml-2 inline-flex items-center rounded-full bg-white px-2 py-0.5 text-xs font-medium text-vauban-700 ring-1 ring-inset ring-vauban-600 dark:bg-gray-900 dark:text-white"{% endif %}>{% if sc.pending_mcp_hitl_count > 0 %}{{ sc.pending_mcp_hitl_count }}{% endif %}</span>
+        {% endif %}
     </a>
     {% endif %}
     <a href="/sessions/mcp/access"
@@ -20,6 +24,9 @@
               {% if mcp_nav == "contestations" %}bg-vauban-600 text-white ring-vauban-600
               {% else %}bg-white dark:bg-gray-700 text-gray-900 dark:text-white ring-gray-300 dark:ring-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600{% endif %}">
         Contestations
+        {% if let Some(sc) = sidebar_content.as_ref() %}
+        <span id="mcp-tab-contestation-badge" data-testid="mcp-tab-contestation-badge"{% if sc.pending_mcp_contestation_count > 0 %} class="ml-2 inline-flex items-center rounded-full bg-white px-2 py-0.5 text-xs font-medium text-vauban-700 ring-1 ring-inset ring-vauban-600 dark:bg-gray-900 dark:text-white"{% endif %}>{% if sc.pending_mcp_contestation_count > 0 %}{{ sc.pending_mcp_contestation_count }}{% endif %}</span>
+        {% endif %}
     </a>
     {% endif %}
 </div>

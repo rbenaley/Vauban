@@ -139,6 +139,7 @@ pub async fn create_access_rule(
     let protocols = request
         .allowed_protocols
         .unwrap_or_else(|| vec!["ssh".to_string(), "rdp".to_string()]);
+    let mcp = protocols.iter().any(|p| p == "mcp");
 
     let data = AccessRuleData {
         name: sanitize(&request.name),
@@ -174,7 +175,19 @@ pub async fn create_access_rule(
             }
             e
         })?;
-    crate::services::mcp_recheck::notify_policy_changed(&state).await;
+    if mcp {
+        crate::services::rule_revoke::revoke_sessions_for_rule_change(
+            &state,
+            &info.name,
+            &[crate::services::rule_revoke::RuleCohort {
+                user_group_id: info.user_group_id,
+                asset_group_id: info.asset_group_id,
+            }],
+        )
+        .await?;
+    } else {
+        crate::services::mcp_recheck::notify_policy_changed(&state).await;
+    }
     Ok(Json(info_to_response(info)))
 }
 
@@ -201,6 +214,9 @@ pub async fn update_access_rule(
         .get_access_rule(&rule_uuid_str)
         .await
         .map_err(|e| map_not_found(e, "Access rule"))?;
+    let was_mcp = info.allowed_protocols.iter().any(|p| p == "mcp");
+    let user_group_id = info.user_group_id;
+    let asset_group_id = info.asset_group_id;
 
     let data = AccessRuleData {
         name: request
@@ -239,7 +255,19 @@ pub async fn update_access_rule(
         .update_access_rule(&rule_uuid_str, data, Some(user.uuid.clone()))
         .await
         .map_err(|e| map_not_found(e, "Access rule"))?;
-    crate::services::mcp_recheck::notify_policy_changed(&state).await;
+    if was_mcp || updated.allowed_protocols.iter().any(|p| p == "mcp") {
+        crate::services::rule_revoke::revoke_sessions_for_rule_change(
+            &state,
+            &updated.name,
+            &[crate::services::rule_revoke::RuleCohort {
+                user_group_id,
+                asset_group_id,
+            }],
+        )
+        .await?;
+    } else {
+        crate::services::mcp_recheck::notify_policy_changed(&state).await;
+    }
     Ok(Json(info_to_response(updated)))
 }
 
@@ -257,12 +285,31 @@ pub async fn delete_access_rule(
     Uuid::parse_str(&rule_uuid_str)
         .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
 
+    let previous = state
+        .access_client
+        .get_access_rule(&rule_uuid_str)
+        .await
+        .map_err(|e| map_not_found(e, "Access rule"))?;
+    let mcp = previous.allowed_protocols.iter().any(|p| p == "mcp");
+
     state
         .access_client
         .delete_access_rule(&rule_uuid_str)
         .await
         .map_err(|e| map_not_found(e, "Access rule"))?;
-    crate::services::mcp_recheck::notify_policy_changed(&state).await;
+    if mcp {
+        crate::services::rule_revoke::revoke_sessions_for_rule_change(
+            &state,
+            &previous.name,
+            &[crate::services::rule_revoke::RuleCohort {
+                user_group_id: previous.user_group_id,
+                asset_group_id: previous.asset_group_id,
+            }],
+        )
+        .await?;
+    } else {
+        crate::services::mcp_recheck::notify_policy_changed(&state).await;
+    }
     Ok(Json(serde_json::json!({
         "status": "deleted",
         "uuid": rule_uuid_str,

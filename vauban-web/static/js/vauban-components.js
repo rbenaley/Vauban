@@ -87,11 +87,18 @@ document.addEventListener('alpine:init', function () {
             this.asset_type = String(type || '');
             this.show = true;
         },
-        // Single source of truth for the SSH/RDP endpoint switch.
+        // Single source of truth for the SSH / RDP / MCP endpoint switch.
         // Mirrors the static `hx-post` form on rows that don't
-        // require justification (asset_list.html).
+        // require justification (asset_list.html). MCP always opens
+        // this modal, so a missing `connect-mcp` branch posts the
+        // visit to the SSH handler.
         connectUrl: function () {
-            var path = this.asset_type === 'rdp' ? 'connect-rdp' : 'connect';
+            var path = 'connect';
+            if (this.asset_type === 'rdp') {
+                path = 'connect-rdp';
+            } else if (this.asset_type === 'mcp') {
+                path = 'connect-mcp';
+            }
             return '/assets/' + encodeURIComponent(this.asset_uuid) + '/' + path;
         },
     });

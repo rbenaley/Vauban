@@ -934,3 +934,277 @@ async fn attack_hitl_pending_on_deleted_asset_cannot_be_approved() {
         "an approval for a visit cut by the asset deletion must not reach the proxy"
     );
 }
+
+/// Editing the MCP rule revokes its visits and the proxy is told the sentence
+/// (`access_rule_changed` plus the phrase). The proxy answers the next call
+/// with `-32004` and that phrase. A visit on another asset continues. An SSH
+/// session of the same user on the rule's asset stays open.
+#[tokio::test]
+#[serial]
+async fn gwt_editing_an_mcp_access_rule_revokes_its_visits_and_says_why() {
+    use crate::fixtures::create_test_asset_in_group_with_type;
+    let app = TestApp::spawn().await;
+    let b = Bench::new(app).await;
+    let g = granted_visit(app, b.admin.user.id).await;
+    let (asset_id, rule_ug, rule_ag): (i32, i32, i32) = {
+        use vauban_web::schema::access_rules;
+        let mut conn = app.get_conn().await;
+        let asset_id: i32 = assets::table
+            .filter(assets::uuid.eq(g.asset_uuid))
+            .select(assets::id)
+            .first(&mut conn)
+            .await
+            .unwrap();
+        let groups: (i32, i32) = access_rules::table
+            .filter(access_rules::uuid.eq(g.rule))
+            .select((access_rules::user_group_id, access_rules::asset_group_id))
+            .first(&mut conn)
+            .await
+            .unwrap();
+        (asset_id, groups.0, groups.1)
+    };
+    let covered = load(app, g.visit).await;
+    let suspended = session_on(app, covered.user_id, asset_id, "mcp", "suspended").await;
+    let other_asset = asset_of(app, b.admin.user.id, AssetType::Mcp, 19004).await;
+    let other = session(app, covered.user_id, &other_asset, "mcp", "active").await;
+    let ssh_asset = {
+        let mut conn = app.get_conn().await;
+        create_test_asset_in_group_with_type(
+            &mut conn,
+            &unique_name("cut-ssh"),
+            b.admin.user.id,
+            &g.asset_group,
+            AssetType::Ssh,
+        )
+        .await
+    };
+    let ssh = session_on(app, covered.user_id, ssh_asset, "ssh", "active").await;
+    let _ = received(&b.mcp).await;
+    let _ = received(&b.ssh).await;
+
+    let name = unique_name("cut-edited");
+    let csrf = app.generate_csrf_token();
+    let saved = b
+        .server
+        .post(&format!("/sessions/mcp/access/{}/edit", g.rule))
+        .add_header(COOKIE, b.cookie(&csrf))
+        .form(&serde_json::json!({
+            "csrf_token": csrf,
+            "name": name,
+            "user_group_id": rule_ug,
+            "asset_group_id": rule_ag,
+            "priority": "0",
+            "is_active": "true",
+            "mcp_drift_iam": "suspend_group",
+        }))
+        .await;
+    let status = saved.status_code().as_u16();
+    let location = saved
+        .headers()
+        .get(axum::http::header::LOCATION)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        matches!(status, 302 | 303) && !location.contains("/edit"),
+        "edit refused: {status} Location={location} body={}",
+        saved.text()
+    );
+
+    let wire = shared::access_rule_revoke::wire_reason(&name);
+    let sentence = shared::access_rule_revoke::sentence(&name);
+    let msgs = received(&b.mcp).await;
+    assert!(
+        !msgs.iter().any(|m| matches!(
+            m,
+            Message::McpSessionUpdate { session_id, .. } if session_id == &g.visit.to_string()
+        )),
+        "the covered visit must not be narrowed in place"
+    );
+    let mut ended = mcp_terminates(&msgs);
+    ended.sort();
+    let mut expect = vec![
+        (g.visit.to_string(), wire.clone()),
+        (suspended.to_string(), wire.clone()),
+    ];
+    expect.sort();
+    assert_eq!(ended, expect, "only the covered MCP visits are told why");
+    assert_eq!(
+        load(app, g.visit).await.termination_reason.as_deref(),
+        Some(sentence.as_str())
+    );
+    assert_eq!(
+        load(app, suspended).await.termination_reason.as_deref(),
+        Some(sentence.as_str())
+    );
+    assert_eq!(load(app, other).await.status, "active");
+    assert_eq!(load(app, ssh).await.status, "active");
+    assert!(
+        !received(&b.ssh)
+            .await
+            .iter()
+            .any(|m| matches!(m, Message::SshSessionClose { .. })),
+        "the SSH session on the rule's asset stays open"
+    );
+}
+
+/// Creating an MCP access rule over the API ends the open visit it covers.
+/// A visit on an asset outside that group stays open. SSH and RDP are not
+/// part of this case: the request allows MCP only.
+#[tokio::test]
+#[serial]
+async fn gwt_creating_an_mcp_access_rule_over_the_api_revokes_its_visits() {
+    use crate::fixtures::{
+        add_user_to_vauban_group, create_real_api_key, create_test_asset_group,
+        create_test_asset_in_group_with_type, create_test_user, create_test_vauban_group,
+    };
+    use vauban_web::models::api_key::ApiKeyScope;
+
+    let app = TestApp::spawn().await;
+    let b = Bench::new(app).await;
+    let owner = b.admin.user.id;
+    let (api_key, users, asset_group, asset_id, agent) = {
+        let mut conn = app.get_conn().await;
+        let api_key = create_real_api_key(&mut conn, owner, &[ApiKeyScope::Admin], None)
+            .await
+            .1;
+        let agent = create_test_user(&mut conn, &app.auth_service, &unique_name("cut_api"))
+            .await
+            .user
+            .id;
+        let users = create_test_vauban_group(&mut conn, &unique_name("cut_api_users")).await;
+        add_user_to_vauban_group(&mut conn, agent, &users).await;
+        let asset_group = create_test_asset_group(&mut conn, &unique_name("cut-api-ag")).await;
+        let asset_id = create_test_asset_in_group_with_type(
+            &mut conn,
+            &unique_name("cut-api-mcp"),
+            owner,
+            &asset_group,
+            AssetType::Mcp,
+        )
+        .await;
+        (api_key, users, asset_group, asset_id, agent)
+    };
+    let visit = session_on(app, agent, asset_id, "mcp", "active").await;
+    let other = asset_of(app, owner, AssetType::Mcp, 19011).await;
+    let outside = session(app, agent, &other, "mcp", "active").await;
+    let _ = received(&b.mcp).await;
+
+    let name = unique_name("cut-api-rule");
+    let response = b
+        .server
+        .post("/api/v1/access-rules")
+        .add_header(
+            axum::http::header::AUTHORIZATION,
+            app.api_key_header(&api_key),
+        )
+        .json(&serde_json::json!({
+            "name": name,
+            "user_group_uuid": users.to_string(),
+            "asset_group_uuid": asset_group.to_string(),
+            "allowed_protocols": ["mcp"],
+        }))
+        .await;
+    assert_eq!(response.status_code().as_u16(), 200, "{}", response.text());
+
+    let wire = shared::access_rule_revoke::wire_reason(&name);
+    let sentence = shared::access_rule_revoke::sentence(&name);
+    assert_eq!(
+        mcp_terminates(&received(&b.mcp).await),
+        vec![(visit.to_string(), wire)]
+    );
+    assert_eq!(
+        load(app, visit).await.termination_reason.as_deref(),
+        Some(sentence.as_str())
+    );
+    assert_eq!(load(app, outside).await.status, "active");
+}
+
+/// Saving an MCP rule onto another asset group ends the visits of the group
+/// it left and the visits of the group it joined.
+#[tokio::test]
+#[serial]
+async fn gwt_moving_an_mcp_access_rule_revokes_both_groups() {
+    use crate::fixtures::{create_test_asset_group, create_test_asset_in_group_with_type};
+    use vauban_web::schema::{access_rules, asset_groups};
+
+    let app = TestApp::spawn().await;
+    let b = Bench::new(app).await;
+    let g = granted_visit(app, b.admin.user.id).await;
+    let (rule_ug, new_ag, new_asset_id): (i32, i32, i32) = {
+        let mut conn = app.get_conn().await;
+        let rule_ug: i32 = access_rules::table
+            .filter(access_rules::uuid.eq(g.rule))
+            .select(access_rules::user_group_id)
+            .first(&mut conn)
+            .await
+            .unwrap();
+        let new_group = create_test_asset_group(&mut conn, &unique_name("cut-move-ag")).await;
+        let new_ag: i32 = asset_groups::table
+            .filter(asset_groups::uuid.eq(new_group))
+            .select(asset_groups::id)
+            .first(&mut conn)
+            .await
+            .unwrap();
+        let new_asset_id = create_test_asset_in_group_with_type(
+            &mut conn,
+            &unique_name("cut-move-mcp"),
+            b.admin.user.id,
+            &new_group,
+            AssetType::Mcp,
+        )
+        .await;
+        (rule_ug, new_ag, new_asset_id)
+    };
+    let joined = session_on(app, g.agent, new_asset_id, "mcp", "active").await;
+    let _ = received(&b.mcp).await;
+
+    let name = unique_name("cut-moved");
+    let csrf = app.generate_csrf_token();
+    let saved = b
+        .server
+        .post(&format!("/sessions/mcp/access/{}/edit", g.rule))
+        .add_header(COOKIE, b.cookie(&csrf))
+        .form(&serde_json::json!({
+            "csrf_token": csrf,
+            "name": name,
+            "user_group_id": rule_ug,
+            "asset_group_id": new_ag,
+            "priority": "0",
+            "is_active": "true",
+            "mcp_drift_iam": "suspend_group",
+        }))
+        .await;
+    let status = saved.status_code().as_u16();
+    let location = saved
+        .headers()
+        .get(axum::http::header::LOCATION)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        matches!(status, 302 | 303) && !location.contains("/edit"),
+        "edit refused: {status} Location={location} body={}",
+        saved.text()
+    );
+
+    let wire = shared::access_rule_revoke::wire_reason(&name);
+    let mut ended = mcp_terminates(&received(&b.mcp).await);
+    ended.sort();
+    let mut expect = vec![
+        (g.visit.to_string(), wire.clone()),
+        (joined.to_string(), wire),
+    ];
+    expect.sort();
+    assert_eq!(
+        ended, expect,
+        "both the old group and the new group are told why"
+    );
+    assert_eq!(load(app, g.visit).await.status, "terminated");
+    assert_eq!(load(app, joined).await.status, "terminated");
+}
+
+async fn session_on(app: &TestApp, user: i32, asset_id: i32, kind: &str, status: &str) -> Uuid {
+    let mut conn = app.get_conn().await;
+    create_test_session_with_uuid(&mut conn, user, asset_id, kind, status)
+        .await
+        .1
+}

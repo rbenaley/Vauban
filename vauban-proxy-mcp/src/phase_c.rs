@@ -132,6 +132,19 @@ pub fn hitl_decision_blocked(
     None
 }
 
+/// Drop Approved Mission Seal tickets.
+///
+/// A finished mission leaves the ticket that authorized it. The next
+/// `tools/call` with the same tool and arguments matches that ticket and
+/// would be answered `-32032` instead of opening a new approval.
+/// Classic one-shot HITL tickets (empty contract) and tickets still
+/// waiting for a decision stay.
+pub fn retire_spent_plan_tickets(pendings: &mut HashMap<String, HitlPending>) -> usize {
+    let before = pendings.len();
+    pendings.retain(|_, p| p.plan_contract_json.is_empty() || p.status != HitlStatus::Approved);
+    before - pendings.len()
+}
+
 pub fn purge_expired_hitl(
     pendings: &mut HashMap<String, HitlPending>,
     now: f64,
@@ -227,5 +240,40 @@ mod tests {
             hitl_decision_blocked(10.0, 99.0, &HitlStatus::Pending, Some("u1"), None, "admin"),
             None
         );
+    }
+
+    fn ticket(id: &str, status: HitlStatus, contract: &str) -> HitlPending {
+        HitlPending {
+            pending_id: id.to_string(),
+            tool: "purge_tasks".into(),
+            args_blake3: "digest".into(),
+            expires_at: 100.0,
+            status,
+            plan_contract_json: contract.to_string(),
+            plan_story_json: String::new(),
+            mandate_id: "m".into(),
+            sealed_digest: "d".into(),
+        }
+    }
+
+    #[test]
+    fn retire_spent_plan_keeps_classic_and_waiting_tickets() {
+        let mut pendings = HashMap::new();
+        pendings.insert(
+            "plan".into(),
+            ticket("plan", HitlStatus::Approved, "{\"steps\":[]}"),
+        );
+        pendings.insert(
+            "classic".into(),
+            ticket("classic", HitlStatus::Approved, ""),
+        );
+        pendings.insert(
+            "waiting".into(),
+            ticket("waiting", HitlStatus::Pending, "{\"steps\":[]}"),
+        );
+        assert_eq!(retire_spent_plan_tickets(&mut pendings), 1);
+        assert!(!pendings.contains_key("plan"));
+        assert!(pendings.contains_key("classic"));
+        assert!(pendings.contains_key("waiting"));
     }
 }

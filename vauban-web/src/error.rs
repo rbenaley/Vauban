@@ -49,6 +49,12 @@ pub enum AppError {
     #[error("Conflict: {0}")]
     Conflict(String),
 
+    /// 429 Too Many Requests. Session-creation caps (VAU-012) on the
+    /// JSON API. The message is the same end-user text the web Connect
+    /// buttons show.
+    #[error("Too many requests: {0}")]
+    TooManyRequests(String),
+
     #[error("Internal server error: {0}")]
     Internal(#[from] anyhow::Error),
 
@@ -97,6 +103,7 @@ impl IntoResponse for AppError {
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
             AppError::NotImplemented(msg) => (StatusCode::NOT_IMPLEMENTED, msg),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, msg),
+            AppError::TooManyRequests(msg) => (StatusCode::TOO_MANY_REQUESTS, msg),
             AppError::Internal(e) => {
                 tracing::error!("Internal error: {}", e);
                 (
@@ -451,6 +458,16 @@ mod tests {
         let error = AppError::Ipc("service unavailable".to_string());
         let response = error.into_response();
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn test_app_error_into_response_too_many_requests_is_429() {
+        let error = AppError::TooManyRequests(
+            "You are opening sessions too quickly. Please wait a moment before trying again."
+                .to_string(),
+        );
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
     // ==================== Display Tests ====================

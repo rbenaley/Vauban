@@ -533,10 +533,10 @@ async fn vanished_session_is_refused_as_unknown() {
     let e = crate::mcp_fix_e2e_tests::hitl_session(false).await;
     let snap = e.state.lock_inner().sessions[&e.sid].clone_snapshot();
     e.state.lock_inner().sessions.remove(&e.sid);
-    assert_eq!(
-        live_relay_refusal(&e.state, &e.sid),
-        Some((rpc_codes::SESSION_UNKNOWN, "session_unknown"))
-    );
+    let refusal = live_relay_refusal(&e.state, &e.sid).expect("refused");
+    assert_eq!(refusal.code, rpc_codes::SESSION_UNKNOWN);
+    assert_eq!(refusal.message, "session_unknown");
+    assert!(refusal.data.is_none());
     let resp = handle_hitl_tools_call(
         &e.state,
         &snap,
@@ -554,6 +554,75 @@ async fn vanished_session_is_refused_as_unknown() {
         .unwrap();
     let v: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["error"]["code"], rpc_codes::SESSION_UNKNOWN, "{v}");
+    assert_eq!(e.up.tool_calls(), 0);
+}
+
+/// An access-rule change tells the agent why. Another cut keeps the token.
+#[tokio::test]
+async fn access_rule_change_tells_the_agent_why() {
+    let e = E2e::start(Mode::default()).await;
+    let sentence = shared::access_rule_revoke::sentence("Night shift");
+    handle_mcp_session_terminate(
+        &e.state,
+        Message::McpSessionTerminate {
+            request_id: 1,
+            session_id: e.sid.clone(),
+            reason: shared::access_rule_revoke::wire_reason("Night shift"),
+        },
+    );
+    let before = e.up.tool_calls();
+    let (_, out) = e.call("echo", json!({ "msg": "after" })).await;
+    assert_eq!(out["error"]["code"], rpc_codes::SESSION_TERMINATED, "{out}");
+    assert_eq!(out["error"]["message"], sentence, "{out}");
+    assert_eq!(
+        out["error"]["data"]["reason"],
+        shared::access_rule_revoke::REASON,
+        "{out}"
+    );
+    assert_eq!(e.up.tool_calls(), before);
+
+    let other = E2e::start(Mode::default()).await;
+    handle_mcp_session_terminate(
+        &other.state,
+        Message::McpSessionTerminate {
+            request_id: 2,
+            session_id: other.sid.clone(),
+            reason: "asset_deleted".into(),
+        },
+    );
+    let (_, plain) = other.call("echo", json!({ "msg": "gone" })).await;
+    assert_eq!(
+        plain["error"]["code"],
+        rpc_codes::SESSION_TERMINATED,
+        "{plain}"
+    );
+    assert_eq!(plain["error"]["message"], "session_terminated", "{plain}");
+    assert!(plain["error"].get("data").is_none(), "{plain}");
+    assert_eq!(other.up.tool_calls(), 0);
+}
+
+/// The HTTP gate already answered. A `tools/call` that passed that gate and
+/// is cut before the relay re-reads the live session and returns the same
+/// sentence, not the bare `session_terminated` token.
+#[tokio::test]
+async fn access_rule_change_refuses_the_in_flight_relay_with_the_sentence() {
+    let e = E2e::start(Mode::default()).await;
+    let sentence = shared::access_rule_revoke::sentence("Night shift");
+    handle_mcp_session_terminate(
+        &e.state,
+        Message::McpSessionTerminate {
+            request_id: 1,
+            session_id: e.sid.clone(),
+            reason: shared::access_rule_revoke::wire_reason("Night shift"),
+        },
+    );
+    let refusal = live_relay_refusal(&e.state, &e.sid).expect("refused");
+    assert_eq!(refusal.code, rpc_codes::SESSION_TERMINATED);
+    assert_eq!(refusal.message, sentence);
+    assert_eq!(
+        refusal.data,
+        Some(json!({ "reason": shared::access_rule_revoke::REASON }))
+    );
     assert_eq!(e.up.tool_calls(), 0);
 }
 

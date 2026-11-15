@@ -505,11 +505,14 @@ included, because there is nothing left to visit. Changing an MCP
 asset's certificate pin, host, port or transport ends its visits too,
 because each visit froze the old values when it opened and would keep
 talking to the old server; after a key compromise that is exactly what
-must not happen. Deleting or editing an access rule, taking an asset out
-of a group, deleting an asset group, or adding or removing a group member
-changes what people may reach, so Vauban recomputes every live visit
-immediately: a visit with no tool left ends, a visit with fewer tools is
-narrowed. Revoking a key or deleting an account ends the visits that
+must not happen. Creating, editing or deleting an MCP access rule revokes every open MCP
+visit that rule covers, active or suspended, and the client is told why
+in a sentence that names the rule. A new access is a new ticket. SSH, RDP
+and industrial tunnels are not revoked for that change: they stay on the
+recompute below. Taking an asset out of a group, deleting an asset group,
+adding or removing a group member, or writing a non-MCP access rule still
+recomputes every live visit immediately: a visit with no tool left ends,
+a visit with fewer tools is narrowed. Revoking a key or deleting an account ends the visits that
 depend on it. When a visit ends, any HITL call still waiting on it is
 dropped as well, so nobody can approve it afterwards.
 
@@ -517,15 +520,17 @@ dropped as well, so nobody can approve it afterwards.
 |---|---|---|
 | Asset deleted | Ended, on every protocol, paused ones included | `asset_deleted` |
 | MCP pin, host, port or transport changed (not a rename) | Ended | `asset_reconfigured` |
-| Access rule created, edited or deleted (`/assets/access`, `/sessions/mcp/access`, API) | Recomputed: ended if nothing is left, otherwise narrowed | per recheck outcome |
+| MCP access rule created, edited or deleted (`/sessions/mcp/access`, API when the rule allows MCP) | Every open MCP visit covered by that rule is revoked. The client receives the sentence; a new access is a new ticket. SSH, RDP and IACS stay on recompute (ended only if access is gone) | `access_rule_changed` |
 | Asset added to or removed from a group, group deleted | Recomputed | per recheck outcome |
 | Group member added or removed | Recomputed | per recheck outcome |
 | API key revoked or regenerated | The visits opened with that key are ended | named in the decision |
 | Account deactivated or deleted | Ended, on every protocol | named in the decision |
 
-Where it is in the code: the handlers call one of two shared paths,
+Where it is in the code: the handlers call one of three shared paths,
 `session_termination::terminate_live_session` (the object is gone or
-moved) or `mcp_recheck::notify_policy_changed` (a grant changed). The
+moved), `rule_revoke::revoke_sessions_for_rule_change` (an MCP access
+rule was created, edited or deleted) or `mcp_recheck::notify_policy_changed`
+(a grant changed and the ticket stays). The
 single list of these handlers is `CUTTING_EVENTS` in
 `vauban-web/tests/web/cutting_events_invariants_test.rs`; its pins fail
 when a handler removes access without calling one of them.
@@ -1175,7 +1180,7 @@ that test pass. `shared/scripts/check_just_lint_wired.sh` fails if
 | `attack_*` (proxy): forged or cross-session pending, replayed token, oversized frame, batch smuggling, homoglyph tool, pin mismatch, TLS downgrade, `arguments.vauban` stripped, description rewrite quarantined, call while suspended or after revocation, malformed or expired bearer, foreign `Mcp-Session-Id`, unsupported protocol version, missing or swapped `clientInfo` | `vauban-proxy-mcp/src/mcp_attack_e2e_tests.rs` |
 | `attack_*` (web): contestation by another user or self-review, cross-session or forged HITL decision; a forged rule form or a direct IPC write naming a pending tool, rule forms without token, name or approval, Discover / Approve on a forged, unknown or non-MCP target | `vauban-web/tests/web/mcp_attack_e2e_test.rs`, `mcp_hitl_decide_e2e_test.rs` |
 | Approved-only rules: deleting an asset, taking it out of its group, a quarantine and an « All assets » rule erase the modes; a new asset or a re-approval starts Off; an asset edit keeps approved modes; the matrix and the form offer and save approved tools only; an access refusal is flashed | `vauban-web/tests/web/mcp_rule_prune_e2e_test.rs` |
-| Cutting events: deleting an asset ends its live and paused MCP visits, SSH sessions and industrial tunnels, once; a lost terminate is resent, including one lost by the access recheck; a new pin ends visits, a rename does not; deleting a rule or taking the asset out of its group cuts without waiting for the recheck; a HITL call on a deleted asset cannot be approved; (proxy) calls after an `asset_deleted` or `asset_reconfigured` terminate are refused and reach nothing | `vauban-web/tests/web/mcp_cutting_events_e2e_test.rs`, `vauban-proxy-mcp/src/mcp_attack_e2e_tests.rs` |
+| Cutting events: deleting an asset ends its live and paused MCP visits, SSH sessions and industrial tunnels, once; a lost terminate is resent, including one lost by the access recheck; a new pin ends visits, a rename does not; deleting a rule or taking the asset out of its group cuts without waiting for the recheck; creating an MCP rule over the API cuts its cohort, and moving the rule cuts both the old group and the new one; an in-flight relay answers with the access-rule sentence; a HITL call on a deleted asset cannot be approved; (proxy) calls after an `asset_deleted` or `asset_reconfigured` terminate are refused and reach nothing | `vauban-web/tests/web/mcp_cutting_events_e2e_test.rs`, `vauban-proxy-mcp/src/mcp_attack_e2e_tests.rs` |
 
 ### 13.6 Wire
 

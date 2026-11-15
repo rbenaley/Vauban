@@ -232,6 +232,30 @@ pub async fn connect_mcp(
         );
     }
 
+    // VAU-012: same caps as SSH, RDP, and IACS. After access is granted,
+    // before the proxy_sessions INSERT, so a denial allocates no row.
+    match crate::services::session_limits::enforce_session_creation(
+        &state,
+        &mut conn,
+        user_id,
+        asset.id,
+        client_addr.addr().ip(),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(denied)) => {
+            return crate::services::session_limits::connect_limit_response(
+                &headers,
+                &denied.message,
+            );
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to evaluate session-creation limits");
+            return fail_connect(is_htmx, flash, "Unable to start session");
+        }
+    }
+
     let trusted = state.config.security.parsed_trusted_proxies();
     let client_ip_network =
         crate::middleware::extract_client_ip(&headers, client_addr.addr(), &trusted);

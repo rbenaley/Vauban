@@ -1,7 +1,8 @@
 //! VAU-012 - Session-creation rate limits and concurrency quotas.
 //!
 //! Every session-creation handler (`connect_ssh`, `connect_rdp`,
-//! `connect_iacs`) MUST call [`enforce_session_creation`] AFTER authorization
+//! `connect_iacs`, `connect_mcp`, `open_mcp_session`) MUST call
+//! [`enforce_session_creation`] AFTER authorization
 //! (Casbin + access-rule + JIT + preflight) and BEFORE allocating any backend
 //! resource (the `proxy_sessions` INSERT, session token, TCP brokering, IPC).
 //! This guarantees a denied request never leaves a half-created row or leaks
