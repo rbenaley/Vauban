@@ -38,11 +38,37 @@ fn an_authentication_failure_leaves_as_a_reason_only() {
         !block.contains("error = %e"),
         "the text is logged in its Debug form: it can quote the KDC or the target"
     );
-    // The branch comes before the generic answer that carries the text.
+    // The branch comes before the generic answer, which carries a
+    // closed-set code and no text either.
     let generic = main[branch..]
-        .find("error: Some(e.to_string()),")
+        .find("error: Some(failure.as_str().to_string()),")
         .expect("generic failure answer");
     assert!(end < generic);
+}
+
+/// No answer of the proxy carries the text of an error: the `error` field
+/// of `RdpSessionOpened` and `RdpServerCertResult` only ever holds a
+/// closed-set code (`RdpOpenFailure::as_str`). The text can quote the
+/// target or the TLS stack.
+#[test]
+fn attack_no_answer_carries_free_text() {
+    let main = production(MAIN);
+    assert!(
+        !main.contains("Some(e.to_string())"),
+        "an error must leave as a code, not as its text"
+    );
+    let mut fields = 0;
+    for (i, _) in main.match_indices("error: Some(") {
+        let value = &main[i + "error: Some(".len()..];
+        let value = &value[..value.find("),").unwrap_or(value.len())];
+        assert!(
+            value.starts_with("RdpOpenFailure::") && value.ends_with(".as_str().to_string()")
+                || value == "failure.as_str().to_string()",
+            "`error: Some({value})` is not a closed-set code"
+        );
+        fields += 1;
+    }
+    assert!(fields >= 7, "expected the failure answers, found {fields}");
 }
 
 /// Exactly two producers of the failure message: the session-open gate

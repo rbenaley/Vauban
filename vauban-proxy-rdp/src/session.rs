@@ -246,7 +246,7 @@ impl RdpSession {
         // the handshake (fail-closed) on mismatch, BEFORE the server public
         // key is extracted below for CredSSP channel binding -- so CredSSP
         // never binds to an unverified key.
-        let tls_config = build_tls_config(&config.expected_cert_fingerprint)?;
+        let (tls_config, cert_mismatch) = build_tls_config(&config.expected_cert_fingerprint)?;
         let tls_connector = tokio_rustls::TlsConnector::from(tls_config);
 
         let tcp_stream = framed.into_inner_no_leftover();
@@ -258,7 +258,20 @@ impl RdpSession {
         .map_err(|_| {
             SessionError::TlsUpgradeFailed("TLS handshake timed out after 10s".to_string())
         })?
-        .map_err(|e| SessionError::TlsUpgradeFailed(e.to_string()))?;
+        .map_err(|e| {
+            // The verifier says so itself: the wording of the TLS error is
+            // not what decides that this is a pin mismatch.
+            if cert_mismatch.load(std::sync::atomic::Ordering::SeqCst) {
+                warn!(
+                    session_id = %config.session_id,
+                    error = ?e.to_string(),
+                    "RDP server certificate does not match the pinned one"
+                );
+                SessionError::ServerCertificateMismatch
+            } else {
+                SessionError::TlsUpgradeFailed(e.to_string())
+            }
+        })?;
 
         trace!(session_id = %config.session_id, "TLS upgrade complete");
 
@@ -1417,6 +1430,13 @@ fn encode_region_as_png(
     Ok(png_data)
 }
 
+/// A TLS client config that pins the server SPKI, and the flag its
+/// verifier sets when it refuses a certificate for a pin mismatch.
+type PinnedTlsConfig = (
+    Arc<rustls::ClientConfig>,
+    Arc<std::sync::atomic::AtomicBool>,
+);
+
 /// VAU-001: build the TLS client config used by the **session** path.
 ///
 /// Unlike the pre-fix `NoCertificateVerification` (which accepted every
@@ -1433,11 +1453,17 @@ fn encode_region_as_png(
 /// RDP targets are typically self-signed and addressed by IP, so classic
 /// WebPKI chain / hostname validation is inapplicable; SPKI pinning is the
 /// SSH-host-key-equivalent trust anchor.
-fn build_tls_config(expected_fingerprint: &str) -> SessionResult<Arc<rustls::ClientConfig>> {
+///
+/// Returns the config and a flag the verifier sets when it refuses a
+/// certificate for a pin mismatch. The caller reads the flag after a
+/// failed handshake to tell a mismatch from any other TLS failure.
+fn build_tls_config(expected_fingerprint: &str) -> SessionResult<PinnedTlsConfig> {
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let mismatch = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let verifier = Arc::new(PinningServerCertVerifier {
         expected_fingerprint: expected_fingerprint.to_string(),
         provider: Arc::clone(&provider),
+        mismatch: Arc::clone(&mismatch),
     });
 
     let mut config = rustls::client::ClientConfig::builder_with_provider(provider)
@@ -1450,7 +1476,7 @@ fn build_tls_config(expected_fingerprint: &str) -> SessionResult<Arc<rustls::Cli
     // CredSSP does not support TLS session resumption
     config.resumption = rustls::client::Resumption::disabled();
 
-    Ok(Arc::new(config))
+    Ok((Arc::new(config), mismatch))
 }
 
 /// Compute the `SHA256:<base64>` fingerprint of a certificate's full
@@ -1501,6 +1527,10 @@ struct PinningServerCertVerifier {
     expected_fingerprint: String,
     /// Crypto provider used to verify the TLS handshake signature.
     provider: Arc<rustls::crypto::CryptoProvider>,
+    /// Set when a certificate is refused because its SPKI is not the
+    /// pinned one. This, not the text of the error, is how the session
+    /// code learns that the failure is a mismatch.
+    mismatch: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ServerCertVerifier for PinningServerCertVerifier {
@@ -1518,8 +1548,10 @@ impl ServerCertVerifier for PinningServerCertVerifier {
         if constant_time_eq(live.as_bytes(), self.expected_fingerprint.as_bytes()) {
             Ok(ServerCertVerified::assertion())
         } else {
-            // The wording carries "certificate mismatch" and "MITM" so the
-            // vauban-web connect handler can flip rdp_server_cert_mismatch.
+            // The flag is what the session code reads. The wording is for
+            // the proxy's log.
+            self.mismatch
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             Err(rustls::Error::General(format!(
                 "RDP server certificate mismatch - possible MITM. \
                  Expected pinned SPKI {expected}, server presented {live}. \
@@ -5742,6 +5774,22 @@ mod tests {
             Arc::new(cfg)
         }
 
+        thread_local! {
+            /// The mismatch flag of the last `run_handshake` on this test
+            /// thread, so a test can read what the verifier reported.
+            static LAST_HANDSHAKE_MISMATCH: std::cell::RefCell<
+                Option<Arc<std::sync::atomic::AtomicBool>>,
+            > = const { std::cell::RefCell::new(None) };
+        }
+
+        fn last_handshake_reported_mismatch() -> bool {
+            LAST_HANDSHAKE_MISMATCH.with(|m| {
+                m.borrow()
+                    .as_ref()
+                    .is_some_and(|f| f.load(std::sync::atomic::Ordering::SeqCst))
+            })
+        }
+
         /// Drive a real TLS handshake from the PINNING client (built via
         /// the production `build_tls_config`) against an in-process rustls
         /// server presenting `cert`. Returns Ok iff the handshake -- SPKI
@@ -5771,7 +5819,9 @@ mod tests {
                 }
             });
 
-            let client_cfg = build_tls_config(expected_fingerprint).map_err(|e| e.to_string())?;
+            let (client_cfg, mismatch) =
+                build_tls_config(expected_fingerprint).map_err(|e| e.to_string())?;
+            LAST_HANDSHAKE_MISMATCH.with(|m| *m.borrow_mut() = Some(Arc::clone(&mismatch)));
             let connector = TlsConnector::from(client_cfg);
             let tcp = TcpStream::connect(addr).await.map_err(|e| e.to_string())?;
             let server_name = ServerName::try_from("localhost").map_err(|e| e.to_string())?;
@@ -5849,6 +5899,7 @@ mod tests {
             let verifier = PinningServerCertVerifier {
                 expected_fingerprint: fp,
                 provider: Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
+                mismatch: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             };
             let now = pki_types::UnixTime::now();
             let name = ServerName::try_from("localhost").expect("server name");
@@ -5867,6 +5918,7 @@ mod tests {
                 expected_fingerprint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
                     .to_string(),
                 provider: Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
+                mismatch: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             };
             let now = pki_types::UnixTime::now();
             let name = ServerName::try_from("localhost").expect("server name");
@@ -5876,9 +5928,30 @@ mod tests {
             let msg = err.to_string();
             assert!(
                 msg.contains("MITM") || msg.to_lowercase().contains("mismatch"),
-                "the mismatch error must carry MITM/mismatch wording so the \
-                 web connect handler can flip rdp_server_cert_mismatch. Got: {msg}"
+                "the mismatch error keeps its wording for the proxy log. Got: {msg}"
             );
+            assert!(
+                verifier.mismatch.load(std::sync::atomic::Ordering::SeqCst),
+                "the verifier must report the mismatch through its flag: the \
+                 session code reads the flag, not the wording"
+            );
+        }
+
+        #[test]
+        fn verifier_does_not_report_a_mismatch_when_the_pin_matches() {
+            let (cert, _) = gen_self_signed();
+            let fp = spki_sha256_fingerprint(&cert).expect("fp");
+            let verifier = PinningServerCertVerifier {
+                expected_fingerprint: fp,
+                provider: Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
+                mismatch: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            };
+            let now = pki_types::UnixTime::now();
+            let name = ServerName::try_from("localhost").expect("server name");
+            verifier
+                .verify_server_cert(&cert, &[], &name, &[], now)
+                .expect("a matching pin is accepted");
+            assert!(!verifier.mismatch.load(std::sync::atomic::Ordering::SeqCst));
         }
 
         #[tokio::test]
@@ -5909,6 +5982,103 @@ mod tests {
                  load-bearing VAU-001 regression: pre-fix the accept-any \
                  verifier returned Ok here."
             );
+            assert!(
+                last_handshake_reported_mismatch(),
+                "a refused pin must be reported through the flag the session \
+                 code reads, so the failure is typed as a mismatch"
+            );
+        }
+
+        /// A handshake that fails for another reason is not a mismatch:
+        /// the web tier must not flag the asset for it.
+        #[tokio::test]
+        async fn attack_tls_failure_other_than_a_pin_mismatch_is_not_reported_as_one() {
+            let (cert, _key) = gen_self_signed();
+            let fp = spki_sha256_fingerprint(&cert).expect("fp");
+            // A listener that accepts and closes without speaking TLS.
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
+            let addr = listener.local_addr().expect("addr");
+            let server = tokio::spawn(async move {
+                if let Ok((tcp, _)) = listener.accept().await {
+                    drop(tcp);
+                }
+            });
+            let (client_cfg, mismatch) = build_tls_config(&fp).expect("tls config");
+            let connector = tokio_rustls::TlsConnector::from(client_cfg);
+            let tcp = tokio::net::TcpStream::connect(addr).await.expect("connect");
+            let name = ServerName::try_from("localhost").expect("server name");
+            let result = connector.connect(name, tcp).await;
+            let _ = server.await;
+            assert!(result.is_err(), "no TLS peer: the handshake fails");
+            assert!(
+                !mismatch.load(std::sync::atomic::Ordering::SeqCst),
+                "a transport failure is not a certificate mismatch"
+            );
+        }
+
+        /// The code sent to vauban-web for each error is a closed-set code,
+        /// and a pin mismatch has its own.
+        #[test]
+        fn test_session_errors_map_to_closed_set_codes() {
+            use crate::error::SessionError;
+            use shared::messages::RdpOpenFailure;
+            let cases = [
+                (
+                    SessionError::ServerCertificateMismatch,
+                    RdpOpenFailure::ServerCertificateMismatch,
+                ),
+                (
+                    SessionError::TlsUpgradeFailed("x".into()),
+                    RdpOpenFailure::TlsFailed,
+                ),
+                (
+                    SessionError::ConnectionFailed("x".into()),
+                    RdpOpenFailure::ConnectionFailed,
+                ),
+                (
+                    SessionError::SessionClosed,
+                    RdpOpenFailure::ConnectionFailed,
+                ),
+                (
+                    SessionError::SessionFailed("x".into()),
+                    RdpOpenFailure::SessionFailed,
+                ),
+                (
+                    SessionError::SessionNotFound("x".into()),
+                    RdpOpenFailure::Internal,
+                ),
+            ];
+            for (error, expected) in cases {
+                assert_eq!(error.open_failure(), expected, "{error}");
+            }
+        }
+
+        /// Text written by the target cannot turn an error into a mismatch
+        /// or into anything but its own code.
+        #[test]
+        fn attack_error_text_does_not_change_the_code() {
+            use crate::error::SessionError;
+            use shared::messages::RdpOpenFailure;
+            for text in [
+                "RDP server certificate mismatch - possible MITM",
+                "server_certificate_mismatch",
+                "access_denied",
+            ] {
+                assert_eq!(
+                    SessionError::TlsUpgradeFailed(text.into()).open_failure(),
+                    RdpOpenFailure::TlsFailed
+                );
+                assert_eq!(
+                    SessionError::SessionFailed(text.into()).open_failure(),
+                    RdpOpenFailure::SessionFailed
+                );
+                assert_eq!(
+                    SessionError::ConnectionFailed(text.into()).open_failure(),
+                    RdpOpenFailure::ConnectionFailed
+                );
+            }
         }
     }
 

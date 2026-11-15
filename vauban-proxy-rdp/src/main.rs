@@ -42,7 +42,7 @@ use session_manager::{
 };
 use shared::access_guard::{AccessGuard, AccessGuardMetrics, AccessGuardWiring, PROTOCOL_RDP};
 use shared::ipc::{IpcChannel, recv_fd};
-use shared::messages::{ControlMessage, Message, NtlmPolicy, ServiceStats};
+use shared::messages::{ControlMessage, Message, NtlmPolicy, RdpOpenFailure, ServiceStats};
 use shared::recording_fd::{DEFAULT_BROKER_TIMEOUT, recv_fd_timed};
 use shared::sandbox as capsicum;
 use shared::session_token::proxy_gate as session_token_gate;
@@ -866,7 +866,7 @@ async fn handle_web_message(
                     success: false,
                     desktop_width: 0,
                     desktop_height: 0,
-                    error: Some("Access denied".to_string()),
+                    error: Some(RdpOpenFailure::AccessDenied.as_str().to_string()),
                 };
                 let _ = response_tx.send(response);
                 return Ok(());
@@ -879,7 +879,7 @@ async fn handle_web_message(
                     success: false,
                     desktop_width: 0,
                     desktop_height: 0,
-                    error: Some("Service is draining, not accepting new sessions".to_string()),
+                    error: Some(RdpOpenFailure::Draining.as_str().to_string()),
                 };
                 let _ = response_tx.send(response);
                 return Ok(());
@@ -937,9 +937,7 @@ async fn handle_web_message(
                         success: false,
                         desktop_width: 0,
                         desktop_height: 0,
-                        error: Some(
-                            "No pinned RDP server certificate; refusing to connect".to_string(),
-                        ),
+                        error: Some(RdpOpenFailure::NoPinnedCertificate.as_str().to_string()),
                     };
                     let _ = response_tx.send(response);
                     return Ok(());
@@ -956,27 +954,28 @@ async fn handle_web_message(
                 debug!(session_id = %session_id, "Using pre-established TCP connection from supervisor");
             }
 
-            let password =
-                match vault::materialise_rdp_password(vault_client.as_ref(), password).await {
-                    Ok(password) => password,
-                    Err(error) => {
-                        warn!(
-                            session_id = %session_id,
-                            error = %error,
-                            "RDP session refused: credential envelope could not be opened"
-                        );
-                        let response = Message::RdpSessionOpened {
-                            request_id,
-                            session_id,
-                            success: false,
-                            desktop_width: 0,
-                            desktop_height: 0,
-                            error: Some("Failed to open target credentials".to_string()),
-                        };
-                        let _ = response_tx.send(response);
-                        return Ok(());
-                    }
-                };
+            let password = match vault::materialise_rdp_password(vault_client.as_ref(), password)
+                .await
+            {
+                Ok(password) => password,
+                Err(error) => {
+                    warn!(
+                        session_id = %session_id,
+                        error = %error,
+                        "RDP session refused: credential envelope could not be opened"
+                    );
+                    let response = Message::RdpSessionOpened {
+                        request_id,
+                        session_id,
+                        success: false,
+                        desktop_width: 0,
+                        desktop_height: 0,
+                        error: Some(RdpOpenFailure::CredentialsUnavailable.as_str().to_string()),
+                    };
+                    let _ = response_tx.send(response);
+                    return Ok(());
+                }
+            };
 
             let config = SessionConfig {
                 session_id: session_id.clone(),
@@ -1046,7 +1045,7 @@ async fn handle_web_message(
                         success: false,
                         desktop_width: 0,
                         desktop_height: 0,
-                        error: Some("Access denied".to_string()),
+                        error: Some(RdpOpenFailure::AccessDenied.as_str().to_string()),
                     });
                     return;
                 }
@@ -1101,13 +1100,23 @@ async fn handle_web_message(
                             });
                             return;
                         }
+                        // Only the closed-set code leaves the process. The
+                        // text can quote the target or the TLS stack: it
+                        // goes to the log, in Debug form.
+                        let failure = e.open_failure();
+                        warn!(
+                            session_id = %session_id,
+                            reason = failure.as_str(),
+                            error = ?e.to_string(),
+                            "RDP session open failed"
+                        );
                         let response = Message::RdpSessionOpened {
                             request_id,
                             session_id,
                             success: false,
                             desktop_width: 0,
                             desktop_height: 0,
-                            error: Some(e.to_string()),
+                            error: Some(failure.as_str().to_string()),
                         };
                         let _ = response_tx_clone.send(response);
                     }
@@ -1186,13 +1195,19 @@ async fn handle_web_message(
                         });
                     }
                     Err(e) => {
-                        warn!(request_id, error = %e, "RDP server certificate fetch failed");
+                        let failure = e.open_failure();
+                        warn!(
+                            request_id,
+                            reason = failure.as_str(),
+                            error = ?e.to_string(),
+                            "RDP server certificate fetch failed"
+                        );
                         let _ = response_tx_clone.send(Message::RdpServerCertResult {
                             request_id,
                             success: false,
                             server_spki: None,
                             cert_fingerprint: None,
-                            error: Some(e.to_string()),
+                            error: Some(failure.as_str().to_string()),
                         });
                     }
                 }
@@ -1573,8 +1588,8 @@ mod tests {
              AccessDecision variant (Denied / Timeout / BackendError)"
         );
         assert!(
-            handler_body.contains("\"Access denied\".to_string()"),
-            "Denial response MUST be the generic 'Access denied' string \
+            handler_body.contains("RdpOpenFailure::AccessDenied.as_str().to_string()"),
+            "Denial response MUST be the single access_denied code \
              (do NOT leak Denied vs Timeout vs BackendError to the client)"
         );
     }

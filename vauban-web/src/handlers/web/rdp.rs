@@ -507,16 +507,23 @@ pub async fn connect_rdp(
                     "TCP connection established by supervisor for RDP"
                 );
             }
+            // The reason goes to the log, in Debug form: it can quote
+            // the resolver or the target. The browser gets a constant.
             Ok(result) => {
-                let msg = result
-                    .error
-                    .unwrap_or_else(|| "Failed to establish TCP connection".to_string());
-                tracing::error!(session_id = %session_id, error = %msg, "RDP TCP connect failed");
-                return htmx_error_response(&msg);
+                tracing::error!(
+                    session_id = %session_id,
+                    error = ?result.error,
+                    "RDP TCP connect failed"
+                );
+                return htmx_error_response(crate::services::rdp_open_failure::UNREACHABLE_MESSAGE);
             }
             Err(e) => {
-                tracing::error!(session_id = %session_id, error = %e, "RDP TCP connect request failed");
-                return htmx_error_response(&e);
+                tracing::error!(
+                    session_id = %session_id,
+                    error = ?e.to_string(),
+                    "RDP TCP connect request failed"
+                );
+                return htmx_error_response(crate::services::rdp_open_failure::UNREACHABLE_MESSAGE);
             }
         }
     }
@@ -580,44 +587,55 @@ pub async fn connect_rdp(
                 );
             }
 
-            let err = response
-                .error
-                .unwrap_or_else(|| "RDP connection failed".to_string());
+            // The proxy answers with a closed-set code
+            // (`RdpOpenFailure`). It is read as a code, never shown as
+            // text: what the proxy could not classify, or a field that is
+            // not a code, becomes the generic message.
+            let code = response.error.as_deref();
+            tracing::warn!(
+                session_id = %session_id,
+                reason = ?code,
+                "RDP session open refused by the proxy"
+            );
 
-            // VAU-001: detect a server-certificate mismatch reported by the
-            // proxy's PinningServerCertVerifier and persist the flag so the
+            // VAU-001: on a server-certificate mismatch reported by the
+            // proxy's PinningServerCertVerifier, persist the flag so the
             // asset detail page shows the red warning state and subsequent
             // connections are refused fail-closed (mirror web/ssh.rs).
-            maybe_flag_rdp_cert_mismatch(&mut conn, asset_uuid, &config, &err).await;
+            if crate::services::rdp_open_failure::is_certificate_mismatch(code) {
+                flag_rdp_cert_mismatch(&mut conn, asset_uuid, &config).await;
+            }
 
-            htmx_error_response(&err)
+            htmx_error_response(crate::services::rdp_open_failure::message_from_wire(code))
         }
         Err(e) => {
-            let msg = format!("RDP connection error: {}", e);
-            maybe_flag_rdp_cert_mismatch(&mut conn, asset_uuid, &config, &msg).await;
-            htmx_error_response(&msg)
+            // A failure of the web tier's own IPC: no code, no mismatch.
+            tracing::error!(
+                session_id = %session_id,
+                error = ?e.to_string(),
+                "RDP session open request failed"
+            );
+            htmx_error_response(crate::services::rdp_open_failure::UNREACHABLE_MESSAGE)
         }
     }
 }
 
-/// VAU-001: if `error` indicates the proxy refused the TLS handshake on a
-/// server-certificate mismatch (possible MITM), set
+/// VAU-001: the proxy refused the TLS handshake on a server-certificate
+/// mismatch (possible MITM). Set
 /// `connection_config.rdp_server_cert_mismatch = true` so the asset detail
 /// page surfaces the red warning and the connect pre-flight refuses new
 /// sessions until an admin re-pins. Best-effort: a DB failure is logged but
 /// not surfaced (the connection already failed). Mirrors the SSH path.
-async fn maybe_flag_rdp_cert_mismatch(
+///
+/// The caller decides that this is a mismatch from the proxy's typed code
+/// (`rdp_open_failure::is_certificate_mismatch`), never from the wording
+/// of an error: text can be written by the target.
+async fn flag_rdp_cert_mismatch(
     conn: &mut diesel_async::AsyncPgConnection,
     asset_uuid: uuid::Uuid,
     config: &serde_json::Value,
-    error: &str,
 ) {
     use crate::schema::assets::dsl;
-
-    let is_cert_mismatch = error.contains("certificate mismatch") || error.contains("MITM");
-    if !is_cert_mismatch {
-        return;
-    }
 
     tracing::warn!(
         asset_uuid = %asset_uuid,
@@ -841,7 +859,7 @@ pub async fn fetch_rdp_server_cert(
                 error = %e,
                 "Failed to fetch RDP server certificate"
             );
-            return htmx_error_response(&format!("Failed to fetch server certificate: {}", e));
+            return htmx_error_response(crate::services::rdp_open_failure::CERT_FETCH_MESSAGE);
         }
     };
 
@@ -1258,7 +1276,7 @@ mod tests {
         let brokering_start = handler_body
             .find("request_tcp_connect")
             .expect("request_tcp_connect must be present");
-        let brokering_section = &handler_body[brokering_start..brokering_start + 800];
+        let brokering_section = &handler_body[brokering_start..brokering_start + 1600];
 
         assert!(
             brokering_section.contains("htmx_error_response"),

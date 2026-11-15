@@ -1177,11 +1177,16 @@ fn test_connect_rdp_answers_a_classified_failure_with_a_constant_message() {
         assert!(!helper.contains(forbidden), "helper uses `{forbidden}`");
     }
 
-    // The branch precedes the legacy path that shows the proxy's text.
-    let legacy = source
-        .find(".unwrap_or_else(|| \"RDP connection failed\".to_string());")
-        .expect("legacy text path");
-    assert!(start < legacy);
+    // The branch precedes the path for the other failures, which shows
+    // a constant message selected by the proxy's closed-set code.
+    let other = source
+        .find("crate::services::rdp_open_failure::message_from_wire(code)")
+        .expect("closed-set code path");
+    assert!(start < other);
+    assert!(
+        !source.contains(".unwrap_or_else(|| \"RDP connection failed\".to_string())"),
+        "the proxy's error field is no longer shown as text"
+    );
 }
 
 /// The reason reaches the browser only through `message_for`: no other

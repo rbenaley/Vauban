@@ -223,6 +223,81 @@ impl NtlmPolicy {
     }
 }
 
+/// Why the RDP proxy could not open a session or fetch a certificate,
+/// outside the NLA leg, as a closed set.
+///
+/// The proxy answers a failed `RdpSessionOpen` or `RdpFetchServerCert`
+/// with `error: Some(code)`, where `code` is [`RdpOpenFailure::as_str`].
+/// The field is a string for wire compatibility, but only these codes are
+/// written to it. The text of the underlying error (a TLS alert, an I/O
+/// error, something the target sent) stays in the `vauban-proxy-rdp` log.
+///
+/// The receiver reads the field with [`RdpOpenFailure::parse`]. A value
+/// that is not a code is not trusted as text: it is treated as
+/// [`RdpOpenFailure::Internal`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RdpOpenFailure {
+    /// The proxy's own access check refused the session.
+    AccessDenied,
+    /// The proxy is draining and takes no new session.
+    Draining,
+    /// The asset has no pinned server certificate.
+    NoPinnedCertificate,
+    /// The proxy could not obtain the credentials of the target.
+    CredentialsUnavailable,
+    /// The target presented a certificate other than the pinned one.
+    ServerCertificateMismatch,
+    /// The TLS handshake with the target failed for another reason.
+    TlsFailed,
+    /// The connection to the target failed or was lost.
+    ConnectionFailed,
+    /// The RDP exchange failed after the transport was up.
+    SessionFailed,
+    /// Anything else, including a value that is not one of these codes.
+    Internal,
+}
+
+impl RdpOpenFailure {
+    pub const ALL: [RdpOpenFailure; 9] = [
+        RdpOpenFailure::AccessDenied,
+        RdpOpenFailure::Draining,
+        RdpOpenFailure::NoPinnedCertificate,
+        RdpOpenFailure::CredentialsUnavailable,
+        RdpOpenFailure::ServerCertificateMismatch,
+        RdpOpenFailure::TlsFailed,
+        RdpOpenFailure::ConnectionFailed,
+        RdpOpenFailure::SessionFailed,
+        RdpOpenFailure::Internal,
+    ];
+
+    /// The code written to the `error` field.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            RdpOpenFailure::AccessDenied => "access_denied",
+            RdpOpenFailure::Draining => "draining",
+            RdpOpenFailure::NoPinnedCertificate => "no_pinned_certificate",
+            RdpOpenFailure::CredentialsUnavailable => "credentials_unavailable",
+            RdpOpenFailure::ServerCertificateMismatch => "server_certificate_mismatch",
+            RdpOpenFailure::TlsFailed => "tls_failed",
+            RdpOpenFailure::ConnectionFailed => "connection_failed",
+            RdpOpenFailure::SessionFailed => "session_failed",
+            RdpOpenFailure::Internal => "internal",
+        }
+    }
+
+    /// Read an `error` field. Exact match only; `None` for anything else.
+    pub fn parse(code: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|f| f.as_str() == code)
+    }
+
+    /// Read an `error` field that came from the proxy: an absent value or
+    /// one that is not a code is [`RdpOpenFailure::Internal`].
+    pub fn from_wire(code: Option<&str>) -> Self {
+        code.and_then(Self::parse)
+            .unwrap_or(RdpOpenFailure::Internal)
+    }
+}
+
 /// Why the NLA leg of an RDP session failed, as a closed set.
 ///
 /// The proxy classifies a failure into one of these and sends it in
@@ -5853,6 +5928,54 @@ mod tests {
 
     /// Appended at END: the realm lease keeps its index, so every earlier
     /// variant does too.
+    #[test]
+    fn test_rdp_open_failure_codes_round_trip_and_are_distinct() {
+        let mut seen = std::collections::HashSet::new();
+        for failure in RdpOpenFailure::ALL {
+            // Exhaustive: a new variant must be listed in ALL.
+            match failure {
+                RdpOpenFailure::AccessDenied
+                | RdpOpenFailure::Draining
+                | RdpOpenFailure::NoPinnedCertificate
+                | RdpOpenFailure::CredentialsUnavailable
+                | RdpOpenFailure::ServerCertificateMismatch
+                | RdpOpenFailure::TlsFailed
+                | RdpOpenFailure::ConnectionFailed
+                | RdpOpenFailure::SessionFailed
+                | RdpOpenFailure::Internal => {}
+            }
+            let code = failure.as_str();
+            assert!(seen.insert(code), "{code} used twice");
+            assert!(code.chars().all(|c| c.is_ascii_lowercase() || c == '_'));
+            assert_eq!(RdpOpenFailure::parse(code), Some(failure));
+            assert_eq!(RdpOpenFailure::from_wire(Some(code)), failure);
+        }
+        assert_eq!(seen.len(), RdpOpenFailure::ALL.len());
+    }
+
+    #[test]
+    fn attack_rdp_open_failure_free_text_is_not_a_code() {
+        for text in [
+            "",
+            "Access denied",
+            "ACCESS_DENIED",
+            "access_denied ",
+            " access_denied",
+            "server_certificate_mismatch - possible MITM",
+            "RDP server certificate mismatch - possible MITM",
+            "tls_failed\n",
+            "internal<script>",
+        ] {
+            assert_eq!(RdpOpenFailure::parse(text), None, "{text:?}");
+            assert_eq!(
+                RdpOpenFailure::from_wire(Some(text)),
+                RdpOpenFailure::Internal,
+                "{text:?}"
+            );
+        }
+        assert_eq!(RdpOpenFailure::from_wire(None), RdpOpenFailure::Internal);
+    }
+
     #[test]
     fn test_rdp_session_open_failed_is_appended_after_the_kdc_lease() {
         let lease = serialize(&Message::KerberosKdcLeaseRequest {
