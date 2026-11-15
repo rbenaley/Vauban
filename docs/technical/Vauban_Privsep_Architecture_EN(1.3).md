@@ -536,6 +536,27 @@ request queued on the same pipe (`TcpConnectRequest`,
 That message is not a Pong, so it is set aside and dispatched on the
 next pass of the service loop. It is not discarded.
 
+The supervisor performs file operations as root for services that have
+dropped privileges. Each request passes two independent checks: the path
+is validated and confined, and the caller must be a service that has a
+reason to ask. The second check is a single table in
+`vauban-supervisor/src/file_broker.rs`, default deny:
+
+| Operation | Message | Allowed callers |
+|-----------|---------|-----------------|
+| Write a recording file | `RecordingFileRequest { read_only: false }` | `proxy_ssh`, `proxy_rdp`, `proxy_mcp`, `audit` |
+| Read a recording back | `RecordingFileRequest { read_only: true }` | `web` |
+| Open an audit-log segment | `AuditLogFileRequest` | `audit` |
+| Unlink a raw capture | `RecordingFileUnlinkRequest` | `audit` |
+| Delete a recording | `RecordingDeleteRequest` | `web` |
+| Compress a capture (retired) | `RecordingFileGzipRequest` | none |
+
+A request from any other service is answered with the fixed text
+`caller_not_allowed` and touches no file. The caller is the service key
+the supervisor assigned to the pipe the message arrived on, not a field
+of the message. ACME renewal follows the same rule; see the ACME TLS
+architecture document, section 7.1.
+
 After `sendmsg` has placed a brokered descriptor in the child's socket
 buffer, the supervisor keeps its own copy for 5 seconds
 (`BROKERED_FD_LINGER`) and then closes it. Those 5 seconds are not an

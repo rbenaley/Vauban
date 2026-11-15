@@ -543,6 +543,29 @@ Six IPC messages coordinate TLS certificate management between `vauban-web` and 
 | `AcmeChallengeRemove` | Supervisor -> Web | Remove challenge cert from resolver |
 | `AcmeCertActivate` | Supervisor -> Web | Activate new production cert in memory |
 
+`AcmeRenewRequest` is a trigger. The supervisor writes the certificate,
+the key, and the account file as root, so it does not take from the
+request anything that decides what is written or where:
+
+- It accepts the request from `vauban-web` only.
+- The certificate path, the key path, the account file path, the contact
+  email, and the EAB credentials come from the supervisor's own
+  `[server.tls]` and `[server.tls.acme]` tables. The matching fields of
+  the request are not read.
+- The directory URL and the domains of the request are compared with
+  that configuration. A request for another directory, or for a domain
+  that is not configured, is refused.
+- A refusal is answered with `AcmeRenewResponse { success: false }` and
+  one of five fixed codes (`acme_caller_not_allowed`, `acme_disabled`,
+  `acme_not_configured`, `acme_directory_mismatch`,
+  `acme_domain_not_configured`). Nothing from the request is echoed, and
+  no file is touched.
+
+Both processes read the same configuration files, so a refusal for a
+mismatch means the two disagree: the files changed and only one of the
+processes was restarted, or the request did not come from the renewal
+task.
+
 ### 7.2 Message Flow Timing
 
 ```mermaid

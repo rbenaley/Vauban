@@ -3337,6 +3337,14 @@ pub enum Message {
     /// Request the supervisor to perform ACME certificate renewal.
     /// The supervisor handles the ACME protocol (instant-acme) and coordinates
     /// TLS-ALPN-01 challenges via AcmeChallengeInstall/Remove messages.
+    ///
+    /// This message is a trigger, not a description of the work. The
+    /// supervisor writes the files as root, so it takes the paths, the
+    /// email, the EAB credentials, the directory and the domains from its
+    /// own `[server.tls.acme]` configuration. It accepts the request only
+    /// from `vauban-web`, and refuses it when `directory_url` or `domains`
+    /// disagree with that configuration. The other fields are not read;
+    /// they stay because the wire layout of a variant cannot change.
     AcmeRenewRequest {
         request_id: u64,
         /// ACME directory URL (e.g. Let's Encrypt, ZeroSSL).

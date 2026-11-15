@@ -23,6 +23,7 @@
 mod acme;
 mod admin;
 mod config;
+mod file_broker;
 mod kdc_broker;
 mod privsep_fs;
 mod recording_delete;
@@ -1662,6 +1663,7 @@ fn watchdog_loop(
             &config.mailer,
             &config.auth.ldaps,
             &config.auth.kerberos,
+            &config.server.tls,
             &iacs_guards,
             &McpConnectGuards::from_config(&config.mcp, config.server.port),
             std::mem::take(&mut heartbeat_deferred),
@@ -3899,6 +3901,7 @@ fn process_service_messages(
     mailer: &crate::config::MailerConfig,
     ldap: &crate::config::LdapConfig,
     kerberos: &crate::config::KerberosConfig,
+    tls: &crate::config::TlsCertPaths,
     iacs_guards: &IacsTunnelGuards,
     mcp_guards: &McpConnectGuards,
     deferred: Vec<(String, Message)>,
@@ -3916,6 +3919,7 @@ fn process_service_messages(
                 mailer,
                 ldap,
                 kerberos,
+                tls,
                 iacs_guards,
                 mcp_guards,
             );
@@ -3959,6 +3963,7 @@ fn process_service_messages(
                         mailer,
                         ldap,
                         kerberos,
+                        tls,
                         iacs_guards,
                         mcp_guards,
                     ),
@@ -3979,6 +3984,17 @@ fn process_service_messages(
     }
 }
 
+/// Log a file-broker request from a service that may not make it.
+/// `service_key` is the supervisor's own name for the child, not request
+/// data; the operation name is a fixed string.
+fn refuse_file_broker_caller(service_key: &str, op: file_broker::FileBrokerOp) {
+    warn!(
+        service = service_key,
+        operation = op.as_str(),
+        "Refused file broker request: caller not allowed"
+    );
+}
+
 /// Route one service → supervisor message to its broker handler.
 #[allow(clippy::too_many_arguments)]
 fn dispatch_service_message(
@@ -3991,6 +4007,7 @@ fn dispatch_service_message(
     mailer: &crate::config::MailerConfig,
     ldap: &crate::config::LdapConfig,
     kerberos: &crate::config::KerberosConfig,
+    tls: &crate::config::TlsCertPaths,
     iacs_guards: &IacsTunnelGuards,
     mcp_guards: &McpConnectGuards,
 ) {
@@ -4057,37 +4074,35 @@ fn dispatch_service_message(
                 kerberos,
             );
         }
+        // The paths, the email and the EAB credentials of the request are
+        // not bound: `acme::authorize_renewal` takes them from `tls`, the
+        // supervisor's own configuration. The supervisor writes as root.
         Message::AcmeRenewRequest {
             request_id,
             directory_url,
             domains,
-            email,
-            account_key_path,
-            cert_path,
-            key_path,
-            eab_kid,
-            eab_hmac_key,
+            ..
         } => {
-            info!(
-                request_id = request_id,
-                domains = ?domains,
-                "Received ACME renewal request from {}",
-                service_key
-            );
-            acme::handle_acme_renew(
-                acme::AcmeRenewParams {
-                    request_id,
-                    directory_url,
-                    domains,
-                    email,
-                    account_key_path,
-                    cert_path,
-                    key_path,
-                    eab_kid,
-                    eab_hmac_key,
-                },
-                &state.channel,
-            );
+            match acme::authorize_renewal(service_key, tls, request_id, &directory_url, &domains) {
+                Ok(params) => {
+                    info!(
+                        request_id = request_id,
+                        domains = ?params.domains,
+                        "Received ACME renewal request from {}",
+                        service_key
+                    );
+                    acme::handle_acme_renew(params, &state.channel);
+                }
+                Err(refusal) => {
+                    warn!(
+                        request_id = request_id,
+                        service = service_key,
+                        reason = refusal.code(),
+                        "Refused ACME renewal request"
+                    );
+                    acme::refuse_renewal(&state.channel, request_id, refusal);
+                }
+            }
         }
         Message::RecordingFileRequest {
             request_id,
@@ -4103,6 +4118,17 @@ fn dispatch_service_message(
                 "Received RecordingFileRequest from {}",
                 service_key
             );
+            let op = file_broker::FileBrokerOp::of_recording_request(read_only);
+            if !file_broker::caller_may(service_key, op) {
+                refuse_file_broker_caller(service_key, op);
+                let _ = state.channel.send(&Message::RecordingFileResponse {
+                    request_id,
+                    session_id,
+                    success: false,
+                    error: Some(file_broker::CALLER_NOT_ALLOWED.to_string()),
+                });
+                return;
+            }
             handle_recording_file_request(
                 request_id,
                 &session_id,
@@ -4122,6 +4148,16 @@ fn dispatch_service_message(
                 "Received AuditLogFileRequest from {}",
                 service_key
             );
+            let op = file_broker::FileBrokerOp::AuditLogSegment;
+            if !file_broker::caller_may(service_key, op) {
+                refuse_file_broker_caller(service_key, op);
+                let _ = state.channel.send(&Message::AuditLogFileResponse {
+                    request_id,
+                    success: false,
+                    error: Some(file_broker::CALLER_NOT_ALLOWED.to_string()),
+                });
+                return;
+            }
             handle_audit_log_file_request(request_id, &segment_name, audit_log_path, state);
         }
         Message::RecordingFileGzipRequest {
@@ -4138,6 +4174,12 @@ fn dispatch_service_message(
                 "Received deprecated RecordingFileGzipRequest from {}",
                 service_key
             );
+            // Retired for every caller. The handler below only answers
+            // "deprecated"; the table keeps that true if it ever grows back.
+            let op = file_broker::FileBrokerOp::RecordingGzip;
+            if !file_broker::caller_may(service_key, op) {
+                refuse_file_broker_caller(service_key, op);
+            }
             handle_recording_file_gzip_request(
                 request_id,
                 &session_id,
@@ -4159,6 +4201,17 @@ fn dispatch_service_message(
                 "Received RecordingFileUnlinkRequest from {}",
                 service_key
             );
+            let op = file_broker::FileBrokerOp::RecordingUnlink;
+            if !file_broker::caller_may(service_key, op) {
+                refuse_file_broker_caller(service_key, op);
+                let _ = state.channel.send(&Message::RecordingFileUnlinkResponse {
+                    request_id,
+                    session_id,
+                    success: false,
+                    error: Some(file_broker::CALLER_NOT_ALLOWED.to_string()),
+                });
+                return;
+            }
             handle_recording_file_unlink_request(
                 request_id,
                 &session_id,
@@ -5441,6 +5494,401 @@ mod tests {
         );
     }
 
+    // ==================== Caller checks on root-side brokers ====================
+
+    /// A child as the supervisor sees it, and the service's end of its pipe.
+    fn broker_test_child(service_key: &str) -> (ChildState, IpcChannel) {
+        let (supervisor_channel, service_channel) = IpcChannel::pair().unwrap();
+        let state = ChildState {
+            pid: 12345,
+            service_key: service_key.to_string(),
+            channel: supervisor_channel,
+            last_pong: Instant::now(),
+            missed_heartbeats: 0,
+            heartbeat_seq: 0,
+            respawn_count: 0,
+            last_respawn: Instant::now(),
+            last_stats: None,
+            is_draining: false,
+            drain_started: None,
+            ever_ponged: false,
+            fd_passing_socket: None,
+        };
+        (state, service_channel)
+    }
+
+    /// Send `msg` as `service_key` through the real dispatcher and return
+    /// what the service reads back.
+    fn dispatch_as(
+        service_key: &str,
+        msg: Message,
+        storage: &std::path::Path,
+        tls: &crate::config::TlsCertPaths,
+    ) -> Vec<Message> {
+        let (state, service_channel) = broker_test_child(service_key);
+        let mut children = HashMap::new();
+        children.insert(service_key.to_string(), state);
+        let storage = storage.to_str().unwrap();
+        process_service_messages(
+            &children,
+            storage,
+            storage,
+            &crate::config::MailerConfig::default(),
+            &crate::config::LdapConfig::default(),
+            &crate::config::KerberosConfig::default(),
+            tls,
+            &IacsTunnelGuards::from_config(&crate::config::IacsTunnelSupervisorConfig::default()),
+            &McpConnectGuards::from_config(&crate::config::McpConfig::default(), 443),
+            vec![(service_key.to_string(), msg)],
+        );
+        let mut replies = Vec::new();
+        while let Ok(reply) = service_channel.try_recv() {
+            replies.push(reply);
+        }
+        replies
+    }
+
+    fn recording_request(read_only: bool) -> Message {
+        Message::RecordingFileRequest {
+            request_id: 9,
+            session_id: "sess-brk".to_string(),
+            relative_path: "2026/11/sess-brk/session.cast".to_string(),
+            read_only,
+        }
+    }
+
+    /// The error text of the single `RecordingFileResponse` in `replies`.
+    fn recording_refusal(replies: &[Message]) -> Option<String> {
+        match replies {
+            [
+                Message::RecordingFileResponse {
+                    request_id: 9,
+                    success: false,
+                    error,
+                    ..
+                },
+            ] => error.clone(),
+            other => panic!("expected one refused RecordingFileResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attack_web_requesting_a_recording_write_lease_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let replies = dispatch_as(
+            "web",
+            recording_request(false),
+            dir.path(),
+            &crate::config::TlsCertPaths::default(),
+        );
+        assert_eq!(
+            recording_refusal(&replies).as_deref(),
+            Some(file_broker::CALLER_NOT_ALLOWED)
+        );
+        assert!(
+            std::fs::read_dir(dir.path()).unwrap().next().is_none(),
+            "a refused request must not touch the storage directory"
+        );
+    }
+
+    #[test]
+    fn attack_proxy_requesting_a_recording_read_lease_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        // The file exists: the refusal is about the caller, not the path.
+        let file = dir.path().join("2026/11/sess-brk/session.cast");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"recorded").unwrap();
+
+        for proxy in ["proxy_ssh", "proxy_rdp", "proxy_mcp", "proxy_iacs"] {
+            let replies = dispatch_as(
+                proxy,
+                recording_request(true),
+                dir.path(),
+                &crate::config::TlsCertPaths::default(),
+            );
+            assert_eq!(
+                recording_refusal(&replies).as_deref(),
+                Some(file_broker::CALLER_NOT_ALLOWED),
+                "{proxy} must not read a recording back"
+            );
+        }
+    }
+
+    #[test]
+    fn attack_unlisted_service_requesting_a_recording_lease_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        for service in ["auth", "access", "vault", "mailer", "proxy_iacs"] {
+            for read_only in [false, true] {
+                let replies = dispatch_as(
+                    service,
+                    recording_request(read_only),
+                    dir.path(),
+                    &crate::config::TlsCertPaths::default(),
+                );
+                assert_eq!(
+                    recording_refusal(&replies).as_deref(),
+                    Some(file_broker::CALLER_NOT_ALLOWED),
+                    "{service} read_only={read_only}"
+                );
+            }
+        }
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+    }
+
+    /// The caller check does not replace the path check: an allowed caller
+    /// still reaches the handler, which refuses for its own reasons here
+    /// (no descriptor-passing socket in this harness).
+    #[test]
+    fn test_allowed_recording_callers_reach_the_handler() {
+        let dir = tempfile::tempdir().unwrap();
+        for (service, read_only) in [
+            ("proxy_ssh", false),
+            ("proxy_rdp", false),
+            ("proxy_mcp", false),
+            ("audit", false),
+            ("web", true),
+        ] {
+            let replies = dispatch_as(
+                service,
+                recording_request(read_only),
+                dir.path(),
+                &crate::config::TlsCertPaths::default(),
+            );
+            assert_ne!(
+                recording_refusal(&replies).as_deref(),
+                Some(file_broker::CALLER_NOT_ALLOWED),
+                "{service} read_only={read_only} is an allowed caller"
+            );
+        }
+    }
+
+    #[test]
+    fn attack_non_audit_service_requesting_an_audit_log_segment_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        for service in [
+            "web",
+            "proxy_ssh",
+            "proxy_rdp",
+            "proxy_mcp",
+            "vault",
+            "auth",
+        ] {
+            let replies = dispatch_as(
+                service,
+                Message::AuditLogFileRequest {
+                    request_id: 11,
+                    segment_name: "audit-00000001.log".to_string(),
+                },
+                dir.path(),
+                &crate::config::TlsCertPaths::default(),
+            );
+            match replies.as_slice() {
+                [
+                    Message::AuditLogFileResponse {
+                        request_id: 11,
+                        success: false,
+                        error,
+                    },
+                ] => assert_eq!(
+                    error.as_deref(),
+                    Some(file_broker::CALLER_NOT_ALLOWED),
+                    "{service}"
+                ),
+                other => panic!("{service}: expected one refusal, got {other:?}"),
+            }
+        }
+        assert!(
+            std::fs::read_dir(dir.path()).unwrap().next().is_none(),
+            "a refused request must not create a segment"
+        );
+    }
+
+    #[test]
+    fn attack_non_audit_service_requesting_an_unlink_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let relative = "2026/11/sess-brk/session.pcap";
+        let file = dir.path().join(relative);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"capture").unwrap();
+
+        for service in ["web", "proxy_ssh", "proxy_rdp", "proxy_iacs", "proxy_mcp"] {
+            let replies = dispatch_as(
+                service,
+                Message::RecordingFileUnlinkRequest {
+                    request_id: 13,
+                    session_id: "sess-brk".to_string(),
+                    relative_path: relative.to_string(),
+                },
+                dir.path(),
+                &crate::config::TlsCertPaths::default(),
+            );
+            match replies.as_slice() {
+                [
+                    Message::RecordingFileUnlinkResponse {
+                        request_id: 13,
+                        success: false,
+                        error,
+                        ..
+                    },
+                ] => assert_eq!(
+                    error.as_deref(),
+                    Some(file_broker::CALLER_NOT_ALLOWED),
+                    "{service}"
+                ),
+                other => panic!("{service}: expected one refusal, got {other:?}"),
+            }
+            assert!(file.exists(), "{service} must not have removed the capture");
+        }
+    }
+
+    fn acme_request(dir: &std::path::Path, directory_url: &str) -> Message {
+        let path = |name: &str| dir.join(name).to_str().unwrap().to_string();
+        Message::AcmeRenewRequest {
+            request_id: 17,
+            directory_url: directory_url.to_string(),
+            domains: vec!["bastion.example.test".to_string()],
+            email: "attacker@example.test".to_string(),
+            account_key_path: path("account.pem"),
+            cert_path: path("planted.crt"),
+            key_path: path("planted.key"),
+            eab_kid: None,
+            eab_hmac_key: None,
+        }
+    }
+
+    fn acme_refusal(replies: &[Message]) -> Option<String> {
+        match replies {
+            [
+                Message::AcmeRenewResponse {
+                    request_id: 17,
+                    success: false,
+                    error,
+                    cert_pem: None,
+                    key_pem: None,
+                },
+            ] => error.clone(),
+            other => panic!("expected one refused AcmeRenewResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attack_acme_renew_request_from_a_proxy_is_rejected_by_the_dispatcher() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tls = crate::config::TlsCertPaths::default();
+        tls.acme.enabled = true;
+        tls.acme.email = "ops@example.test".to_string();
+        tls.acme.domains = vec!["bastion.example.test".to_string()];
+        tls.acme.account_key_path = "/nonexistent/acme/account.pem".to_string();
+        tls.acme.directory_url = "https://acme.example.test/directory".to_string();
+
+        for service in ["proxy_ssh", "proxy_rdp", "proxy_mcp", "audit", "vault"] {
+            let replies = dispatch_as(
+                service,
+                acme_request(dir.path(), "https://acme.example.test/directory"),
+                dir.path(),
+                &tls,
+            );
+            assert_eq!(
+                acme_refusal(&replies).as_deref(),
+                Some("acme_caller_not_allowed"),
+                "{service}"
+            );
+        }
+        assert!(
+            std::fs::read_dir(dir.path()).unwrap().next().is_none(),
+            "a refused renewal must not write any file"
+        );
+    }
+
+    #[test]
+    fn attack_acme_renew_request_naming_another_directory_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tls = crate::config::TlsCertPaths::default();
+        tls.acme.enabled = true;
+        tls.acme.email = "ops@example.test".to_string();
+        tls.acme.domains = vec!["bastion.example.test".to_string()];
+        tls.acme.account_key_path = "/nonexistent/acme/account.pem".to_string();
+        tls.acme.directory_url = "https://acme.example.test/directory".to_string();
+
+        let replies = dispatch_as(
+            "web",
+            acme_request(dir.path(), "https://attacker.example.test/directory"),
+            dir.path(),
+            &tls,
+        );
+        assert_eq!(
+            acme_refusal(&replies).as_deref(),
+            Some("acme_directory_mismatch")
+        );
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn attack_acme_renew_request_when_disabled_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let replies = dispatch_as(
+            "web",
+            acme_request(dir.path(), "https://acme.example.test/directory"),
+            dir.path(),
+            &crate::config::TlsCertPaths::default(),
+        );
+        assert_eq!(acme_refusal(&replies).as_deref(), Some("acme_disabled"));
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+    }
+
+    /// Every broker arm of the dispatcher consults the caller table before
+    /// its handler, and `tls` reaches the dispatcher from the main loop.
+    #[test]
+    fn test_file_broker_arms_check_the_caller_before_the_handler() {
+        let src = include_str!("main.rs");
+        let prod = src
+            .split("// ==================== Caller checks on root-side brokers")
+            .next()
+            .unwrap_or(src);
+        let dispatcher = prod
+            .split("fn dispatch_service_message(")
+            .nth(1)
+            .expect("dispatcher");
+        for (arm, handler, op) in [
+            (
+                "Message::RecordingFileRequest {",
+                "handle_recording_file_request(",
+                "of_recording_request(read_only)",
+            ),
+            (
+                "Message::AuditLogFileRequest {",
+                "handle_audit_log_file_request(",
+                "FileBrokerOp::AuditLogSegment",
+            ),
+            (
+                "Message::RecordingFileUnlinkRequest {",
+                "handle_recording_file_unlink_request(",
+                "FileBrokerOp::RecordingUnlink",
+            ),
+            (
+                "Message::RecordingFileGzipRequest {",
+                "handle_recording_file_gzip_request(",
+                "FileBrokerOp::RecordingGzip",
+            ),
+        ] {
+            let arm_start = dispatcher.find(arm).unwrap_or_else(|| panic!("{arm}"));
+            let body = &dispatcher[arm_start..];
+            let call = body.find(handler).unwrap_or_else(|| panic!("{handler}"));
+            let before_call = &body[..call];
+            let check = before_call
+                .find(op)
+                .unwrap_or_else(|| panic!("{handler} is not preceded by {op} in its arm"));
+            assert!(
+                before_call[check..].contains("file_broker::caller_may(service_key, op)"),
+                "{handler}: the arm must call caller_may before the handler"
+            );
+        }
+        assert!(
+            prod.contains("&config.server.tls,"),
+            "the main loop must pass the TLS configuration to the dispatcher"
+        );
+    }
+
     /// A broker request read while the heartbeat drains toward a Pong is
     /// handed to the same dispatcher as a message read on the poll loop.
     #[test]
@@ -5485,6 +5933,7 @@ mod tests {
             &crate::config::MailerConfig::default(),
             &crate::config::LdapConfig::default(),
             &crate::config::KerberosConfig::default(),
+            &crate::config::TlsCertPaths::default(),
             &IacsTunnelGuards::from_config(&crate::config::IacsTunnelSupervisorConfig::default()),
             &McpConnectGuards::from_config(&crate::config::McpConfig::default(), 443),
             deferred,

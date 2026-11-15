@@ -1213,6 +1213,54 @@ pub struct TlsCertPaths {
     pub cert_path: String,
     #[serde(default = "default_key_path")]
     pub key_path: String,
+    /// `[server.tls.acme]`, read by the supervisor itself. It is the only
+    /// source of what an ACME renewal writes and where: the paths, the
+    /// directory, the domains. A renewal request from `vauban-web` only
+    /// triggers the workflow (see `acme::authorize_renewal`).
+    #[serde(default)]
+    pub acme: AcmeSettings,
+}
+
+/// The supervisor's view of `[server.tls.acme]`.
+///
+/// `vauban-web` reads the same table to decide when to renew. Keys that
+/// only matter there (`renew_before_hours`) are ignored here.
+#[derive(Debug, Default, Deserialize)]
+pub struct AcmeSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub email: String,
+    #[serde(default)]
+    pub domains: Vec<String>,
+    /// Where the ACME account credentials are persisted.
+    #[serde(default)]
+    pub account_key_path: String,
+    #[serde(default)]
+    pub staging: bool,
+    #[serde(default)]
+    pub directory_url: String,
+    /// Used when `staging` is set and this is not empty.
+    #[serde(default)]
+    pub staging_directory_url: String,
+    /// External Account Binding key id (ZeroSSL and others).
+    #[serde(default)]
+    pub eab_kid: Option<String>,
+    #[serde(default)]
+    pub eab_hmac_key: Option<shared::messages::SensitiveString>,
+}
+
+impl AcmeSettings {
+    /// The directory a renewal talks to: the staging one when `staging` is
+    /// set and configured, the production one otherwise. `None` when no
+    /// directory is configured. Same rule as `vauban-web`'s
+    /// `AcmeConfig::resolve_directory_url`.
+    pub fn resolved_directory_url(&self) -> Option<&str> {
+        if self.staging && !self.staging_directory_url.is_empty() {
+            return Some(&self.staging_directory_url);
+        }
+        (!self.directory_url.is_empty()).then_some(self.directory_url.as_str())
+    }
 }
 
 fn default_host() -> String {
@@ -1246,6 +1294,7 @@ impl Default for TlsCertPaths {
         Self {
             cert_path: default_cert_path(),
             key_path: default_key_path(),
+            acme: AcmeSettings::default(),
         }
     }
 }
