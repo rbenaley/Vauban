@@ -145,6 +145,29 @@ impl PinTrustAnchorForm {
     }
 }
 
+/// Text placed into an HTML fragment by string substitution.
+///
+/// The pin fragments are plain files with `__PLACEHOLDER__` markers, not
+/// Askama templates, so nothing escapes for them. Every value put into
+/// one goes through this function. A fingerprint comes from a proxy
+/// (and, once stored, from the database): it is not markup, whatever it
+/// contains.
+pub(crate) fn html_text(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#x27;"),
+            '`' => out.push_str("&#x60;"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// Check the double-submit CSRF token of a pin request.
 pub(crate) fn pin_request_csrf_is_valid(
     state: &AppState,

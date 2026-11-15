@@ -1022,8 +1022,8 @@ pub async fn fetch_ssh_host_key(
 
         // Return the mismatch warning fragment (no DB update yet)
         let html = include_str!("../../../templates/assets/_ssh_host_key_mismatch_fragment.html")
-            .replace("__OLD_FINGERPRINT__", old_fp)
-            .replace("__NEW_FINGERPRINT__", &fingerprint)
+            .replace("__OLD_FINGERPRINT__", &html_text(old_fp))
+            .replace("__NEW_FINGERPRINT__", &html_text(&fingerprint))
             .replace("__ASSET_UUID__", &asset_uuid.to_string());
 
         return axum::response::Html(html).into_response();
@@ -1073,7 +1073,7 @@ pub async fn fetch_ssh_host_key(
 
     // Return HTMX fragment with the fingerprint
     let html = include_str!("../../../templates/assets/_ssh_host_key_fragment.html")
-        .replace("__FINGERPRINT__", &fingerprint)
+        .replace("__FINGERPRINT__", &html_text(&fingerprint))
         .replace("__ASSET_UUID__", &asset_uuid.to_string());
 
     axum::response::Html(html).into_response()
@@ -1549,7 +1549,7 @@ pub async fn verify_ssh_host_key(
         let fp = stored_fingerprint.as_deref().unwrap_or("unknown");
         let html =
             include_str!("../../../templates/assets/_ssh_host_key_stored_mismatch_fragment.html")
-                .replace("__FINGERPRINT__", fp)
+                .replace("__FINGERPRINT__", &html_text(fp))
                 .replace("__ASSET_UUID__", &uuid_str);
         return axum::response::Html(html).into_response();
     }
@@ -1571,7 +1571,7 @@ pub async fn verify_ssh_host_key(
             let fp = stored_fingerprint.as_deref().unwrap_or("unknown");
             let html =
                 include_str!("../../../templates/assets/_ssh_host_key_unverified_fragment.html")
-                    .replace("__FINGERPRINT__", fp)
+                    .replace("__FINGERPRINT__", &html_text(fp))
                     .replace("__ASSET_UUID__", &uuid_str);
             return axum::response::Html(html).into_response();
         }
@@ -1601,7 +1601,7 @@ pub async fn verify_ssh_host_key(
             if old_key == remote_key {
                 // Keys match - return verified fragment
                 let html = include_str!("../../../templates/assets/_ssh_host_key_fragment.html")
-                    .replace("__FINGERPRINT__", &remote_fingerprint)
+                    .replace("__FINGERPRINT__", &html_text(&remote_fingerprint))
                     .replace("__ASSET_UUID__", &uuid_str);
                 axum::response::Html(html).into_response()
             } else {
@@ -1632,8 +1632,8 @@ pub async fn verify_ssh_host_key(
                 // Return mismatch fragment with both fingerprints
                 let html =
                     include_str!("../../../templates/assets/_ssh_host_key_mismatch_fragment.html")
-                        .replace("__OLD_FINGERPRINT__", old_fp)
-                        .replace("__NEW_FINGERPRINT__", &remote_fingerprint)
+                        .replace("__OLD_FINGERPRINT__", &html_text(old_fp))
+                        .replace("__NEW_FINGERPRINT__", &html_text(&remote_fingerprint))
                         .replace("__ASSET_UUID__", &uuid_str);
                 axum::response::Html(html).into_response()
             }
@@ -1655,7 +1655,7 @@ pub async fn verify_ssh_host_key(
             let fp = stored_fingerprint.as_deref().unwrap_or("unknown");
             let html =
                 include_str!("../../../templates/assets/_ssh_host_key_unverified_fragment.html")
-                    .replace("__FINGERPRINT__", fp)
+                    .replace("__FINGERPRINT__", &html_text(fp))
                     .replace("__ASSET_UUID__", &uuid_str);
             axum::response::Html(html).into_response()
         }

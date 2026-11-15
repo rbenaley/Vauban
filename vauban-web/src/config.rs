@@ -644,6 +644,13 @@ pub struct SecurityConfig {
     /// proxy headers are **never** trusted and the TCP peer address is always used.
     #[serde(default)]
     pub trusted_proxies: Vec<String>,
+    /// Which header the trusted proxies write the client address to:
+    /// `"x-forwarded-for"` (default) or `"x-real-ip"`. Only that header is
+    /// read. A proxy that sets `X-Real-IP` and passes the client's own
+    /// `X-Forwarded-For` through must be declared as `"x-real-ip"`, or
+    /// the client's header would be believed.
+    #[serde(default = "default_client_ip_header")]
+    pub client_ip_header: String,
     /// Require users to provide a justification before connecting to an asset.
     #[serde(default = "default_require_justification")]
     pub require_justification: bool,
@@ -705,7 +712,19 @@ impl SecurityConfig {
     /// the service instead of silently widening/narrowing the policy.
     pub fn validate(&self) -> Result<(), String> {
         shared::client_acl::ClientAcl::parse(&self.allowed_client_networks)?;
+        self.parsed_client_ip_header()?;
         Ok(())
+    }
+
+    /// The header the client address is read from. An unknown value is an
+    /// error: a typo must not silently select the other header.
+    pub fn parsed_client_ip_header(&self) -> Result<crate::middleware::ClientIpHeader, String> {
+        crate::middleware::ClientIpHeader::parse(&self.client_ip_header).ok_or_else(|| {
+            format!(
+                "[security] client_ip_header = {:?} is not one of \"x-forwarded-for\", \"x-real-ip\"",
+                self.client_ip_header
+            )
+        })
     }
 
     /// Parse `allowed_client_networks` into the shared matcher.
@@ -873,6 +892,10 @@ pub struct RecordingConfig {
     /// daily retention cron runs. Default 5 (one hour after hydrator).
     #[serde(default = "default_retention_daily_cron_hour")]
     pub retention_daily_cron_hour: u8,
+}
+
+fn default_client_ip_header() -> String {
+    "x-forwarded-for".to_string()
 }
 
 fn default_require_justification() -> bool {
@@ -2427,6 +2450,36 @@ mod tests {
         let config = unwrap_ok!(Config::from_toml_with_overlay(base, overlay));
 
         assert_eq!(config.environment, Environment::Testing);
+    }
+
+    #[test]
+    fn test_client_ip_header_defaults_to_x_forwarded_for_and_rejects_a_typo() {
+        let base = test_fixtures::base_config();
+        let overlay = test_fixtures::testing_config();
+        let mut config = unwrap_ok!(Config::from_toml_with_overlay(base, overlay));
+
+        assert_eq!(config.security.client_ip_header, "x-forwarded-for");
+        assert_eq!(
+            config.security.parsed_client_ip_header(),
+            Ok(crate::middleware::ClientIpHeader::XForwardedFor)
+        );
+
+        config.security.client_ip_header = "x-real-ip".to_string();
+        assert_eq!(
+            config.security.parsed_client_ip_header(),
+            Ok(crate::middleware::ClientIpHeader::XRealIp)
+        );
+        assert!(config.security.validate().is_ok());
+
+        // A typo must stop the service, not select a header silently.
+        for bad in ["X-Real-IP", "x-forwarded-for,x-real-ip", "", "real-ip"] {
+            config.security.client_ip_header = bad.to_string();
+            let err = config
+                .security
+                .validate()
+                .expect_err("an unknown header name must be rejected");
+            assert!(err.contains("client_ip_header"), "{err}");
+        }
     }
 
     #[test]

@@ -39,6 +39,7 @@ pub mod mcp_rule_prune;
 pub mod mcp_session;
 pub mod mcp_tool_drift;
 pub mod pending_mfa;
+pub mod pin_shape;
 pub mod policy_recheck;
 pub mod rate_limit;
 pub mod rbac;

@@ -775,6 +775,13 @@ async fn async_main() -> Result<bool, Box<dyn std::error::Error>> {
     if client_acl.is_enabled() {
         tracing::info!(networks = client_acl.len(), "client IP ACL enabled");
     }
+    // 5b. The one proxy header the client address is read from.
+    vauban_web::middleware::set_client_ip_header(
+        config
+            .security
+            .parsed_client_ip_header()
+            .map_err(vauban_web::error::AppError::Config)?,
+    );
 
     // 6. Create other services (no file access needed)
     let broadcast = BroadcastService::new();

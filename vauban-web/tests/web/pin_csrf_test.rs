@@ -312,6 +312,15 @@ fn test_pin_fragments_send_the_token_in_the_body() {
 /// body mentions the CSRF check; the exceptions are listed with the reason.
 #[test]
 fn test_every_web_mutation_route_checks_csrf() {
+    // The calls that validate the double-submit token.
+    // `validate_csrf` and `csrf_ok` are the per-module wrappers around
+    // `validate_double_submit`.
+    const CSRF_VALIDATORS: [&str; 4] = [
+        "validate_double_submit(",
+        "pin_request_csrf_is_valid(",
+        "validate_csrf(",
+        "csrf_ok(",
+    ];
     // Handlers that delegate the check to a helper they call.
     const DELEGATED: [(&str, &str); 2] = [
         ("mcp_hitl_approve_web", "decide_web("),
@@ -366,12 +375,11 @@ fn test_every_web_mutation_route_checks_csrf() {
             let delegated = DELEGATED
                 .iter()
                 .any(|(h, call)| *h == name && body.contains(call));
+            // A call to a validator, not a mention of the word: a comment
+            // or a rendered field would not count.
             assert!(
-                delegated
-                    || body.contains("validate_double_submit")
-                    || body.contains("pin_request_csrf_is_valid")
-                    || body.to_ascii_lowercase().contains("csrf"),
-                "web mutation route `{name}` does not check the CSRF token"
+                delegated || CSRF_VALIDATORS.iter().any(|call| body.contains(call)),
+                "web mutation route `{name}` does not call a CSRF validator"
             );
             checked += 1;
         }

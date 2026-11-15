@@ -79,9 +79,56 @@ pub fn unauthenticated_response_for(request: &Request) -> Response {
     }
 }
 
-/// Resolve the real client IP address.
+/// The header a trusted proxy writes the client address to.
 ///
-/// Proxy headers are read only when the TCP peer is one of
+/// Exactly one is read. Reading both, with one as a fallback for the
+/// other, lets a client pick the header the proxy does not set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClientIpHeader {
+    /// `X-Forwarded-For`: each proxy appends the address it saw.
+    #[default]
+    XForwardedFor,
+    /// `X-Real-IP`: the proxy replaces the header with the address it saw.
+    XRealIp,
+}
+
+impl ClientIpHeader {
+    /// Read the `[security] client_ip_header` value. `None` for anything
+    /// that is not one of the two names.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "x-forwarded-for" => Some(Self::XForwardedFor),
+            "x-real-ip" => Some(Self::XRealIp),
+            _ => None,
+        }
+    }
+}
+
+/// The header selected by `[security] client_ip_header`, set once at boot
+/// by [`set_client_ip_header`]. Unset (unit tests, a handler built without
+/// the boot sequence) means the default, `X-Forwarded-For`.
+static CLIENT_IP_HEADER: std::sync::OnceLock<ClientIpHeader> = std::sync::OnceLock::new();
+
+/// Record the configured header. Called once at boot; a second call
+/// leaves the first value in place.
+pub fn set_client_ip_header(header: ClientIpHeader) {
+    let _ = CLIENT_IP_HEADER.set(header);
+}
+
+/// Resolve the real client IP address, reading the header selected by
+/// `[security] client_ip_header`. See [`resolve_client_ip_from`].
+pub fn resolve_client_ip(
+    headers: &HeaderMap,
+    connect_ip: IpAddr,
+    trusted_proxies: &[IpAddr],
+) -> IpAddr {
+    let header = CLIENT_IP_HEADER.get().copied().unwrap_or_default();
+    resolve_client_ip_from(header, headers, connect_ip, trusted_proxies)
+}
+
+/// Resolve the real client IP address from one proxy header.
+///
+/// The header is read only when the TCP peer is one of
 /// `trusted_proxies`. Otherwise the peer address is the answer: a client
 /// that connects directly cannot choose its address with a header.
 ///
@@ -103,46 +150,59 @@ pub fn unauthenticated_response_for(request: &Request) -> Response {
 /// an optional port) ends the walk and the peer address is returned:
 /// what lies to the left of a hop we cannot read is not evidence.
 ///
-/// `X-Real-IP` is read only when no `X-Forwarded-For` header is present.
-pub fn resolve_client_ip(
+/// `X-Real-IP` holds one address, written by the proxy. It is read only
+/// in [`ClientIpHeader::XRealIp`] mode, and then `X-Forwarded-For` is
+/// ignored: a proxy that sets `X-Real-IP` usually forwards the client's
+/// own `X-Forwarded-For` untouched.
+///
+/// Addresses are compared in canonical form, so an IPv4 peer seen as
+/// `::ffff:a.b.c.d` on a dual-stack socket matches `a.b.c.d` in the list.
+pub fn resolve_client_ip_from(
+    header: ClientIpHeader,
     headers: &HeaderMap,
     connect_ip: IpAddr,
     trusted_proxies: &[IpAddr],
 ) -> IpAddr {
-    if trusted_proxies.is_empty() || !trusted_proxies.contains(&connect_ip) {
+    let connect_ip = connect_ip.to_canonical();
+    let is_trusted = |ip: &IpAddr| trusted_proxies.iter().any(|t| t.to_canonical() == *ip);
+    if !is_trusted(&connect_ip) {
         return connect_ip;
     }
 
-    let mut forwarded = headers.get_all("X-Forwarded-For").iter().peekable();
-    if forwarded.peek().is_some() {
-        // Several header lines are one list, in order (RFC 9110, 5.3).
-        let mut hops: Vec<&str> = Vec::new();
-        for value in forwarded {
-            let Ok(text) = value.to_str() else {
-                return connect_ip;
-            };
-            hops.extend(text.split(','));
+    match header {
+        ClientIpHeader::XForwardedFor => {
+            // Several header lines are one list, in order (RFC 9110, 5.3).
+            let mut hops: Vec<&str> = Vec::new();
+            for value in headers.get_all("X-Forwarded-For") {
+                let Ok(text) = value.to_str() else {
+                    return connect_ip;
+                };
+                hops.extend(text.split(','));
+            }
+            for hop in hops.into_iter().rev() {
+                let Some(ip) = parse_forwarded_hop(hop) else {
+                    return connect_ip;
+                };
+                if !is_trusted(&ip) {
+                    return ip;
+                }
+            }
+            // No header, or every hop is one of our proxies.
+            connect_ip
         }
-        for hop in hops.into_iter().rev() {
-            let Some(ip) = parse_forwarded_hop(hop) else {
-                return connect_ip;
-            };
-            if !trusted_proxies.contains(&ip) {
-                return ip;
+        ClientIpHeader::XRealIp => {
+            // Exactly one line with one address, or the peer.
+            let mut lines = headers.get_all("X-Real-IP").iter();
+            match (lines.next(), lines.next()) {
+                (Some(value), None) => value
+                    .to_str()
+                    .ok()
+                    .and_then(parse_forwarded_hop)
+                    .unwrap_or(connect_ip),
+                _ => connect_ip,
             }
         }
-        // Every hop is one of our proxies: the request started there.
-        return connect_ip;
     }
-
-    if let Some(real_ip) = headers.get("X-Real-IP")
-        && let Ok(text) = real_ip.to_str()
-        && let Some(ip) = parse_forwarded_hop(text)
-    {
-        return ip;
-    }
-
-    connect_ip
 }
 
 /// One `X-Forwarded-For` entry: an address, optionally with a port
@@ -150,16 +210,18 @@ pub fn resolve_client_ip(
 /// `[2001:db8::1]:4711`). Anything else is `None`.
 fn parse_forwarded_hop(hop: &str) -> Option<IpAddr> {
     let hop = hop.trim();
-    if let Ok(ip) = hop.parse::<IpAddr>() {
-        return Some(ip);
-    }
-    if let Ok(addr) = hop.parse::<std::net::SocketAddr>() {
-        return Some(addr.ip());
-    }
-    hop.strip_prefix('[')
-        .and_then(|rest| rest.strip_suffix(']'))
-        .and_then(|inner| inner.parse::<std::net::Ipv6Addr>().ok())
-        .map(IpAddr::V6)
+    let ip = if let Ok(ip) = hop.parse::<IpAddr>() {
+        ip
+    } else if let Ok(addr) = hop.parse::<std::net::SocketAddr>() {
+        addr.ip()
+    } else {
+        IpAddr::V6(
+            hop.strip_prefix('[')
+                .and_then(|rest| rest.strip_suffix(']'))
+                .and_then(|inner| inner.parse::<std::net::Ipv6Addr>().ok())?,
+        )
+    };
+    Some(ip.to_canonical())
 }
 
 #[cfg(test)]
@@ -210,8 +272,114 @@ mod tests {
         let connect_ip: IpAddr = "127.0.0.1".parse().unwrap();
         let trusted: Vec<IpAddr> = vec!["127.0.0.1".parse().unwrap()];
 
-        let result = resolve_client_ip(&headers, connect_ip, &trusted);
+        let result =
+            resolve_client_ip_from(ClientIpHeader::XRealIp, &headers, connect_ip, &trusted);
         assert_eq!(result.to_string(), "8.8.8.8");
+
+        // Not read in the default mode.
+        let result = resolve_client_ip(&headers, connect_ip, &trusted);
+        assert_eq!(result.to_string(), "127.0.0.1");
+    }
+
+    /// The deployment the review found: the proxy sets only X-Real-IP and
+    /// forwards the client's own X-Forwarded-For untouched.
+    #[test]
+    fn attack_client_xff_is_ignored_when_the_proxy_writes_x_real_ip() {
+        let trusted = [ip("127.0.0.1")];
+        let mut headers = xff(&["6.6.6.6"]);
+        headers.insert("X-Real-IP", "198.51.100.7".parse().unwrap());
+        assert_eq!(
+            resolve_client_ip_from(ClientIpHeader::XRealIp, &headers, ip("127.0.0.1"), &trusted),
+            ip("198.51.100.7"),
+            "in x-real-ip mode the client's X-Forwarded-For is not read"
+        );
+        // And the reverse: in the default mode a client's X-Real-IP is
+        // not read.
+        let mut headers = xff(&["198.51.100.7"]);
+        headers.insert("X-Real-IP", "6.6.6.6".parse().unwrap());
+        assert_eq!(
+            resolve_client_ip_from(
+                ClientIpHeader::XForwardedFor,
+                &headers,
+                ip("127.0.0.1"),
+                &trusted
+            ),
+            ip("198.51.100.7")
+        );
+    }
+
+    #[test]
+    fn attack_x_real_ip_from_an_untrusted_peer_or_repeated_is_ignored() {
+        let trusted = [ip("127.0.0.1")];
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Real-IP", "6.6.6.6".parse().unwrap());
+        assert_eq!(
+            resolve_client_ip_from(
+                ClientIpHeader::XRealIp,
+                &headers,
+                ip("198.51.100.7"),
+                &trusted
+            ),
+            ip("198.51.100.7")
+        );
+        // Two lines: which one the proxy wrote is unknown.
+        headers.append("X-Real-IP", "198.51.100.9".parse().unwrap());
+        assert_eq!(
+            resolve_client_ip_from(ClientIpHeader::XRealIp, &headers, ip("127.0.0.1"), &trusted),
+            ip("127.0.0.1")
+        );
+        // Not an address.
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Real-IP", "6.6.6.6, 7.7.7.7".parse().unwrap());
+        assert_eq!(
+            resolve_client_ip_from(ClientIpHeader::XRealIp, &headers, ip("127.0.0.1"), &trusted),
+            ip("127.0.0.1")
+        );
+    }
+
+    #[test]
+    fn test_ipv4_mapped_addresses_match_their_ipv4_form() {
+        let trusted = [ip("127.0.0.1"), ip("10.0.0.2")];
+        // The peer as a dual-stack socket reports it.
+        let headers = xff(&["198.51.100.7"]);
+        assert_eq!(
+            resolve_client_ip(&headers, ip("::ffff:127.0.0.1"), &trusted),
+            ip("198.51.100.7"),
+            "a mapped peer is the trusted proxy"
+        );
+        // A trusted hop written in mapped form is skipped.
+        let headers = xff(&["198.51.100.7, ::ffff:10.0.0.2"]);
+        assert_eq!(
+            resolve_client_ip(&headers, ip("127.0.0.1"), &trusted),
+            ip("198.51.100.7")
+        );
+        // The answer is canonical, so the ACL and the audit trail see IPv4.
+        let headers = xff(&["::ffff:198.51.100.7"]);
+        assert_eq!(
+            resolve_client_ip(&headers, ip("127.0.0.1"), &trusted),
+            ip("198.51.100.7")
+        );
+        // A mapped untrusted peer is returned canonical too.
+        assert_eq!(
+            resolve_client_ip(&HeaderMap::new(), ip("::ffff:198.51.100.7"), &trusted),
+            ip("198.51.100.7")
+        );
+    }
+
+    #[test]
+    fn test_client_ip_header_names_are_exact() {
+        assert_eq!(
+            ClientIpHeader::parse("x-forwarded-for"),
+            Some(ClientIpHeader::XForwardedFor)
+        );
+        assert_eq!(
+            ClientIpHeader::parse("x-real-ip"),
+            Some(ClientIpHeader::XRealIp)
+        );
+        for bad in ["", "X-Forwarded-For", "x-real-ip ", "forwarded", "both"] {
+            assert_eq!(ClientIpHeader::parse(bad), None, "{bad:?}");
+        }
+        assert_eq!(ClientIpHeader::default(), ClientIpHeader::XForwardedFor);
     }
 
     #[test]

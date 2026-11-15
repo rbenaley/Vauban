@@ -2305,6 +2305,7 @@ fn test_security_config_parsed_trusted_proxies() {
     use vauban_web::config::SecurityConfig;
 
     let config = SecurityConfig {
+        client_ip_header: "x-forwarded-for".to_string(),
         password_min_length: 12,
         max_failed_login_attempts: 5,
         session_max_duration_secs: 28800,
@@ -2349,6 +2350,7 @@ fn test_security_config_empty_trusted_proxies() {
     use vauban_web::config::SecurityConfig;
 
     let config = SecurityConfig {
+        client_ip_header: "x-forwarded-for".to_string(),
         password_min_length: 12,
         max_failed_login_attempts: 5,
         session_max_duration_secs: 28800,
@@ -2380,6 +2382,7 @@ fn test_security_config_validate_rejects_invalid_client_acl_cidr() {
     use vauban_web::config::SecurityConfig;
 
     let mut config = SecurityConfig {
+        client_ip_header: "x-forwarded-for".to_string(),
         password_min_length: 12,
         max_failed_login_attempts: 5,
         session_max_duration_secs: 28800,
@@ -4450,7 +4453,7 @@ async fn test_mismatch_fragment_has_security_warnings() {
         "mismatch fragment must show the new fingerprint"
     );
     assert!(
-        fragment.contains("confirm=true"),
+        fragment.contains("confirm: 'true'") && !fragment.contains("?confirm=true"),
         "mismatch fragment must have a button to accept the new key"
     );
     assert!(

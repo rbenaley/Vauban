@@ -164,6 +164,9 @@ max_concurrent_sessions_per_asset = 20
 # entry, walking leftward, that is not listed here. With several proxies
 # in a row, list every one of them.
 trusted_proxies = []
+# The header the trusted proxies write the client address to. Only that
+# header is read: "x-forwarded-for" (default) or "x-real-ip".
+client_ip_header = "x-forwarded-for"
 # Global client IP ACL (CIDR allowlist). Empty list = disabled (allow all).
 # See config/vauban.conf for the full documentation. Loopback is always
 # permitted (anti-lockout) and ACME renewal is exempt by construction.

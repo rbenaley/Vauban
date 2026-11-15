@@ -9,10 +9,19 @@
 //!
 //! Without it, any service able to reach the supervisor could read a
 //! session recording, open an audit-log segment or unlink a capture, as
-//! long as the path was well formed. A compromised proxy must not gain the
-//! file rights of the audit service, nor the web service those of a proxy.
+//! long as the path was well formed. With it, a proxy cannot open an
+//! audit-log segment or unlink a capture, and the web service cannot
+//! obtain a write lease.
 //!
 //! Default deny: a service or an operation that is not listed is refused.
+//!
+//! What this table does NOT do: it decides by service, not by session. A
+//! service allowed to write recordings may ask for the file of any
+//! session whose path is well formed, and the write lease opens the file
+//! read-write and truncates it. A compromised proxy can therefore still
+//! truncate, and then read what is appended to, the recording of a
+//! session it does not serve. Closing that needs the supervisor to know
+//! which service owns which session; it is tracked as an open finding.
 
 /// A file operation a service can request from the supervisor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -880,8 +880,8 @@ pub async fn fetch_rdp_server_cert(
 
         let html =
             include_str!("../../../templates/assets/_rdp_server_cert_mismatch_fragment.html")
-                .replace("__OLD_FINGERPRINT__", old_fp)
-                .replace("__NEW_FINGERPRINT__", &fingerprint)
+                .replace("__OLD_FINGERPRINT__", &html_text(old_fp))
+                .replace("__NEW_FINGERPRINT__", &html_text(&fingerprint))
                 .replace("__ASSET_UUID__", &asset_uuid.to_string());
 
         return axum::response::Html(html).into_response();
@@ -923,7 +923,7 @@ pub async fn fetch_rdp_server_cert(
     );
 
     let html = include_str!("../../../templates/assets/_rdp_server_cert_fragment.html")
-        .replace("__FINGERPRINT__", &fingerprint)
+        .replace("__FINGERPRINT__", &html_text(&fingerprint))
         .replace("__ASSET_UUID__", &asset_uuid.to_string());
 
     axum::response::Html(html).into_response()
@@ -1019,7 +1019,7 @@ pub async fn verify_rdp_server_cert(
         let html = include_str!(
             "../../../templates/assets/_rdp_server_cert_stored_mismatch_fragment.html"
         )
-        .replace("__FINGERPRINT__", fp)
+        .replace("__FINGERPRINT__", &html_text(fp))
         .replace("__ASSET_UUID__", &uuid_str);
         return axum::response::Html(html).into_response();
     }
@@ -1038,7 +1038,7 @@ pub async fn verify_rdp_server_cert(
             let fp = stored_fingerprint.as_deref().unwrap_or("unknown");
             let html =
                 include_str!("../../../templates/assets/_rdp_server_cert_unverified_fragment.html")
-                    .replace("__FINGERPRINT__", fp)
+                    .replace("__FINGERPRINT__", &html_text(fp))
                     .replace("__ASSET_UUID__", &uuid_str);
             return axum::response::Html(html).into_response();
         }
@@ -1069,7 +1069,7 @@ pub async fn verify_rdp_server_cert(
                 // Certs match - return verified (green) fragment. This is the
                 // ONLY place the green fragment is produced (no silent green).
                 let html = include_str!("../../../templates/assets/_rdp_server_cert_fragment.html")
-                    .replace("__FINGERPRINT__", &remote_fingerprint)
+                    .replace("__FINGERPRINT__", &html_text(&remote_fingerprint))
                     .replace("__ASSET_UUID__", &uuid_str);
                 axum::response::Html(html).into_response()
             } else {
@@ -1100,8 +1100,8 @@ pub async fn verify_rdp_server_cert(
                 let html = include_str!(
                     "../../../templates/assets/_rdp_server_cert_mismatch_fragment.html"
                 )
-                .replace("__OLD_FINGERPRINT__", old_fp)
-                .replace("__NEW_FINGERPRINT__", &remote_fingerprint)
+                .replace("__OLD_FINGERPRINT__", &html_text(old_fp))
+                .replace("__NEW_FINGERPRINT__", &html_text(&remote_fingerprint))
                 .replace("__ASSET_UUID__", &uuid_str);
                 axum::response::Html(html).into_response()
             }
@@ -1119,7 +1119,7 @@ pub async fn verify_rdp_server_cert(
             let fp = stored_fingerprint.as_deref().unwrap_or("unknown");
             let html =
                 include_str!("../../../templates/assets/_rdp_server_cert_unverified_fragment.html")
-                    .replace("__FINGERPRINT__", fp)
+                    .replace("__FINGERPRINT__", &html_text(fp))
                     .replace("__ASSET_UUID__", &uuid_str);
             axum::response::Html(html).into_response()
         }

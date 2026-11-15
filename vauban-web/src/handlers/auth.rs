@@ -2319,7 +2319,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_client_ip_from_x_real_ip() {
+    fn test_extract_client_ip_ignores_x_real_ip_in_the_default_mode() {
         let mut headers = HeaderMap::new();
         headers.insert("X-Real-IP", unwrap_ok!("1.2.3.4".parse()));
 
@@ -2327,7 +2327,9 @@ mod tests {
         let trusted = vec![unwrap_ok!("192.168.1.1".parse())];
         let ip = extract_client_ip(&headers, fallback_addr, &trusted);
 
-        assert_eq!(ip.ip().to_string(), "1.2.3.4");
+        // Only the configured header is read; the default is
+        // X-Forwarded-For (see `ClientIpHeader`).
+        assert_eq!(ip.ip().to_string(), "192.168.1.1");
     }
 
     #[test]

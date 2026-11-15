@@ -455,7 +455,20 @@ impl ProxySshClient {
             )
             .await
         {
-            Ok((true, Some(key), Some(fp), _)) => Ok((key, fp)),
+            // The proxy's answer is stored on the asset and shown to the
+            // administrator: refuse anything not shaped like a public key
+            // and a fingerprint before it gets there.
+            Ok((true, Some(key), Some(fp), _)) => {
+                if crate::services::pin_shape::is_openssh_public_key(&key)
+                    && crate::services::pin_shape::is_fingerprint(&fp)
+                {
+                    Ok((key, fp))
+                } else {
+                    Err(AppError::Ipc(
+                        "Host key fetch returned a malformed key".to_string(),
+                    ))
+                }
+            }
             Ok((false, _, _, Some(err))) => {
                 Err(AppError::Ipc(format!("Host key fetch failed: {}", err)))
             }

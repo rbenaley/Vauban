@@ -445,7 +445,20 @@ impl ProxyRdpClient {
             )
             .await
         {
-            Ok((true, Some(spki), Some(fp), _)) => Ok((spki, fp)),
+            // The proxy's answer is stored on the asset and shown to the
+            // administrator: refuse anything not shaped like an SPKI and a
+            // fingerprint before it gets there.
+            Ok((true, Some(spki), Some(fp), _)) => {
+                if crate::services::pin_shape::is_base64(&spki)
+                    && crate::services::pin_shape::is_fingerprint(&fp)
+                {
+                    Ok((spki, fp))
+                } else {
+                    Err(AppError::Ipc(
+                        "RDP cert fetch returned a malformed certificate".to_string(),
+                    ))
+                }
+            }
             Ok((false, _, _, Some(err))) => {
                 Err(AppError::Ipc(format!("RDP cert fetch failed: {}", err)))
             }

@@ -2865,6 +2865,30 @@ fn handle_tcp_connect_request(
         }
     };
 
+    // === Step 1: the token-less targets have exactly one legitimate caller.
+    //
+    // The SMTP relay and the directory are reached without a session
+    // token, on the strength of a host whitelist alone. That whitelist
+    // says where the socket may go, not who may ask for it: without this
+    // check any service could make the supervisor connect there and hand
+    // the descriptor to `mailer` or `auth`.
+    if !token_less_target_caller_ok(target_service, requesting_service_key) {
+        warn!(
+            session_id = %session_id,
+            service = requesting_service_key,
+            target = ?target_service,
+            "TcpConnectRequest refused: caller not allowed for this target"
+        );
+        let response = Message::TcpConnectResponse {
+            request_id,
+            session_id,
+            success: false,
+            error: Some("Access denied".to_string()),
+        };
+        let _ = requesting_channel.send(&response);
+        return;
+    }
+
     if matches!(target_service, Service::Mailer) {
         // === Step 1a: Mailer SSRF whitelist (Issue #10).
         //
@@ -3981,6 +4005,20 @@ fn process_service_messages(
         Err(e) => {
             debug!("Poll error in process_service_messages: {}", e);
         }
+    }
+}
+
+/// Whether `requesting_service_key` may ask for a TCP connection to a
+/// target that is reached without a session token.
+///
+/// Only the mailer asks for the SMTP relay and only the auth service for
+/// the directory. Every other target is gated by a session token, checked
+/// later, and is not this function's business.
+fn token_less_target_caller_ok(target_service: Service, requesting_service_key: &str) -> bool {
+    match target_service {
+        Service::Mailer => requesting_service_key == "mailer",
+        Service::Auth => requesting_service_key == "auth",
+        _ => true,
     }
 }
 
@@ -5739,6 +5777,86 @@ mod tests {
             }
             assert!(file.exists(), "{service} must not have removed the capture");
         }
+    }
+
+    #[test]
+    fn attack_token_less_tcp_target_from_another_service_is_rejected() {
+        for intruder in [
+            "web",
+            "proxy_ssh",
+            "proxy_rdp",
+            "proxy_iacs",
+            "proxy_mcp",
+            "audit",
+            "vault",
+            "access",
+            "",
+        ] {
+            assert!(
+                !token_less_target_caller_ok(Service::Mailer, intruder),
+                "{intruder:?} must not reach the SMTP relay through the broker"
+            );
+            assert!(
+                !token_less_target_caller_ok(Service::Auth, intruder),
+                "{intruder:?} must not reach the directory through the broker"
+            );
+        }
+        assert!(!token_less_target_caller_ok(Service::Mailer, "auth"));
+        assert!(!token_less_target_caller_ok(Service::Auth, "mailer"));
+        assert!(token_less_target_caller_ok(Service::Mailer, "mailer"));
+        assert!(token_less_target_caller_ok(Service::Auth, "auth"));
+        // Token-gated targets are decided elsewhere.
+        assert!(token_less_target_caller_ok(Service::ProxySsh, "web"));
+    }
+
+    /// Through the real dispatcher: the refusal comes before the whitelist
+    /// is even consulted, and nothing is connected.
+    #[test]
+    fn attack_proxy_requesting_the_smtp_relay_is_rejected_by_the_dispatcher() {
+        let dir = tempfile::tempdir().unwrap();
+        for (service, target) in [
+            ("proxy_ssh", Service::Mailer),
+            ("web", Service::Mailer),
+            ("proxy_mcp", Service::Auth),
+            ("web", Service::Auth),
+        ] {
+            let replies = dispatch_as(
+                service,
+                Message::TcpConnectRequest {
+                    request_id: 21,
+                    session_id: "sess-tcp".to_string(),
+                    host: "127.0.0.1".to_string(),
+                    port: 25,
+                    target_service: target,
+                    session_token: Vec::new(),
+                },
+                dir.path(),
+                &crate::config::TlsCertPaths::default(),
+            );
+            match replies.as_slice() {
+                [
+                    Message::TcpConnectResponse {
+                        request_id: 21,
+                        success: false,
+                        error,
+                        ..
+                    },
+                ] => assert_eq!(error.as_deref(), Some("Access denied"), "{service}"),
+                other => panic!("{service}: expected one refusal, got {other:?}"),
+            }
+        }
+        let src = include_str!("main.rs");
+        let handler = src
+            .split("fn handle_tcp_connect_request(")
+            .nth(1)
+            .expect("handler");
+        let check = handler
+            .find("token_less_target_caller_ok(target_service, requesting_service_key)")
+            .expect("caller check");
+        let whitelist = handler
+            .find("mailer.allows(&host, port)")
+            .expect("whitelist");
+        assert!(check < whitelist, "the caller check precedes the whitelist");
     }
 
     fn acme_request(dir: &std::path::Path, directory_url: &str) -> Message {

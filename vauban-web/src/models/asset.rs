@@ -696,28 +696,64 @@ fn is_secret_key(key: &str) -> bool {
         || SECRET_KEY_FRAGMENTS.iter().any(|f| key.contains(f))
 }
 
+/// Whether `value` is vault ciphertext: a versioned envelope whose
+/// payload is one unbroken run of base64 characters. The envelope shape
+/// alone (`v<digits>:<text>`) also matches ordinary prose such as
+/// `v2: second revision`; the payload check keeps that text.
+fn is_ciphertext(value: &str) -> bool {
+    shared::vault_envelope::is_vault_envelope(value)
+        && value.split_once(':').is_some_and(|(_, payload)| {
+            payload.len() >= 16
+                && payload.bytes().all(|b| {
+                    b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'-' | b'_')
+                })
+        })
+}
+
 /// `config` without anything that is, or could be, a secret.
 ///
-/// Removed at every depth: a key named like a secret, and any string
-/// that is a vault envelope, whatever its key. The second rule does not
-/// depend on naming: ciphertext is recognized by its shape.
+/// Two rules:
+///
+/// - At the top level, a key named like a secret is removed. That is
+///   where the credentials of the target live. The name rule is not
+///   applied deeper: nested objects describe other things (the input
+///   schema of an MCP tool can have a property called `password` or
+///   `token`), and removing those would corrupt what the administrator
+///   reads back.
+/// - At every depth, a string that is vault ciphertext is removed,
+///   whatever its key. This rule does not depend on naming.
 pub fn public_connection_config(config: &serde_json::Value) -> serde_json::Value {
     use serde_json::Value;
     match config {
         Value::Object(map) => Value::Object(
             map.iter()
-                .filter(|(key, value)| {
-                    !is_secret_key(key)
-                        && !matches!(value, Value::String(s) if shared::vault_envelope::is_vault_envelope(s))
-                })
-                .map(|(key, value)| (key.clone(), public_connection_config(value)))
+                .filter(|(key, value)| !is_secret_key(key) && !is_ciphertext_value(value))
+                .map(|(key, value)| (key.clone(), without_ciphertext(value)))
+                .collect(),
+        ),
+        other => without_ciphertext(other),
+    }
+}
+
+fn is_ciphertext_value(value: &serde_json::Value) -> bool {
+    matches!(value, serde_json::Value::String(s) if is_ciphertext(s))
+}
+
+/// `value` with every ciphertext string removed, at every depth.
+fn without_ciphertext(value: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .filter(|(_, v)| !is_ciphertext_value(v))
+                .map(|(k, v)| (k.clone(), without_ciphertext(v)))
                 .collect(),
         ),
         Value::Array(items) => Value::Array(
             items
                 .iter()
-                .filter(|v| !matches!(v, Value::String(s) if shared::vault_envelope::is_vault_envelope(s)))
-                .map(public_connection_config)
+                .filter(|v| !is_ciphertext_value(v))
+                .map(without_ciphertext)
                 .collect(),
         ),
         other => other.clone(),
@@ -1719,7 +1755,7 @@ mod tests {
     }
 
     #[test]
-    fn attack_public_config_drops_keys_named_like_a_secret() {
+    fn attack_public_config_drops_top_level_keys_named_like_a_secret() {
         let config = serde_json::json!({
             "PASSWORD": "x",
             "bind_password": "x",
@@ -1727,15 +1763,51 @@ mod tests {
             "api_token": "x",
             "eab_hmac_key": "x",
             "ssh_private_key_pem": "x",
-            "nested": { "new_passphrase": "x", "kept": 1 },
             "ssh_public_key": "ssh-ed25519 AAAA",
         });
         let public = public_connection_config(&config);
         assert_eq!(
             public,
+            serde_json::json!({ "ssh_public_key": "ssh-ed25519 AAAA" })
+        );
+    }
+
+    /// Found by the adversarial review: the name rule, applied at every
+    /// depth, removed properties from the input schema of MCP tools.
+    #[test]
+    fn test_public_config_keeps_nested_keys_that_only_look_like_secrets() {
+        let config = serde_json::json!({
+            "mcp_tool_catalog": [{
+                "name": "rotate",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "password": { "type": "string" },
+                        "api_token": { "type": "string" },
+                        "secret_name": { "type": "string" },
+                    },
+                    "required": ["password"],
+                },
+            }],
+        });
+        assert_eq!(public_connection_config(&config), config);
+    }
+
+    /// Also from the review: prose that starts like an envelope is kept;
+    /// real ciphertext nested in the same place is not.
+    #[test]
+    fn test_public_config_keeps_prose_shaped_like_an_envelope() {
+        let config = serde_json::json!({
+            "note": "v2: second revision of the jump host",
+            "label": "v1:short",
+            "nested": { "description": "v3: moved to the new rack", "blob": ENVELOPE },
+        });
+        assert_eq!(
+            public_connection_config(&config),
             serde_json::json!({
-                "nested": { "kept": 1 },
-                "ssh_public_key": "ssh-ed25519 AAAA",
+                "note": "v2: second revision of the jump host",
+                "label": "v1:short",
+                "nested": { "description": "v3: moved to the new rack" },
             })
         );
     }
