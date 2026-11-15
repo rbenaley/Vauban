@@ -735,14 +735,15 @@ pub async fn rdp_page(
 /// Admin-only (gated on `assets:manage`). Performs a minimal RDP/X.224 + TLS
 /// handshake (accept-any, TOFU) to retrieve the server's SPKI. If a cert was
 /// already pinned and the new SPKI differs, returns a mismatch warning
-/// fragment (unless `?confirm=true` force-accepts the new cert). Strictly
+/// fragment (unless `confirm=true` in the request body force-accepts the new cert). Strictly
 /// mirrors `fetch_ssh_host_key`.
 pub async fn fetch_rdp_server_cert(
     State(state): State<AppState>,
     auth_user: AuthUser,
     perms: crate::auth::PermissionContext,
     axum::extract::Path(asset_uuid_str): axum::extract::Path<String>,
-    Query(params): Query<HashMap<String, String>>,
+    jar: CookieJar,
+    Form(form): Form<PinTrustAnchorForm>,
 ) -> Response {
     use uuid::Uuid;
 
@@ -750,12 +751,18 @@ pub async fn fetch_rdp_server_cert(
         return htmx_error_response("Insufficient privileges: assets:manage required");
     }
 
+    // Pinning sets a trust anchor: no token, no pin.
+    if !pin_request_csrf_is_valid(&state, &jar, &form) {
+        return htmx_error_response("Invalid CSRF token");
+    }
+
     // caller_has_assets_manage is structurally true here (just gated). We
     // forward it so the IPC layer picks the diagnostic-token verb (bypasses
     // the access-rule re-check; admins typically have no explicit rule).
     let assets_manage = perms.assets_manage;
 
-    let confirm = params.get("confirm").map(|v| v == "true").unwrap_or(false);
+    // Read from the body only: a `?confirm=true` in the URL is ignored.
+    let confirm = form.confirmed();
 
     let asset_uuid = match Uuid::parse_str(&asset_uuid_str) {
         Ok(u) => u,

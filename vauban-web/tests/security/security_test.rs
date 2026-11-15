@@ -4300,8 +4300,8 @@ async fn test_fetch_host_key_detects_key_change() {
         "fetch_ssh_host_key must return mismatch fragment when keys differ"
     );
     assert!(
-        web_source.contains(r#""confirm""#),
-        "fetch_ssh_host_key must support confirm parameter to accept new key"
+        web_source.contains("form.confirmed()"),
+        "fetch_ssh_host_key must support the confirm field to accept a new key"
     );
 }
 

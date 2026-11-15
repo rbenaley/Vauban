@@ -122,6 +122,44 @@ pub(crate) fn mcp_badge_html(count: i64) -> String {
 pub(crate) async fn broadcast_contestation_badge(state: &crate::AppState) {
     broadcast_mcp_hitl_badge(state).await;
 }
+/// Body of the two requests that pin a trust anchor on an asset: the SSH
+/// host key (`fetch-host-key`) and the RDP server certificate
+/// (`fetch-rdp-cert`).
+///
+/// Both change what the bastion will accept as the identity of a target,
+/// so both need the double-submit CSRF token like every other mutation.
+/// `confirm` replaces a pin that no longer matches. It travels in the
+/// body, next to the token: as a query parameter it could be set by a
+/// link, and a link carries no token.
+#[derive(Debug, serde::Deserialize)]
+pub struct PinTrustAnchorForm {
+    pub csrf_token: String,
+    #[serde(default)]
+    pub confirm: Option<String>,
+}
+
+impl PinTrustAnchorForm {
+    /// Whether the operator confirmed the replacement of a changed pin.
+    pub fn confirmed(&self) -> bool {
+        self.confirm.as_deref() == Some("true")
+    }
+}
+
+/// Check the double-submit CSRF token of a pin request.
+pub(crate) fn pin_request_csrf_is_valid(
+    state: &AppState,
+    jar: &CookieJar,
+    form: &PinTrustAnchorForm,
+) -> bool {
+    use secrecy::ExposeSecret;
+    let cookie = jar.get(crate::middleware::csrf::CSRF_COOKIE_NAME);
+    crate::middleware::csrf::validate_double_submit(
+        state.config.secret_key.expose_secret().as_bytes(),
+        cookie.map(|c| c.value()),
+        &form.csrf_token,
+    )
+}
+
 mod rdp;
 mod secret_access_rules;
 mod secret_groups;

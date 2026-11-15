@@ -130,6 +130,7 @@ pub mod mfa_setup_vau008_test;
 pub mod mfa_test;
 pub mod no_inline_event_handlers_test;
 pub mod pages_test;
+pub mod pin_csrf_test;
 pub mod policy_eval_session_open_battle_test;
 pub mod policy_eval_session_open_e2e_test;
 pub mod policy_eval_session_open_invariants_test;

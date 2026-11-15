@@ -25,6 +25,8 @@
       <div class="mt-3">
         <button
           hx-post="/assets/manage/__ASSET_UUID__/fetch-host-key"
+          x-data="csrf"
+          x-bind:hx-vals="JSON.stringify({csrf_token: token})"
           hx-target="#ssh-host-key-section"
           hx-swap="outerHTML"
           hx-indicator="#host-key-loading"

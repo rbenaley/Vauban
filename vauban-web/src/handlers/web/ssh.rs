@@ -881,7 +881,7 @@ pub async fn connect_ssh(
 ///
 /// Performs a minimal SSH handshake to retrieve the server's host key.
 /// If a key was already stored and the new key differs, returns a
-/// mismatch warning fragment (unless `?confirm=true` is passed to
+/// mismatch warning fragment (unless `confirm=true` is sent in the request body to
 /// force-accept the new key).
 /// Returns an HTMX fragment for dynamic update.
 pub async fn fetch_ssh_host_key(
@@ -889,12 +889,18 @@ pub async fn fetch_ssh_host_key(
     auth_user: AuthUser,
     perms: crate::auth::PermissionContext,
     axum::extract::Path(asset_uuid_str): axum::extract::Path<String>,
-    Query(params): Query<HashMap<String, String>>,
+    jar: CookieJar,
+    Form(form): Form<PinTrustAnchorForm>,
 ) -> Response {
     use uuid::Uuid;
 
     if !perms.assets_manage {
         return htmx_error_response("Insufficient privileges: assets:manage required");
+    }
+
+    // Pinning sets a trust anchor: no token, no pin.
+    if !pin_request_csrf_is_valid(&state, &jar, &form) {
+        return htmx_error_response("Invalid CSRF token");
     }
 
     // Issue #34: caller_has_assets_manage is structurally true here
@@ -904,7 +910,8 @@ pub async fn fetch_ssh_host_key(
     // verb, silently denying admins without an explicit rule.
     let assets_manage = perms.assets_manage;
 
-    let confirm = params.get("confirm").map(|v| v == "true").unwrap_or(false);
+    // Read from the body only: a `?confirm=true` in the URL is ignored.
+    let confirm = form.confirmed();
 
     // Parse UUID
     let asset_uuid = match Uuid::parse_str(&asset_uuid_str) {

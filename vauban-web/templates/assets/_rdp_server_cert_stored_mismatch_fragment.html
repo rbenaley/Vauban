@@ -25,6 +25,8 @@
       <div class="mt-3">
         <button
           hx-post="/assets/manage/__ASSET_UUID__/fetch-rdp-cert"
+          x-data="csrf"
+          x-bind:hx-vals="JSON.stringify({csrf_token: token})"
           hx-target="#rdp-server-cert-section"
           hx-swap="outerHTML"
           hx-indicator="#rdp-cert-loading"
