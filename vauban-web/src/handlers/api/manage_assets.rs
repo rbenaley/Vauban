@@ -39,7 +39,7 @@ use crate::auth::PermissionContext;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthUser;
 use crate::models::asset::{
-    Asset, AssetGroup, AssetType, CreateAssetRequest, NewAsset, NewAssetAssetGroup,
+    Asset, AssetDetail, AssetGroup, AssetType, CreateAssetRequest, NewAsset, NewAssetAssetGroup,
     UpdateAssetRequest,
 };
 use crate::schema::asset_asset_groups::dsl as aag;
@@ -56,7 +56,7 @@ pub async fn get_asset(
     _user: AuthUser,
     perms: PermissionContext,
     Path(asset_uuid_str): Path<String>,
-) -> AppResult<Json<Asset>> {
+) -> AppResult<Json<AssetDetail>> {
     if !perms.assets_manage {
         return Err(AppError::forbidden("assets:manage"));
     }
@@ -87,7 +87,7 @@ pub async fn get_asset(
         return Err(AppError::NotFound("Asset not found".to_string()));
     }
 
-    Ok(Json(asset))
+    Ok(Json(AssetDetail::from(asset)))
 }
 
 /// Create asset handler (admin zone).
@@ -96,7 +96,7 @@ pub async fn create_asset(
     user: AuthUser,
     perms: PermissionContext,
     Json(request): Json<CreateAssetRequest>,
-) -> AppResult<Json<Asset>> {
+) -> AppResult<Json<AssetDetail>> {
     if !perms.assets_manage {
         return Err(AppError::forbidden("assets:manage"));
     }
@@ -251,7 +251,7 @@ pub async fn create_asset(
         .user(user.uuid.clone()),
     );
 
-    Ok(Json(asset))
+    Ok(Json(AssetDetail::from(asset)))
 }
 
 /// Update asset handler (admin zone).
@@ -474,9 +474,9 @@ pub async fn update_asset(
             .parse()
             .expect("UUID format produces valid header value");
         response_headers.insert("HX-Redirect", redirect_value);
-        (response_headers, Json(asset)).into_response()
+        (response_headers, Json(AssetDetail::from(asset))).into_response()
     } else {
-        Json(asset).into_response()
+        Json(AssetDetail::from(asset)).into_response()
     }
 }
 

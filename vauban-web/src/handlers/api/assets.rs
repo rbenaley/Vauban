@@ -29,7 +29,7 @@ use crate::AppState;
 use crate::auth::PermissionContext;
 use crate::error::{AppError, AppResult};
 use crate::middleware::auth::AuthUser;
-use crate::models::asset::{Asset, AssetType};
+use crate::models::asset::{Asset, AssetSummary, AssetType};
 use crate::schema::asset_asset_groups::dsl as aag;
 use crate::schema::assets::dsl::*;
 
@@ -57,7 +57,7 @@ pub async fn list_assets(
     user: AuthUser,
     perms: PermissionContext,
     Query(params): Query<ListAssetsParams>,
-) -> AppResult<Json<Vec<Asset>>> {
+) -> AppResult<Json<Vec<AssetSummary>>> {
     if !perms.assets_read {
         return Err(AppError::forbidden("assets:read"));
     }
@@ -120,7 +120,10 @@ pub async fn list_assets(
         .load::<Asset>(&mut conn)
         .await?;
 
-    Ok(Json(assets_list))
+    // The user zone never returns how the bastion logs in to a target.
+    Ok(Json(
+        assets_list.into_iter().map(AssetSummary::from).collect(),
+    ))
 }
 
 #[cfg(test)]

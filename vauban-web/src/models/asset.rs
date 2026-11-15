@@ -646,7 +646,12 @@ impl AssetStatus {
 }
 
 /// Asset database model.
-#[derive(Debug, Clone, Queryable, Selectable, Identifiable, Serialize)]
+///
+/// Not `Serialize`: an `Asset` holds `connection_config`, which carries
+/// the target's credentials (as vault ciphertext). A response is built
+/// from [`AssetSummary`] or [`AssetDetail`], so what leaves the process is
+/// a decision, not a side effect of returning the row.
+#[derive(Debug, Clone, Queryable, Selectable, Identifiable)]
 #[diesel(table_name = assets)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct Asset {
@@ -666,6 +671,145 @@ pub struct Asset {
     pub is_deleted: bool,
     pub deleted_at: Option<DateTime<Utc>>,
     pub connection_username: String,
+}
+
+/// The `connection_config` keys that hold a credential of the target.
+/// They are encrypted by the vault before they are stored
+/// (`encrypt_connection_config`) and never leave in a response
+/// ([`public_connection_config`]). One list for both.
+pub const CREDENTIAL_FIELDS: [&str; 3] = ["password", "private_key", "passphrase"];
+
+/// Fragments that mark a key as a secret whatever its exact name, so a
+/// credential added later under a new key does not leak by default.
+const SECRET_KEY_FRAGMENTS: [&str; 6] = [
+    "password",
+    "passphrase",
+    "private_key",
+    "secret",
+    "token",
+    "hmac",
+];
+
+fn is_secret_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    CREDENTIAL_FIELDS.contains(&key.as_str())
+        || SECRET_KEY_FRAGMENTS.iter().any(|f| key.contains(f))
+}
+
+/// `config` without anything that is, or could be, a secret.
+///
+/// Removed at every depth: a key named like a secret, and any string
+/// that is a vault envelope, whatever its key. The second rule does not
+/// depend on naming: ciphertext is recognized by its shape.
+pub fn public_connection_config(config: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match config {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .filter(|(key, value)| {
+                    !is_secret_key(key)
+                        && !matches!(value, Value::String(s) if shared::vault_envelope::is_vault_envelope(s))
+                })
+                .map(|(key, value)| (key.clone(), public_connection_config(value)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .filter(|v| !matches!(v, Value::String(s) if shared::vault_envelope::is_vault_envelope(s)))
+                .map(public_connection_config)
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// An asset as the user zone returns it (`GET /api/v1/assets`): what a
+/// user needs to pick a target, and nothing about how the bastion logs in
+/// to it. No description, no dates, no account name, no connection
+/// details: the user-zone pages do not show them either.
+#[derive(Debug, Clone, Serialize)]
+pub struct AssetSummary {
+    pub id: i32,
+    pub uuid: Uuid,
+    pub name: String,
+    pub hostname: String,
+    pub port: i32,
+    pub asset_type: AssetType,
+    pub status: String,
+}
+
+impl From<Asset> for AssetSummary {
+    fn from(asset: Asset) -> Self {
+        Self {
+            id: asset.id,
+            uuid: asset.uuid,
+            name: asset.name,
+            hostname: asset.hostname,
+            port: asset.port,
+            asset_type: asset.asset_type,
+            status: asset.status,
+        }
+    }
+}
+
+/// An asset as the admin zone returns it (`/api/v1/assets/manage`, behind
+/// `assets:manage`): every column, with `connection_config` passed through
+/// [`public_connection_config`]. `credentials_present` lists which
+/// credential fields are set, without their value.
+#[derive(Debug, Clone, Serialize)]
+pub struct AssetDetail {
+    pub id: i32,
+    pub uuid: Uuid,
+    pub name: String,
+    pub hostname: String,
+    pub port: i32,
+    pub asset_type: AssetType,
+    pub status: String,
+    pub description: Option<String>,
+    pub connection_config: serde_json::Value,
+    pub credentials_present: Vec<&'static str>,
+    pub created_by_id: Option<i32>,
+    pub updated_by_id: Option<i32>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub is_deleted: bool,
+    pub deleted_at: Option<DateTime<Utc>>,
+    pub connection_username: String,
+}
+
+impl From<Asset> for AssetDetail {
+    fn from(asset: Asset) -> Self {
+        let credentials_present = CREDENTIAL_FIELDS
+            .into_iter()
+            .filter(|field| {
+                asset
+                    .connection_config
+                    .get(*field)
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.is_empty())
+            })
+            .collect();
+        Self {
+            id: asset.id,
+            uuid: asset.uuid,
+            name: asset.name,
+            hostname: asset.hostname,
+            port: asset.port,
+            asset_type: asset.asset_type,
+            status: asset.status,
+            description: asset.description,
+            connection_config: public_connection_config(&asset.connection_config),
+            credentials_present,
+            created_by_id: asset.created_by_id,
+            updated_by_id: asset.updated_by_id,
+            created_at: asset.created_at,
+            updated_at: asset.updated_at,
+            is_deleted: asset.is_deleted,
+            deleted_at: asset.deleted_at,
+            connection_username: asset.connection_username,
+        }
+    }
 }
 
 /// New asset for insertion.
@@ -1518,10 +1662,151 @@ mod tests {
     }
 
     #[test]
-    fn test_asset_serialize() {
+    fn test_asset_detail_serializes_the_row() {
         let asset = create_test_asset();
-        let json = unwrap_ok!(serde_json::to_string(&asset));
+        let json = unwrap_ok!(serde_json::to_string(&AssetDetail::from(asset)));
         assert!(json.contains("Test Server"));
+    }
+
+    // ==================== Response types ====================
+
+    const ENVELOPE: &str = "v1:Q0lQSEVSVEVYVC1NVVNULU5PVC1MRUFL";
+
+    fn asset_with_config(config: serde_json::Value) -> Asset {
+        let mut asset = create_test_asset();
+        asset.connection_config = config;
+        asset
+    }
+
+    #[test]
+    fn test_public_config_keeps_what_is_not_a_secret() {
+        let config = serde_json::json!({
+            "auth_type": "password",
+            "domain": "corp.example.com",
+            "rdp_auth_mode": "kerberos",
+            "ssh_host_key_fingerprint": "SHA256:abc",
+            "ssh_host_key_mismatch": true,
+            "mcp_tool_catalog": [{"name": "read", "input_schema": {"type": "object"}}],
+            "port_hint": 22,
+        });
+        assert_eq!(public_connection_config(&config), config);
+    }
+
+    #[test]
+    fn attack_public_config_drops_every_credential_field() {
+        for field in CREDENTIAL_FIELDS {
+            for value in [ENVELOPE, "cleartext-left-by-a-bug", ""] {
+                let config = serde_json::json!({ field: value, "auth_type": "password" });
+                let public = public_connection_config(&config);
+                assert!(public.get(field).is_none(), "{field} must be removed");
+                assert_eq!(public["auth_type"], "password");
+            }
+        }
+    }
+
+    #[test]
+    fn attack_public_config_drops_ciphertext_under_any_key() {
+        let config = serde_json::json!({
+            "some_future_field": ENVELOPE,
+            "nested": { "deeper": { "also_new": ENVELOPE, "kept": "plain" } },
+            "list": [ENVELOPE, "plain", { "inner": ENVELOPE }],
+        });
+        let public = public_connection_config(&config);
+        let text = unwrap_ok!(serde_json::to_string(&public));
+        assert!(!text.contains(ENVELOPE), "ciphertext leaked: {text}");
+        assert_eq!(public["nested"]["deeper"]["kept"], "plain");
+        assert_eq!(public["list"], serde_json::json!(["plain", {}]));
+    }
+
+    #[test]
+    fn attack_public_config_drops_keys_named_like_a_secret() {
+        let config = serde_json::json!({
+            "PASSWORD": "x",
+            "bind_password": "x",
+            "client_secret": "x",
+            "api_token": "x",
+            "eab_hmac_key": "x",
+            "ssh_private_key_pem": "x",
+            "nested": { "new_passphrase": "x", "kept": 1 },
+            "ssh_public_key": "ssh-ed25519 AAAA",
+        });
+        let public = public_connection_config(&config);
+        assert_eq!(
+            public,
+            serde_json::json!({
+                "nested": { "kept": 1 },
+                "ssh_public_key": "ssh-ed25519 AAAA",
+            })
+        );
+    }
+
+    #[test]
+    fn test_asset_detail_reports_which_credentials_are_set_without_their_value() {
+        let asset = asset_with_config(serde_json::json!({
+            "password": ENVELOPE,
+            "private_key": "",
+            "domain": "corp.example.com",
+        }));
+        let detail = AssetDetail::from(asset);
+        assert_eq!(detail.credentials_present, ["password"]);
+        let json = unwrap_ok!(serde_json::to_string(&detail));
+        assert!(!json.contains(ENVELOPE));
+        assert!(json.contains("corp.example.com"));
+    }
+
+    #[test]
+    fn attack_asset_summary_carries_no_connection_detail() {
+        let mut asset = asset_with_config(serde_json::json!({
+            "password": ENVELOPE,
+            "domain": "corp.example.com",
+            "ssh_host_key_fingerprint": "SHA256:abc",
+        }));
+        asset.description = Some("internal note".to_string());
+        asset.connection_username = "svc-bastion".to_string();
+        let value = unwrap_ok!(serde_json::to_value(AssetSummary::from(asset)));
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .map(|o| o.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "asset_type",
+                "hostname",
+                "id",
+                "name",
+                "port",
+                "status",
+                "uuid"
+            ]
+        );
+        let text = value.to_string();
+        for leaked in [
+            ENVELOPE,
+            "corp.example.com",
+            "SHA256:abc",
+            "internal note",
+            "svc-bastion",
+        ] {
+            assert!(!text.contains(leaked), "{leaked} leaked into the summary");
+        }
+    }
+
+    /// The row type must not be serializable: a handler that returns it by
+    /// mistake has to fail to compile, not leak.
+    #[test]
+    fn attack_asset_row_is_not_serializable() {
+        let src = include_str!("asset.rs");
+        let decl = src
+            .split("pub struct Asset {")
+            .next()
+            .and_then(|before| before.rsplit("#[derive(").next())
+            .expect("derive of Asset");
+        assert!(
+            !decl.contains("Serialize"),
+            "Asset must not derive Serialize; use AssetSummary or AssetDetail"
+        );
     }
 
     #[test]

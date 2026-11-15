@@ -1057,7 +1057,7 @@ pub(crate) async fn encrypt_connection_config(
     vault: &crate::ipc::VaultCryptoClient,
     config: &mut serde_json::Value,
 ) -> crate::error::AppResult<()> {
-    let credential_fields = ["password", "private_key", "passphrase"];
+    let credential_fields = crate::models::asset::CREDENTIAL_FIELDS;
     if let Some(obj) = config.as_object_mut() {
         for field in &credential_fields {
             if let Some(serde_json::Value::String(val)) = obj.get(*field)

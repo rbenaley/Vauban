@@ -1266,3 +1266,155 @@ async fn test_deleted_list_surfaces_deleting_operator_username() {
 
     test_db::cleanup(&mut conn).await;
 }
+
+// =============================================================================
+// What an asset response may contain
+// =============================================================================
+
+/// A vault envelope as stored in `connection_config` for a credential.
+const STORED_CIPHERTEXT: &str = "v1:Q0lQSEVSVEVYVC1NVVNULU5PVC1MRUFLLUZST00tQVBJ";
+
+fn config_with_credentials() -> serde_json::Value {
+    serde_json::json!({
+        "auth_type": "password",
+        "password": STORED_CIPHERTEXT,
+        "private_key": STORED_CIPHERTEXT,
+        "passphrase": STORED_CIPHERTEXT,
+        "domain": "corp.example.com",
+        "ssh_host_key_fingerprint": "SHA256:FP-LEAK-CHECK",
+    })
+}
+
+/// A user who can read assets gets the list, with nothing about how the
+/// bastion logs in to a target.
+#[tokio::test]
+#[serial]
+async fn attack_assets_read_cannot_see_connection_config() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("dto_adm")).await;
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-dto-list")).await;
+    set_connection_config(&mut conn, asset.asset.uuid, config_with_credentials()).await;
+
+    // The administrator holds assets:read_all, so the asset is listed.
+    let response = app
+        .server
+        .get("/api/v1/assets?limit=500")
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
+        .await;
+    assert_status(&response, 200);
+
+    let body = response.text();
+    for leaked in [
+        STORED_CIPHERTEXT,
+        "connection_config",
+        "connection_username",
+        "corp.example.com",
+        "SHA256:FP-LEAK-CHECK",
+        "description",
+        "created_by_id",
+    ] {
+        assert!(
+            !body.contains(leaked),
+            "GET /api/v1/assets must not return `{leaked}`"
+        );
+    }
+
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&body).expect("JSON array");
+    let row = rows
+        .iter()
+        .find(|r| r["uuid"] == asset.asset.uuid.to_string())
+        .expect("the asset is listed");
+    let mut keys: Vec<&str> = row
+        .as_object()
+        .map(|o| o.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "asset_type",
+            "hostname",
+            "id",
+            "name",
+            "port",
+            "status",
+            "uuid"
+        ],
+        "the user-zone asset row is a closed set of fields"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// The admin zone returns the connection details, never a credential,
+/// not even as ciphertext: on read, on update, on create.
+#[tokio::test]
+#[serial]
+async fn attack_api_never_returns_secret_fields() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("dto_sec")).await;
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("test-dto-detail")).await;
+    set_connection_config(&mut conn, asset.asset.uuid, config_with_credentials()).await;
+    let url = format!("/api/v1/assets/manage/{}", asset.asset.uuid);
+
+    let read = app
+        .server
+        .get(&url)
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
+        .await;
+    assert_status(&read, 200);
+
+    let update = app
+        .server
+        .put(&url)
+        .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
+        .json(&json!({ "status": "maintenance" }))
+        .await;
+    assert_status(&update, 200);
+
+    for (what, response) in [("GET", read), ("PUT", update)] {
+        let body = response.text();
+        assert!(
+            !body.contains(STORED_CIPHERTEXT),
+            "{what}: the stored ciphertext must not be returned"
+        );
+        let json: serde_json::Value = serde_json::from_str(&body).expect("JSON object");
+        let config = &json["connection_config"];
+        for field in ["password", "private_key", "passphrase"] {
+            assert!(
+                config.get(field).is_none(),
+                "{what}: connection_config.{field} must be absent"
+            );
+        }
+        // What is not a secret is still there for the administrator.
+        assert_eq!(config["domain"], "corp.example.com", "{what}");
+        assert_eq!(
+            config["ssh_host_key_fingerprint"], "SHA256:FP-LEAK-CHECK",
+            "{what}"
+        );
+        assert_eq!(
+            json["credentials_present"],
+            json!(["password", "private_key", "passphrase"]),
+            "{what}: the response says which credentials are set"
+        );
+    }
+
+    // The stored row is untouched by the read path.
+    let stored: serde_json::Value = {
+        use vauban_web::schema::assets::dsl;
+        unwrap_ok!(
+            dsl::assets
+                .filter(dsl::uuid.eq(asset.asset.uuid))
+                .select(dsl::connection_config)
+                .first(&mut conn)
+                .await
+        )
+    };
+    assert_eq!(stored["password"], STORED_CIPHERTEXT);
+
+    test_db::cleanup(&mut conn).await;
+}
