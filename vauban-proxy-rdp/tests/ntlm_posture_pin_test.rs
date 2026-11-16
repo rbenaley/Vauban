@@ -35,7 +35,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use ironrdp::connector::sspi::{
+use ironrdp_connector::sspi::{
     AuthIdentity, BufferType, ClientRequestFlags, CredentialUse, DataRepresentation, ErrorKind,
     Ntlm, SecurityBuffer, SecurityStatus, ServerRequestFlags, Sspi, SspiImpl, Username,
 };
@@ -264,7 +264,7 @@ impl NtlmServer {
         &mut self,
         input_token: Vec<u8>,
         channel_bindings: Option<Vec<u8>>,
-    ) -> Result<(SecurityStatus, Vec<u8>), ironrdp::connector::sspi::Error> {
+    ) -> Result<(SecurityStatus, Vec<u8>), ironrdp_connector::sspi::Error> {
         let mut input = vec![SecurityBuffer::new(input_token, BufferType::Token)];
         if let Some(bindings) = channel_bindings {
             input.push(SecurityBuffer::new(bindings, BufferType::ChannelBindings));
@@ -289,7 +289,7 @@ impl NtlmServer {
 
     /// Finalize authentication: recompute the NTLMv2 response server-side
     /// and verify the MIC. Errors if no candidate credential matches.
-    fn complete(&mut self) -> Result<SecurityStatus, ironrdp::connector::sspi::Error> {
+    fn complete(&mut self) -> Result<SecurityStatus, ironrdp_connector::sspi::Error> {
         self.ntlm.complete_auth_token(&mut [])
     }
 }

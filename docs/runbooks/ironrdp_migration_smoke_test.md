@@ -14,8 +14,8 @@
 
 ```bash
 rtk cargo test --workspace -- --test-threads=1
-rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target-rdp -- --test-threads=1
-rtk cargo clippy --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target-rdp --all-targets
+rtk cargo test -p vauban-proxy-rdp -- --test-threads=1
+rtk cargo clippy -p vauban-proxy-rdp --all-targets
 ```
 
 The proxy suite carries the migration guards: locked-version pins
@@ -73,13 +73,13 @@ Before the live checklist, run the two harnesses that need no Active
 Directory (see section 11.3.1 of the RDP architecture document):
 
 ```bash
-cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target-rdp \
+cargo test -p vauban-proxy-rdp \
   credssp_loop -- --test-threads=1
 ```
 
 ```bash
-VAUBAN_TEST_MIT_KDC=1 cargo test --manifest-path vauban-proxy-rdp/Cargo.toml \
-  --target-dir target-rdp -- --ignored mit_kdc --test-threads=1
+VAUBAN_TEST_MIT_KDC=1 cargo test -p vauban-proxy-rdp \
+  -- --ignored mit_kdc --test-threads=1
 ```
 
 Pass: 13 tests, then 3 tests. They validate how the proxy drives its
@@ -282,3 +282,4 @@ of `v1:` (no payload) is refused before any RDP handshake.
 | Stack | Validated on | By |
 |---|---|---|
 | ironrdp 0.17.0 / connector 0.10 / session 0.11 / input 0.7 / sspi 0.21.2 | _pending first manual pass_ | _--_ |
+| connector 0.12 / session 0.13 / input 0.9 / pdu 0.11 / sspi 0.23.0 (sub-crates, no `ironrdp` meta-crate) | _pending first manual pass_ | _--_ |

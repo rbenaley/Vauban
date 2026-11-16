@@ -1,6 +1,5 @@
 # cargo-audit configuration (read automatically from the current working
-# directory, so it applies to BOTH invocations of `just audit`: the
-# workspace scan and the `-f vauban-proxy-rdp/Cargo.lock` scan).
+# directory, so it applies to `just audit`).
 #
 # Policy: we DO NOT blanket-ignore advisories. Every entry below is a
 # documented, accepted residual risk with no upstream fix available at

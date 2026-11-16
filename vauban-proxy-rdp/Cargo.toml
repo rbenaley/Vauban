@@ -1,49 +1,50 @@
 [package]
 name = "vauban-proxy-rdp"
 description = "Vauban - RDP proxy service (IronRDP)"
-version = "0.9.52"
-edition = "2024"
-rust-version = "1.98"
-authors = ["Richard Ben Aleya"]
-license = "BSD-2-Clause"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
 
-# This crate is excluded from the main workspace due to irreconcilable
-# pre-release dependency conflicts between IronRDP (picky/sspi crypto stack)
-# and russh (RustCrypto stack). It has its own Cargo.lock.
-
-[lints.clippy]
-unwrap_used    = "deny"
-expect_used    = "deny"
-panic          = "deny"
-todo           = "deny"
-dbg_macro      = "deny"
-unimplemented  = "deny"
-print_stdout   = "deny"
-print_stderr   = "deny"
+[lints]
+workspace = true
 
 [dependencies]
 # Shared IPC and sandboxing utilities. The `access-guard` feature is
 # mandatory: it brings in shared::access_guard, which re-verifies every
 # RdpSessionOpen against vauban-access (defense-in-depth RBAC re-check,
 # symmetric to vauban-proxy-ssh).
-shared = { path = "../shared", features = ["access-guard", "session-token"] }
+shared = { workspace = true, features = ["access-guard", "session-token"] }
 
 # Core dependencies
-libc = "0.2"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-thiserror = "2.0"
-anyhow = "1.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-blake3 = "1"
+libc.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
 
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time"] }
+tokio.workspace = true
 
 # RDP client (async, pure Rust)
-ironrdp = { version = "0.17", features = ["connector", "session", "graphics", "input", "dvc", "displaycontrol"] }
-ironrdp-tokio = "0.10"
+# The `ironrdp` meta-crate (0.17) still resolves to ironrdp-connector 0.10,
+# which pins picky =7.0.0-rc.25 and through it curve25519-dalek =5.0.0-rc.1.
+# The sub-crates are depended on directly so the stack sits on picky
+# 7.0.0-rc.26, which accepts the stable dalek releases.
+ironrdp-connector = "0.12"
+ironrdp-session = "0.13"
+ironrdp-graphics = "0.11"
+ironrdp-input = "0.9"
+ironrdp-dvc = "0.10"
+ironrdp-displaycontrol = "0.10"
+ironrdp-pdu = "0.11"
+ironrdp-core = "0.3"
+ironrdp-async = "0.12"
+ironrdp-tokio = "0.12"
 
 # TLS for RDP connection upgrade
 tokio-rustls = "0.26"
@@ -53,7 +54,7 @@ x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 # hashes the full SubjectPublicKeyInfo DER, `base64` encodes the SPKI /
 # fingerprint for storage + display (mirrors the SSH host-key pinning).
 sha2 = "0.10"
-base64 = "0.22"
+base64.workspace = true
 
 
 # Image encoding for bitmap streaming to browser (PNG fallback)
@@ -63,7 +64,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 openh264 = "0.9"
 
 # Secret management
-secrecy = { version = "0.10", features = ["serde"] }
+secrecy.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
@@ -71,7 +72,7 @@ tokio = { version = "1", features = ["test-util"] }
 # always clears the key/button state, lock synchronization is minimal, and
 # input translation never panics on arbitrary events.
 proptest = "1"
-nix = { version = "0.31", features = ["process", "signal", "poll", "fs", "user", "socket", "uio", "term"] }
+nix.workspace = true
 # VAU-001: generate a self-signed leaf cert for the in-process TLS server
 # used by the behavioral pinning tests (match / mismatch / fetch).
 rcgen = "0.13"
@@ -87,15 +88,3 @@ picky-asn1 = { version = "0.10", features = ["time_conversion"] }
 picky-asn1-der = "0.5"
 time = "0.3"
 rand = "0.8"
-
-# AVX2 support: upstream openh264-sys2 build.rs does not pass -DHAVE_AVX2
-# to NASM or the C++ compiler, unlike Cisco's official meson.build.
-# Use our fork with AVX2 optimizations for SAD and Intra Prediction.
-[patch.crates-io]
-openh264-sys2 = { git = "https://github.com/rbenaley/openh264-rs-avx2" }
-
-[profile.release]
-opt-level = 3
-lto = true
-debug = false
-strip = true

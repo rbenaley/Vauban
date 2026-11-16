@@ -22,7 +22,7 @@ cargo deny --version
 ```
 
 `just deny` runs `cargo deny check advisories` on the workspace lockfile
-and on `vauban-proxy-rdp/Cargo.lock`. Config: [`deny.toml`](../../deny.toml).
+(`vauban-proxy-rdp` included). Config: [`deny.toml`](../../deny.toml).
 
 ### Semgrep
 

@@ -11,29 +11,29 @@ use crate::video_encoder::VideoEncoder;
 use base64::Engine as _;
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder};
-use ironrdp::connector::{
-    self, ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError,
-    ConnectorErrorKind, ConnectorResult, Credentials, DesktopSize, Sequence as _, Written,
+use ironrdp_connector::{
+    ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorErrorKind,
+    ConnectorResult, Credentials, DesktopSize, Sequence as _, Written,
     connection_activation::{ConnectionActivationFactory, ConnectionActivationState},
     sspi,
     sspi::credssp::{self as sspi_credssp, ClientState, CredSspClient, CredSspMode},
     sspi::generator::GeneratorState,
 };
-use ironrdp::core::WriteBuf;
-use ironrdp::displaycontrol::client::DisplayControlClient;
-use ironrdp::dvc::DrdynvcClient;
-use ironrdp::graphics::image_processing::PixelFormat;
-use ironrdp::input::{self as rdp_input, Database as InputDatabase};
-use ironrdp::pdu::PduHint;
-use ironrdp::pdu::gcc::KeyboardType;
-use ironrdp::pdu::geometry::Rectangle as _;
-use ironrdp::pdu::input::fast_path::FastPathInputEvent;
-use ironrdp::pdu::nego;
-use ironrdp::pdu::rdp::capability_sets::{self, MajorPlatformType};
-use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
-use ironrdp::pdu::x224::X224;
-use ironrdp::session::image::DecodedImage;
-use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput, fast_path};
+use ironrdp_core::WriteBuf;
+use ironrdp_displaycontrol::client::DisplayControlClient;
+use ironrdp_dvc::DrdynvcClient;
+use ironrdp_graphics::image_processing::PixelFormat;
+use ironrdp_input::{self as rdp_input, Database as InputDatabase};
+use ironrdp_pdu::PduHint;
+use ironrdp_pdu::gcc::{self, KeyboardType};
+use ironrdp_pdu::geometry::Rectangle as _;
+use ironrdp_pdu::input::fast_path::FastPathInputEvent;
+use ironrdp_pdu::nego;
+use ironrdp_pdu::rdp::capability_sets::{self, MajorPlatformType};
+use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
+use ironrdp_pdu::x224::X224;
+use ironrdp_session::image::DecodedImage;
+use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput, fast_path};
 use ironrdp_tokio::single_sequence_step;
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, NetworkClient, Upgraded};
 use secrecy::{ExposeSecret, SecretString};
@@ -308,7 +308,7 @@ impl RdpSession {
             connector,
             &mut tls_framed,
             &mut network_client,
-            connector::ServerName::new(config.host.clone()),
+            ironrdp_connector::ServerName::new(config.host.clone()),
             server_public_key,
             config.auth_mode,
         )
@@ -368,20 +368,41 @@ fn build_connector_config(
     domain: Option<String>,
     width: u16,
     height: u16,
-) -> connector::Config {
-    connector::Config {
+) -> ironrdp_connector::Config {
+    ironrdp_connector::Config {
         credentials: Credentials::UsernamePassword { username, password },
         domain,
         enable_tls: true,
         enable_credssp: true,
-        keyboard_type: KeyboardType::IbmEnhanced,
+        keyboard_type: KeyboardType::IBM_ENHANCED,
         keyboard_subtype: 0,
         keyboard_layout: 0x0409,
         keyboard_functional_keys_count: 12,
         ime_file_name: String::new(),
         dig_product_id: String::new(),
         desktop_size: DesktopSize { width, height },
-        bitmap: Some(connector::BitmapConfig {
+        // Single virtual monitor, no physical geometry or orientation
+        // advertised: the browser viewport is the only "display".
+        monitor_layout: None,
+        monitor_extended_layout: None,
+        desktop_physical_size: None,
+        desktop_orientation: None,
+        device_scale_factor: None,
+        // Absolute pointer coordinates only (the web client sends none else).
+        relative_mouse_input: false,
+        // Enhanced RDP Security only: never fall back to Standard RDP
+        // Security (PROTOCOL_RDP), which has no TLS and no NLA.
+        enable_standard_rdp_security: false,
+        // Same value the connector hardcoded before it became configurable.
+        connection_type: gcc::ConnectionType::Lan,
+        // Full desktop sessions only: no RemoteApp (RAIL).
+        remote_application_mode: false,
+        rail_support_level: capability_sets::RailSupportLevel::empty(),
+        // No audio redirection in either direction.
+        enable_audio_capture: false,
+        // No EGFX graphics pipeline: bitmap updates over fast-path only.
+        support_dyn_vc_gfx_protocol: false,
+        bitmap: Some(ironrdp_connector::BitmapConfig {
             lossy_compression: true,
             color_depth: 32,
             codecs: capability_sets::client_codecs_capabilities(&[])
@@ -660,7 +681,7 @@ async fn active_session_loop(
                     );
                 }
 
-                let outputs = active_stage.process(&mut image, action, &payload)
+                let outputs = active_stage.process(&mut image, action, &payload, framed.last_read_at())
                     .map_err(|e| SessionError::SessionFailed(format!("Process error: {e}")))?;
 
                 for output in &outputs {
@@ -771,7 +792,6 @@ async fn active_session_loop(
                                     share_id: outcome.share_id,
                                     enable_server_pointer: outcome.enable_server_pointer,
                                     pointer_software_rendering: outcome.pointer_software_rendering,
-                                    bulk_decompressor: None,
                                 }
                                 .build(),
                             );
@@ -1948,9 +1968,9 @@ struct NtlmOnlyNetworkClient;
 impl NetworkClient for NtlmOnlyNetworkClient {
     async fn send(
         &mut self,
-        _request: &ironrdp::connector::sspi::generator::NetworkRequest,
-    ) -> ironrdp::connector::ConnectorResult<Vec<u8>> {
-        Err(ironrdp::connector::general_err!(
+        _request: &ironrdp_connector::sspi::generator::NetworkRequest,
+    ) -> ironrdp_connector::ConnectorResult<Vec<u8>> {
+        Err(ironrdp_connector::general_err!(
             "Kerberos not supported: only NTLM authentication is available"
         ))
     }
@@ -2168,9 +2188,9 @@ struct KerberosRelayNetworkClient {
 impl NetworkClient for KerberosRelayNetworkClient {
     async fn send(
         &mut self,
-        request: &ironrdp::connector::sspi::generator::NetworkRequest,
-    ) -> ironrdp::connector::ConnectorResult<Vec<u8>> {
-        use ironrdp::connector::sspi::network_client::NetworkProtocol;
+        request: &ironrdp_connector::sspi::generator::NetworkRequest,
+    ) -> ironrdp_connector::ConnectorResult<Vec<u8>> {
+        use ironrdp_connector::sspi::network_client::NetworkProtocol;
 
         match request.protocol {
             NetworkProtocol::Tcp => {
@@ -2180,7 +2200,7 @@ impl NetworkClient for KerberosRelayNetworkClient {
                         realm = %self.realm,
                         "KDC path refused a URL that is not this session's realm sentinel"
                     );
-                    return Err(ironrdp::connector::general_err!(
+                    return Err(ironrdp_connector::general_err!(
                         "KDC path refuses a URL outside the session realm (fail-closed)"
                     ));
                 }
@@ -2196,7 +2216,7 @@ impl NetworkClient for KerberosRelayNetworkClient {
                     Err(e) => {
                         self.trace.record_relay_error(&e);
                         warn!(session_id = %self.session_id, error = %e, "KDC FD round-trip failed");
-                        Err(ironrdp::connector::custom_err!(
+                        Err(ironrdp_connector::custom_err!(
                             "KDC FD",
                             std::io::Error::other(e)
                         ))
@@ -2204,7 +2224,7 @@ impl NetworkClient for KerberosRelayNetworkClient {
                 }
             }
             NetworkProtocol::Udp | NetworkProtocol::Http | NetworkProtocol::Https => {
-                Err(ironrdp::connector::general_err!(
+                Err(ironrdp_connector::general_err!(
                     "KDC path refuses non-TCP transports (fail-closed)"
                 ))
             }
@@ -2309,8 +2329,8 @@ impl SessionNetworkClient {
 impl NetworkClient for SessionNetworkClient {
     async fn send(
         &mut self,
-        request: &ironrdp::connector::sspi::generator::NetworkRequest,
-    ) -> ironrdp::connector::ConnectorResult<Vec<u8>> {
+        request: &ironrdp_connector::sspi::generator::NetworkRequest,
+    ) -> ironrdp_connector::ConnectorResult<Vec<u8>> {
         match self {
             Self::NtlmOnly(client) => client.send(request).await,
             Self::KerberosRelay(client) => client.send(request).await,
@@ -2351,12 +2371,12 @@ fn classify_message_channel_pdu(
     pdu: &[u8],
     message_channel_id: Option<u16>,
 ) -> Option<MessageChannelPdu> {
-    use ironrdp::pdu::mcs::McsMessage;
-    use ironrdp::pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest};
-    use ironrdp::pdu::x224::X224;
+    use ironrdp_pdu::mcs::McsMessage;
+    use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest};
+    use ironrdp_pdu::x224::X224;
 
     let message_channel_id = message_channel_id?;
-    let mcs = ironrdp::core::decode::<X224<McsMessage<'_>>>(pdu).ok()?;
+    let mcs = ironrdp_core::decode::<X224<McsMessage<'_>>>(pdu).ok()?;
     let McsMessage::SendDataIndication(data) = mcs.0 else {
         return None;
     };
@@ -2364,7 +2384,7 @@ fn classify_message_channel_pdu(
         return None;
     }
 
-    match ironrdp::core::decode::<AutoDetectReqPdu>(&data.user_data) {
+    match ironrdp_core::decode::<AutoDetectReqPdu>(&data.user_data) {
         Ok(AutoDetectReqPdu {
             request:
                 AutoDetectRequest::RttRequest {
@@ -2389,7 +2409,7 @@ fn encode_rtt_response(
     buf: &mut WriteBuf,
     sequence_number: u16,
 ) -> ConnectorResult<Option<usize>> {
-    use ironrdp::pdu::rdp::autodetect::{AutoDetectResponse, AutoDetectRspPdu};
+    use ironrdp_pdu::rdp::autodetect::{AutoDetectResponse, AutoDetectRspPdu};
 
     let Some(message_channel_id) = connector.message_channel_id else {
         return Ok(None);
@@ -2412,8 +2432,12 @@ fn encode_rtt_response(
 
     buf.clear();
     let response = AutoDetectRspPdu::new(AutoDetectResponse::RttResponse { sequence_number });
-    let len =
-        connector::encode_send_data_request(user_channel_id, message_channel_id, &response, buf)?;
+    let len = ironrdp_connector::encode_send_data_request(
+        user_channel_id,
+        message_channel_id,
+        &response,
+        buf,
+    )?;
 
     Ok(Some(len))
 }
@@ -2450,7 +2474,7 @@ where
         let pdu = framed
             .read_by_hint(next_pdu_hint)
             .await
-            .map_err(|e| ironrdp::connector::custom_err!("read frame by hint", e))?;
+            .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
 
         match classify_message_channel_pdu(&pdu, connector.message_channel_id) {
             Some(MessageChannelPdu::RttRequest { sequence_number }) => {
@@ -2462,7 +2486,7 @@ where
                     framed
                         .write_all(&buf[..len])
                         .await
-                        .map_err(|e| ironrdp::connector::custom_err!("write all", e))?;
+                        .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
                 }
                 return Ok(FinalizeStepOutcome::AnsweredRtt);
             }
@@ -2470,7 +2494,7 @@ where
                 debug!("Ignoring non-licensing message-channel PDU during connection finalize");
                 return Ok(FinalizeStepOutcome::IgnoredMessageChannelPdu);
             }
-            None => connector.step(&pdu, buf)?,
+            None => connector.step(&pdu, framed.last_read_at(), buf)?,
         }
     } else {
         connector.step_no_input(buf)?
@@ -2480,7 +2504,7 @@ where
         framed
             .write_all(&buf[..response_len])
             .await
-            .map_err(|e| ironrdp::connector::custom_err!("write all", e))?;
+            .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
     }
 
     Ok(FinalizeStepOutcome::SteppedConnector)
@@ -2522,14 +2546,14 @@ where
             let pdu = framed
                 .read_by_hint(next_pdu_hint)
                 .await
-                .map_err(|e| ironrdp::connector::custom_err!("read frame by hint", e))?;
+                .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
             if matches!(
                 connector.state,
                 ClientConnectorState::ConnectionInitiationWaitConfirm { .. }
             ) {
                 negotiation = negotiation_outcome_of(&pdu);
             }
-            connector.step(&pdu, &mut buf)?
+            connector.step(&pdu, framed.last_read_at(), &mut buf)?
         } else {
             connector.step_no_input(&mut buf)?
         };
@@ -2539,14 +2563,14 @@ where
                 framed
                     .write_all(&buf[..response_len])
                     .await
-                    .map_err(|e| ironrdp::connector::custom_err!("write all", e))?;
+                    .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
             } else {
                 connection_request_patched = true;
                 let patched = patch_connection_request_flags(&buf[..response_len], extra_flags)?;
                 framed
                     .write_all(&patched)
                     .await
-                    .map_err(|e| ironrdp::connector::custom_err!("write all", e))?;
+                    .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
             }
         }
     }
@@ -2567,7 +2591,7 @@ struct NegotiationOutcome {
 /// negotiation response. `None` for a negotiation failure or bytes that
 /// are not a confirm.
 fn negotiation_outcome_of(pdu: &[u8]) -> Option<NegotiationOutcome> {
-    match ironrdp::core::decode::<X224<nego::ConnectionConfirm>>(pdu)
+    match ironrdp_core::decode::<X224<nego::ConnectionConfirm>>(pdu)
         .ok()?
         .0
     {
@@ -2633,7 +2657,7 @@ fn negotiation_error(error: &ConnectorError) -> SessionError {
 
 /// Remove the password from the credentials IronRDP will put in the
 /// Client Info PDU (`TS_INFO_PACKET`), keeping the user name.
-fn strip_client_info_password(config: &mut connector::Config) {
+fn strip_client_info_password(config: &mut ironrdp_connector::Config) {
     if let Credentials::UsernamePassword { password, .. } = &mut config.credentials {
         password.clear();
     }
@@ -2648,11 +2672,11 @@ fn patch_connection_request_flags(
     pdu: &[u8],
     extra_flags: nego::RequestFlags,
 ) -> ConnectorResult<Vec<u8>> {
-    let X224(mut request): X224<nego::ConnectionRequest> = ironrdp::core::decode(pdu)
-        .map_err(|e| ironrdp::connector::custom_err!("decode X224 ConnectionRequest", e))?;
+    let X224(mut request): X224<nego::ConnectionRequest> = ironrdp_core::decode(pdu)
+        .map_err(|e| ironrdp_connector::custom_err!("decode X224 ConnectionRequest", e))?;
     request.flags |= extra_flags;
-    ironrdp::core::encode_vec(&X224(request))
-        .map_err(|e| ironrdp::connector::custom_err!("encode X224 ConnectionRequest", e))
+    ironrdp_core::encode_vec(&X224(request))
+        .map_err(|e| ironrdp_connector::custom_err!("encode X224 ConnectionRequest", e))
 }
 
 /// Local replacement for `ironrdp_tokio::connect_finalize` that shields the
@@ -2669,7 +2693,7 @@ async fn connect_finalize_with_message_channel_demux<S, N>(
     mut connector: ClientConnector,
     framed: &mut Framed<S>,
     network_client: &mut N,
-    server_name: connector::ServerName,
+    server_name: ironrdp_connector::ServerName,
     server_public_key: Vec<u8>,
     auth_mode: RdpAuthMode,
 ) -> ConnectorResult<ConnectionResult>
@@ -2683,7 +2707,7 @@ where
     // handshake in which CredSSP is not about to run. Without it the
     // password would go to the target in the Client Info PDU, with no NLA.
     if !connector.should_perform_credssp() {
-        return Err(ironrdp::connector::general_err!(
+        return Err(ironrdp_connector::general_err!(
             "NLA is required: the handshake did not reach CredSSP"
         ));
     }
@@ -2701,15 +2725,51 @@ where
         .await?;
     }
 
-    let result = loop {
-        finalize_step(&mut connector, framed, &mut buf).await?;
+    drive_finalize_to_connected(&mut connector, framed, &mut buf).await
+}
 
-        if let ClientConnectorState::Connected { result } = connector.state {
-            break result;
+/// Post-CredSSP half of the finalize sequence: step the connector through
+/// the demuxed [`finalize_step`] until it reaches a terminal state, and
+/// accept only `Connected`. Split out of
+/// [`connect_finalize_with_message_channel_demux`] so tests can drive it
+/// from a hand-built connector state, without a CredSSP exchange.
+async fn drive_finalize_to_connected<S>(
+    connector: &mut ClientConnector,
+    framed: &mut Framed<S>,
+    buf: &mut WriteBuf,
+) -> ConnectorResult<ConnectionResult>
+where
+    S: FramedRead + FramedWrite,
+{
+    let outcome = loop {
+        // Vauban never opens the UDP sideband transport. The demux in
+        // `finalize_step` swallows message-channel PDUs, so an Initiate
+        // Multitransport Request should not reach the connector; if one
+        // does, decline it exactly as the upstream default handler does
+        // and stay on TCP.
+        if connector.should_perform_multitransport() {
+            ironrdp_tokio::complete_multitransport(
+                connector,
+                framed,
+                ironrdp_connector::MultitransportResult::Failure(
+                    ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu::E_ABORT,
+                ),
+            )
+            .await?;
+            continue;
+        }
+
+        finalize_step(connector, framed, buf).await?;
+
+        if let Some(outcome) = connector.state.take_outcome() {
+            break outcome;
         }
     };
 
-    Ok(result)
+    // Fail closed on a Server Redirection PDU: the session was authorized
+    // and pinned for THIS target, so the proxy never follows the server to
+    // another host.
+    outcome.into_connected()
 }
 
 /// CredSSP/NLA sequence, mirrored from `ironrdp_async::connect_finalize`
@@ -2723,7 +2783,7 @@ async fn perform_credssp_step<S, N>(
     framed: &mut Framed<S>,
     network_client: &mut N,
     buf: &mut WriteBuf,
-    server_name: connector::ServerName,
+    server_name: ironrdp_connector::ServerName,
     server_public_key: Vec<u8>,
     auth_mode: RdpAuthMode,
 ) -> ConnectorResult<()>
@@ -2736,7 +2796,7 @@ where
             selected_protocol, ..
         } => selected_protocol,
         _ => {
-            return Err(ironrdp::connector::general_err!(
+            return Err(ironrdp_connector::general_err!(
                 "invalid connector state for CredSSP sequence"
             ));
         }
@@ -2786,7 +2846,7 @@ where
             framed
                 .write_all(&buf[..response_len])
                 .await
-                .map_err(|e| ironrdp::connector::custom_err!("write all", e))?;
+                .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
         }
 
         let Some(next_pdu_hint) = sequence.next_pdu_hint() else {
@@ -2796,7 +2856,7 @@ where
         let pdu = framed
             .read_by_hint(next_pdu_hint)
             .await
-            .map_err(|e| ironrdp::connector::custom_err!("read frame by hint", e))?;
+            .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
 
         if let Some(next_request) = sequence.decode_server_message(&pdu)? {
             ts_request = next_request;
@@ -2844,7 +2904,7 @@ fn kerberos_kdc_sentinel_url(realm: &shared::kerberos::Realm) -> String {
 /// sentinel: `tcp://<realm>.kdc.vauban.invalid:88`, no credentials, no
 /// path beyond the root, no query. Any other URL yields `None`.
 fn realm_from_kdc_request(
-    request: &ironrdp::connector::sspi::generator::NetworkRequest,
+    request: &ironrdp_connector::sspi::generator::NetworkRequest,
 ) -> Option<shared::kerberos::Realm> {
     let url = &request.url;
     if url.scheme() != "tcp"
@@ -2868,11 +2928,11 @@ struct CredsspTsRequestHint;
 const CREDSSP_TS_REQUEST_HINT: CredsspTsRequestHint = CredsspTsRequestHint;
 
 impl PduHint for CredsspTsRequestHint {
-    fn find_size(&self, bytes: &[u8]) -> ironrdp::core::DecodeResult<Option<(bool, usize)>> {
+    fn find_size(&self, bytes: &[u8]) -> ironrdp_core::DecodeResult<Option<(bool, usize)>> {
         match sspi_credssp::TsRequest::read_length(bytes) {
             Ok(length) => Ok(Some((true, length))),
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
-            Err(e) => Err(ironrdp::core::other_err_with_source(
+            Err(e) => Err(ironrdp_core::other_err_with_source(
                 "CredsspTsRequestHint",
                 "invalid TsRequest length",
                 e,
@@ -2890,7 +2950,7 @@ const CREDSSP_EARLY_USER_AUTH_RESULT_HINT: CredsspEarlyUserAuthResultHint =
     CredsspEarlyUserAuthResultHint;
 
 impl PduHint for CredsspEarlyUserAuthResultHint {
-    fn find_size(&self, _: &[u8]) -> ironrdp::core::DecodeResult<Option<(bool, usize)>> {
+    fn find_size(&self, _: &[u8]) -> ironrdp_core::DecodeResult<Option<(bool, usize)>> {
         Ok(Some((true, sspi_credssp::EARLY_USER_AUTH_RESULT_PDU_SIZE)))
     }
 }
@@ -2943,14 +3003,14 @@ impl LocalCredsspSequence {
         credentials: &Credentials,
         domain: Option<&str>,
         protocol: nego::SecurityProtocol,
-        server_name: connector::ServerName,
+        server_name: ironrdp_connector::ServerName,
         server_public_key: Vec<u8>,
         auth_mode: RdpAuthMode,
     ) -> ConnectorResult<(Self, sspi_credssp::TsRequest)> {
         let sspi_credentials: sspi::Credentials = match credentials {
             Credentials::UsernamePassword { username, password } => {
                 let username = sspi::Username::new(username, domain)
-                    .map_err(|e| ironrdp::connector::custom_err!("invalid username", e))?;
+                    .map_err(|e| ironrdp_connector::custom_err!("invalid username", e))?;
                 sspi::AuthIdentity {
                     username,
                     password: password.to_owned().into(),
@@ -2958,7 +3018,7 @@ impl LocalCredsspSequence {
                 .into()
             }
             _ => {
-                return Err(ironrdp::connector::general_err!(
+                return Err(ironrdp_connector::general_err!(
                     "only username/password credentials are supported"
                 ));
             }
@@ -2982,14 +3042,14 @@ impl LocalCredsspSequence {
             // DNS-form realm: no sentinel, no Kerberos, no NTLM.
             let realm =
                 shared::kerberos::normalize_realm(domain.unwrap_or_default()).map_err(|_| {
-                    ironrdp::connector::general_err!(
+                    ironrdp_connector::general_err!(
                         "Kerberos mode requires the DNS name of the domain"
                     )
                 })?;
             let kdc_url = Some(
                 sspi::kerberos::config::parse_kdc_url(&kerberos_kdc_sentinel_url(&realm))
                     .ok_or_else(|| {
-                        ironrdp::connector::general_err!("Kerberos KDC sentinel URL is not valid")
+                        ironrdp_connector::general_err!("Kerberos KDC sentinel URL is not valid")
                     })?,
             );
             let kerberos_config = sspi::KerberosConfig {
@@ -3046,12 +3106,12 @@ impl LocalCredsspSequence {
         match self.state {
             LocalCredsspState::Ongoing => {
                 let message = sspi_credssp::TsRequest::from_buffer(input)
-                    .map_err(|e| ironrdp::connector::custom_err!("TsRequest", e))?;
+                    .map_err(|e| ironrdp_connector::custom_err!("TsRequest", e))?;
                 Ok(Some(message))
             }
             LocalCredsspState::EarlyUserAuthResult => {
                 let early_user_auth_result = sspi_credssp::EarlyUserAuthResult::from_buffer(input)
-                    .map_err(|e| ironrdp::connector::custom_err!("EarlyUserAuthResult", e))?;
+                    .map_err(|e| ironrdp_connector::custom_err!("EarlyUserAuthResult", e))?;
 
                 match early_user_auth_result {
                     sspi_credssp::EarlyUserAuthResult::Success => {
@@ -3064,7 +3124,7 @@ impl LocalCredsspSequence {
                     )),
                 }
             }
-            LocalCredsspState::Finished => Err(ironrdp::connector::general_err!(
+            LocalCredsspState::Finished => Err(ironrdp_connector::general_err!(
                 "attempted to feed server request to CredSSP sequence in an unexpected state"
             )),
         }
@@ -3113,7 +3173,7 @@ impl LocalCredsspSequence {
             LocalCredsspState::EarlyUserAuthResult => {
                 Ok((Written::Nothing, LocalCredsspState::Finished))
             }
-            LocalCredsspState::Finished => Err(ironrdp::connector::general_err!(
+            LocalCredsspState::Finished => Err(ironrdp_connector::general_err!(
                 "CredSSP sequence is already done"
             )),
         }?;
@@ -3130,13 +3190,17 @@ fn write_credssp_request(
     ts_request: sspi_credssp::TsRequest,
     output: &mut WriteBuf,
 ) -> ConnectorResult<usize> {
-    let length = usize::from(ts_request.buffer_len());
+    let length = usize::from(
+        ts_request
+            .buffer_len()
+            .map_err(|e| ironrdp_connector::custom_err!("TsRequest length", e))?,
+    );
 
     let unfilled_buffer = output.unfilled_to(length);
 
     ts_request
         .encode_ts_request(unfilled_buffer)
-        .map_err(|e| ironrdp::connector::custom_err!("TsRequest", e))?;
+        .map_err(|e| ironrdp_connector::custom_err!("TsRequest", e))?;
 
     output.advance(length);
 
@@ -3180,6 +3244,7 @@ where
             share_id,
             enable_server_pointer,
             pointer_software_rendering,
+            ..
         } = connection_activation.connection_activation_state()
         {
             return Ok(ReactivationOutcome {
@@ -3456,7 +3521,7 @@ mod tests {
             FastPathInputEvent::KeyboardEvent(flags, scancode) => {
                 assert_eq!(*scancode, 0x2A);
                 assert!(
-                    flags.contains(ironrdp::pdu::input::fast_path::KeyboardFlags::RELEASE),
+                    flags.contains(ironrdp_pdu::input::fast_path::KeyboardFlags::RELEASE),
                     "must be a RELEASE event"
                 );
             }
@@ -3547,9 +3612,9 @@ mod tests {
 
     // ==================== Migration guards (IronRDP 0.17) ====================
 
-    /// Extract the locked version of a crate from the isolated Cargo.lock.
+    /// Extract the locked version of a crate from the workspace Cargo.lock.
     fn locked_version(name: &str) -> String {
-        let lock: &str = include_str!("../Cargo.lock");
+        let lock: &str = include_str!("../../Cargo.lock");
         let needle = format!("name = \"{name}\"\n");
         let start = lock
             .find(&needle)
@@ -3566,28 +3631,27 @@ mod tests {
     }
 
     /// Anti-drift guard: the IronRDP / sspi stack is pinned to the minors
-    /// validated by the 0.17 migration. A future `cargo update` that
-    /// silently regresses or skips a version (changing API semantics
-    /// without a compile error) fails here with an explicit message
-    /// instead of surfacing as a runtime behavior change.
+    /// validated by the last migration (connector 0.12 / session 0.13). A
+    /// future `cargo update` that silently regresses or skips a version
+    /// (changing API semantics without a compile error) fails here with an
+    /// explicit message instead of surfacing as a runtime behavior change.
     #[test]
     fn test_locked_ironrdp_stack_versions_are_pinned() {
-        let expected: [(&str, &str); 8] = [
-            ("ironrdp", "0.17."),
-            ("ironrdp-connector", "0.10."),
-            ("ironrdp-session", "0.11."),
-            ("ironrdp-input", "0.7."),
-            ("ironrdp-pdu", "0.9."),
-            ("ironrdp-async", "0.10."),
-            ("ironrdp-tokio", "0.10."),
-            ("sspi", "0.21."),
+        let expected: [(&str, &str); 7] = [
+            ("ironrdp-connector", "0.12."),
+            ("ironrdp-session", "0.13."),
+            ("ironrdp-input", "0.9."),
+            ("ironrdp-pdu", "0.11."),
+            ("ironrdp-async", "0.12."),
+            ("ironrdp-tokio", "0.12."),
+            ("sspi", "0.23."),
         ];
         for (name, prefix) in expected {
             let version = locked_version(name);
             assert!(
                 version.starts_with(prefix),
                 "crate `{name}` locked at {version}, expected minor {prefix}x \
-                 (validated by the IronRDP 0.17 migration); re-validate the \
+                 (validated by the connector 0.12 migration); re-validate the \
                  migration guards before accepting a different minor"
             );
         }
@@ -3600,8 +3664,8 @@ mod tests {
     /// to force a Kerberos exchange and must fail closed.
     #[tokio::test]
     async fn test_ntlm_only_network_client_refuses_all_requests() {
-        use ironrdp::connector::sspi::generator::NetworkRequest;
-        use ironrdp::connector::sspi::network_client::NetworkProtocol;
+        use ironrdp_connector::sspi::generator::NetworkRequest;
+        use ironrdp_connector::sspi::network_client::NetworkProtocol;
 
         let urls = [
             (NetworkProtocol::Tcp, "tcp://kdc.example.com:88"),
@@ -3685,25 +3749,24 @@ mod tests {
     /// Wrap `user_data` in an MCS Send Data Indication on `channel_id`,
     /// X224-framed, exactly as received on the wire during finalize.
     fn encode_send_data_indication(channel_id: u16, user_data: &[u8]) -> Vec<u8> {
-        let sdi = ironrdp::pdu::mcs::SendDataIndication {
+        let sdi = ironrdp_pdu::mcs::SendDataIndication {
             initiator_id: 1002,
             channel_id,
             user_data: std::borrow::Cow::Borrowed(user_data),
         };
-        ironrdp::core::encode_vec(&ironrdp::pdu::x224::X224(sdi))
-            .expect("encode SendDataIndication")
+        ironrdp_core::encode_vec(&ironrdp_pdu::x224::X224(sdi)).expect("encode SendDataIndication")
     }
 
     /// Encode a connect-time RTT Measure Request as sent by the server.
     fn encode_rtt_request(sequence_number: u16) -> Vec<u8> {
-        use ironrdp::pdu::rdp::autodetect::{
+        use ironrdp_pdu::rdp::autodetect::{
             AutoDetectReqPdu, AutoDetectRequest, RTT_REQUEST_CONNECT_TIME,
         };
         let pdu = AutoDetectReqPdu::new(AutoDetectRequest::RttRequest {
             sequence_number,
             request_type: RTT_REQUEST_CONNECT_TIME,
         });
-        ironrdp::core::encode_vec(&pdu).expect("encode AutoDetectReqPdu")
+        ironrdp_core::encode_vec(&pdu).expect("encode AutoDetectReqPdu")
     }
 
     const MESSAGE_CHANNEL_ID: u16 = 1005;
@@ -3765,9 +3828,9 @@ mod tests {
     /// Response with the request's sequence number.
     #[test]
     fn test_encode_rtt_response_round_trip() {
-        use ironrdp::pdu::mcs::McsMessage;
-        use ironrdp::pdu::rdp::autodetect::{AutoDetectResponse, AutoDetectRspPdu};
-        use ironrdp::pdu::x224::X224;
+        use ironrdp_pdu::mcs::McsMessage;
+        use ironrdp_pdu::rdp::autodetect::{AutoDetectResponse, AutoDetectRspPdu};
+        use ironrdp_pdu::x224::X224;
 
         let config =
             build_connector_config("alice".to_string(), "s3cret".to_string(), None, 1024, 768);
@@ -3784,7 +3847,7 @@ mod tests {
             .expect("encode must succeed")
             .expect("an RTT response must be produced");
 
-        let mcs = ironrdp::core::decode::<X224<McsMessage<'_>>>(&buf[..len])
+        let mcs = ironrdp_core::decode::<X224<McsMessage<'_>>>(&buf[..len])
             .expect("response must be a valid X224/MCS PDU");
         let McsMessage::SendDataRequest(data) = mcs.0 else {
             panic!("response must be an MCS Send Data Request");
@@ -3792,7 +3855,7 @@ mod tests {
         assert_eq!(data.channel_id, MESSAGE_CHANNEL_ID);
         assert_eq!(data.initiator_id, USER_CHANNEL_ID);
 
-        let rsp = ironrdp::core::decode::<AutoDetectRspPdu>(&data.user_data)
+        let rsp = ironrdp_core::decode::<AutoDetectRspPdu>(&data.user_data)
             .expect("payload must be an AutoDetectRspPdu");
         assert_eq!(
             rsp.response,
@@ -3858,18 +3921,26 @@ mod tests {
             .find("classify_message_channel_pdu(&pdu, connector.message_channel_id)")
             .expect("finalize_step must classify each inbound PDU");
         let step_pos = body
-            .find("None => connector.step(&pdu, buf)?")
+            .find("None => connector.step(&pdu, framed.last_read_at(), buf)?")
             .expect("only unclassified PDUs may reach connector.step");
         assert!(
             classify_pos < step_pos,
             "classification must happen before connector.step"
         );
 
-        let loop_start = source
+        let entry_start = source
             .find("async fn connect_finalize_with_message_channel_demux")
             .expect("demuxed finalize must exist");
         assert!(
-            source[loop_start..].contains("finalize_step(&mut connector, framed, &mut buf)"),
+            source[entry_start..]
+                .contains("drive_finalize_to_connected(&mut connector, framed, &mut buf)"),
+            "the demuxed finalize must hand over to the local finalize loop"
+        );
+        let loop_start = source
+            .find("async fn drive_finalize_to_connected")
+            .expect("the local finalize loop must exist");
+        assert!(
+            source[loop_start..].contains("finalize_step(connector, framed, buf)"),
             "the finalize loop must drive the demuxed finalize_step"
         );
     }
@@ -4070,17 +4141,17 @@ mod tests {
     #[derive(Debug)]
     struct TestNoopLicenseCache;
 
-    impl ironrdp::connector::LicenseCache for TestNoopLicenseCache {
+    impl ironrdp_connector::LicenseCache for TestNoopLicenseCache {
         fn get_license(
             &self,
-            _license_info: ironrdp::pdu::rdp::server_license::LicenseInformation,
+            _license_info: ironrdp_pdu::rdp::server_license::LicenseInformation,
         ) -> ConnectorResult<Option<Vec<u8>>> {
             Ok(None)
         }
 
         fn store_license(
             &self,
-            _license_info: ironrdp::pdu::rdp::server_license::LicenseInformation,
+            _license_info: ironrdp_pdu::rdp::server_license::LicenseInformation,
         ) -> ConnectorResult<()> {
             Ok(())
         }
@@ -4097,7 +4168,7 @@ mod tests {
         connector.state = ClientConnectorState::LicensingExchange {
             io_channel_id: IO_CHANNEL_ID,
             user_channel_id: USER_CHANNEL_ID,
-            license_exchange: ironrdp::connector::LicenseExchangeSequence::new(
+            license_exchange: ironrdp_connector::LicenseExchangeSequence::new(
                 IO_CHANNEL_ID,
                 "alice".to_string(),
                 None,
@@ -4111,10 +4182,10 @@ mod tests {
     /// Server License Error PDU "Valid Client" on the I/O channel: what a
     /// standard Windows host sends to complete the licensing exchange.
     fn encode_valid_client_license_pdu() -> Vec<u8> {
-        use ironrdp::pdu::rdp::server_license::{LicensePdu, LicensingErrorMessage};
+        use ironrdp_pdu::rdp::server_license::{LicensePdu, LicensingErrorMessage};
         let msg = LicensingErrorMessage::new_valid_client().expect("valid client message");
         let user_data =
-            ironrdp::core::encode_vec(&LicensePdu::from(msg)).expect("encode LicensePdu");
+            ironrdp_core::encode_vec(&LicensePdu::from(msg)).expect("encode LicensePdu");
         encode_send_data_indication(IO_CHANNEL_ID, &user_data)
     }
 
@@ -4129,7 +4200,7 @@ mod tests {
         let rtt_pdu = encode_send_data_indication(MESSAGE_CHANNEL_ID, &encode_rtt_request(7));
 
         let mut buf = WriteBuf::new();
-        let result = connector.step(&rtt_pdu, &mut buf);
+        let result = connector.step(&rtt_pdu, None, &mut buf);
         assert!(
             result.is_err(),
             "upstream connector is expected to reject an interleaved auto-detect PDU \
@@ -4145,7 +4216,7 @@ mod tests {
         let mut connector = connector_in_licensing_exchange();
         let mut buf = WriteBuf::new();
         connector
-            .step(&encode_valid_client_license_pdu(), &mut buf)
+            .step(&encode_valid_client_license_pdu(), None, &mut buf)
             .expect("valid client licensing PDU must be accepted");
         assert!(
             matches!(
@@ -4164,9 +4235,9 @@ mod tests {
     /// is answered on the wire and licensing completes.
     #[tokio::test]
     async fn test_e2e_interleaved_rtt_during_licensing_is_answered_and_licensing_completes() {
-        use ironrdp::pdu::mcs::McsMessage;
-        use ironrdp::pdu::rdp::autodetect::{AutoDetectResponse, AutoDetectRspPdu};
-        use ironrdp::pdu::x224::X224;
+        use ironrdp_pdu::mcs::McsMessage;
+        use ironrdp_pdu::rdp::autodetect::{AutoDetectResponse, AutoDetectRspPdu};
+        use ironrdp_pdu::x224::X224;
         use tokio::io::AsyncWriteExt as _;
 
         let (client_side, mut server_side) = tokio::io::duplex(64 * 1024);
@@ -4203,13 +4274,13 @@ mod tests {
         // The RTT response must be on the wire: an MCS Send Data Request on
         // the message channel echoing the sequence number.
         let frame = read_tpkt_frame(&mut server_side).await;
-        let mcs = ironrdp::core::decode::<X224<McsMessage<'_>>>(&frame)
+        let mcs = ironrdp_core::decode::<X224<McsMessage<'_>>>(&frame)
             .expect("RTT response must be a valid X224/MCS PDU");
         let McsMessage::SendDataRequest(data) = mcs.0 else {
             panic!("RTT response must be an MCS Send Data Request");
         };
         assert_eq!(data.channel_id, MESSAGE_CHANNEL_ID);
-        let rsp = ironrdp::core::decode::<AutoDetectRspPdu>(&data.user_data)
+        let rsp = ironrdp_core::decode::<AutoDetectRspPdu>(&data.user_data)
             .expect("payload must be an AutoDetectRspPdu");
         assert_eq!(
             rsp.response,
@@ -4330,9 +4401,9 @@ mod tests {
             fn rtt_response_round_trips_for_any_sequence_number(
                 sequence_number in any::<u16>(),
             ) {
-                use ironrdp::pdu::mcs::McsMessage;
-                use ironrdp::pdu::rdp::autodetect::{AutoDetectResponse, AutoDetectRspPdu};
-                use ironrdp::pdu::x224::X224;
+                use ironrdp_pdu::mcs::McsMessage;
+                use ironrdp_pdu::rdp::autodetect::{AutoDetectResponse, AutoDetectRspPdu};
+                use ironrdp_pdu::x224::X224;
 
                 let mut connector = connector_in_licensing_exchange();
                 connector.state = ClientConnectorState::ConnectTimeAutoDetection {
@@ -4345,14 +4416,14 @@ mod tests {
                     .expect("encode must succeed")
                     .expect("an RTT response must be produced");
 
-                let mcs = ironrdp::core::decode::<X224<McsMessage<'_>>>(&buf[..len])
+                let mcs = ironrdp_core::decode::<X224<McsMessage<'_>>>(&buf[..len])
                     .expect("must decode");
                 let McsMessage::SendDataRequest(data) = mcs.0 else {
                     panic!("must be a Send Data Request");
                 };
                 prop_assert_eq!(data.channel_id, MESSAGE_CHANNEL_ID);
                 prop_assert_eq!(data.initiator_id, USER_CHANNEL_ID);
-                let rsp = ironrdp::core::decode::<AutoDetectRspPdu>(&data.user_data)
+                let rsp = ironrdp_core::decode::<AutoDetectRspPdu>(&data.user_data)
                     .expect("must be an AutoDetectRspPdu");
                 prop_assert_eq!(
                     rsp.response,
@@ -4396,25 +4467,25 @@ mod tests {
     /// header inside an MCS Send Data Indication on the I/O channel.
     fn encode_server_share_control(
         share_id: u32,
-        pdu: ironrdp::pdu::rdp::headers::ShareControlPdu,
+        pdu: ironrdp_pdu::rdp::headers::ShareControlPdu,
     ) -> Vec<u8> {
-        use ironrdp::pdu::rdp::capability_sets::SERVER_CHANNEL_ID;
-        let header = ironrdp::pdu::rdp::headers::ShareControlHeader {
+        use ironrdp_pdu::rdp::capability_sets::SERVER_CHANNEL_ID;
+        let header = ironrdp_pdu::rdp::headers::ShareControlHeader {
             share_control_pdu: pdu,
             pdu_source: SERVER_CHANNEL_ID,
             share_id,
         };
-        let user_data = ironrdp::core::encode_vec(&header).expect("encode ShareControlHeader");
+        let user_data = ironrdp_core::encode_vec(&header).expect("encode ShareControlHeader");
         encode_send_data_indication(IO_CHANNEL_ID, &user_data)
     }
 
     /// Server Demand Active PDU advertising the (renegotiated) desktop size
     /// via a Bitmap capability set.
     fn encode_server_demand_active(share_id: u32, width: u16, height: u16) -> Vec<u8> {
-        use ironrdp::pdu::rdp::capability_sets::{
+        use ironrdp_pdu::rdp::capability_sets::{
             Bitmap, BitmapDrawingFlags, CapabilitySet, DemandActive, ServerDemandActive,
         };
-        use ironrdp::pdu::rdp::headers::ShareControlPdu;
+        use ironrdp_pdu::rdp::headers::ShareControlPdu;
         let demand = ServerDemandActive {
             pdu: DemandActive {
                 source_descriptor: "RDP".to_owned(),
@@ -4432,10 +4503,10 @@ mod tests {
 
     fn encode_server_share_data(
         share_id: u32,
-        pdu: ironrdp::pdu::rdp::headers::ShareDataPdu,
+        pdu: ironrdp_pdu::rdp::headers::ShareDataPdu,
     ) -> Vec<u8> {
-        use ironrdp::pdu::rdp::client_info::CompressionType;
-        use ironrdp::pdu::rdp::headers::{
+        use ironrdp_pdu::rdp::client_info::CompressionType;
+        use ironrdp_pdu::rdp::headers::{
             CompressionFlags, ShareControlPdu, ShareDataHeader, StreamPriority,
         };
         let header = ShareDataHeader {
@@ -4448,8 +4519,8 @@ mod tests {
     }
 
     fn encode_server_font_map(share_id: u32) -> Vec<u8> {
-        use ironrdp::pdu::rdp::finalization_messages::FontPdu;
-        use ironrdp::pdu::rdp::headers::ShareDataPdu;
+        use ironrdp_pdu::rdp::finalization_messages::FontPdu;
+        use ironrdp_pdu::rdp::headers::ShareDataPdu;
         encode_server_share_data(share_id, ShareDataPdu::FontMap(FontPdu::default()))
     }
 
@@ -4457,17 +4528,16 @@ mod tests {
     /// Share Control header. Returns (mcs_channel_id, share_id, pdu).
     fn decode_client_share_control(
         frame: &[u8],
-    ) -> (u16, u32, ironrdp::pdu::rdp::headers::ShareControlPdu) {
-        use ironrdp::pdu::mcs::McsMessage;
-        use ironrdp::pdu::x224::X224;
-        let mcs = ironrdp::core::decode::<X224<McsMessage<'_>>>(frame).expect("X224/MCS");
+    ) -> (u16, u32, ironrdp_pdu::rdp::headers::ShareControlPdu) {
+        use ironrdp_pdu::mcs::McsMessage;
+        use ironrdp_pdu::x224::X224;
+        let mcs = ironrdp_core::decode::<X224<McsMessage<'_>>>(frame).expect("X224/MCS");
         let McsMessage::SendDataRequest(data) = mcs.0 else {
             panic!("client frame must be an MCS Send Data Request");
         };
-        let header = ironrdp::core::decode::<ironrdp::pdu::rdp::headers::ShareControlHeader>(
-            &data.user_data,
-        )
-        .expect("ShareControlHeader");
+        let header =
+            ironrdp_core::decode::<ironrdp_pdu::rdp::headers::ShareControlHeader>(&data.user_data)
+                .expect("ShareControlHeader");
         (data.channel_id, header.share_id, header.share_control_pdu)
     }
 
@@ -4480,9 +4550,9 @@ mod tests {
     /// [MS-RDPBCGR] 1.3.1.3).
     #[tokio::test]
     async fn test_e2e_reactivation_completes_and_negotiates_desktop_size() {
-        use ironrdp::pdu::rdp::capability_sets::{CapabilitySet, SERVER_CHANNEL_ID};
-        use ironrdp::pdu::rdp::finalization_messages::{ControlAction, ControlPdu, SynchronizePdu};
-        use ironrdp::pdu::rdp::headers::{ShareControlPdu, ShareDataPdu};
+        use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, SERVER_CHANNEL_ID};
+        use ironrdp_pdu::rdp::finalization_messages::{ControlAction, ControlPdu, SynchronizePdu};
+        use ironrdp_pdu::rdp::headers::{ShareControlPdu, ShareDataPdu};
         use tokio::io::AsyncWriteExt as _;
 
         let (client_side, mut server_side) = tokio::io::duplex(64 * 1024);
@@ -4611,7 +4681,7 @@ mod tests {
     /// tolerance our handler relies on.
     #[tokio::test]
     async fn test_e2e_reactivation_tolerates_deactivate_all_before_demand_active() {
-        use ironrdp::pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
+        use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
         use tokio::io::AsyncWriteExt as _;
 
         let (client_side, mut server_side) = tokio::io::duplex(64 * 1024);
@@ -4669,6 +4739,259 @@ mod tests {
     }
 
     // ====== Deactivation-Reactivation invariants (property-based) ======
+
+    // ==================== Finalize loop terminal states ====================
+    //
+    // Since ironrdp-connector 0.12 the connector can leave the finalize
+    // sequence through two states the 0.10 loop never saw: `Redirected`
+    // (Server Redirection PDU) and `MultitransportPending` (Initiate
+    // Multitransport Request). These tests pin what the local loop does
+    // with each.
+
+    /// Build a connector that finished licensing and waits for either an
+    /// Initiate Multitransport Request or the Demand Active.
+    fn connector_awaiting_demand_active() -> ClientConnector {
+        let mut connector = connector_in_licensing_exchange();
+        connector.state = ClientConnectorState::MultitransportBootstrapping {
+            io_channel_id: IO_CHANNEL_ID,
+            user_channel_id: USER_CHANNEL_ID,
+            message_channel_id: Some(MESSAGE_CHANNEL_ID),
+            requests_seen: 0,
+        };
+        connector
+    }
+
+    /// Enhanced Security Server Redirection PDU on the I/O channel, pointing
+    /// the client at another host.
+    fn encode_server_redirection(
+        flags: ironrdp_pdu::rdp::server_redirection::ServerRedirectionFlags,
+    ) -> Vec<u8> {
+        use ironrdp_pdu::rdp::headers::ShareControlPdu;
+        use ironrdp_pdu::rdp::server_redirection::ServerRedirectionPdu;
+        encode_server_share_control(
+            0,
+            ShareControlPdu::ServerRedirect(ServerRedirectionPdu {
+                session_id: 7,
+                flags,
+                target_net_address: Some("203.0.113.99".to_string()),
+                ..ServerRedirectionPdu::default()
+            }),
+        )
+    }
+
+    fn initiate_multitransport_request(
+        request_id: u32,
+    ) -> ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu {
+        use ironrdp_pdu::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
+        use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, RequestedProtocol};
+        MultitransportRequestPdu {
+            security_header: BasicSecurityHeader {
+                flags: BasicSecurityHeaderFlags::TRANSPORT_REQ,
+            },
+            request_id,
+            requested_protocol: RequestedProtocol::UdpFecR,
+            security_cookie: [0xAB; 16],
+        }
+    }
+
+    /// A Server Redirection PDU ends the handshake with an error: the
+    /// session was authorized and pinned for one target, so the proxy does
+    /// not follow the server to another host. Nothing is written back.
+    #[tokio::test]
+    async fn test_finalize_refuses_server_redirection() {
+        use ironrdp_pdu::rdp::server_redirection::ServerRedirectionFlags;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let (client_side, mut server_side) = tokio::io::duplex(64 * 1024);
+        let mut framed = ironrdp_tokio::TokioFramed::new(client_side);
+        let mut connector = connector_awaiting_demand_active();
+        let mut buf = WriteBuf::new();
+
+        server_side
+            .write_all(&encode_server_redirection(ServerRedirectionFlags::empty()))
+            .await
+            .expect("server writes redirection");
+
+        let error = drive_finalize_to_connected(&mut connector, &mut framed, &mut buf)
+            .await
+            .expect_err("a server redirection must not yield a connected session");
+        let message = error.to_string();
+        assert!(
+            message.contains("redirection"),
+            "the error must name the redirection, got: {message}"
+        );
+        assert!(
+            matches!(connector.state, ClientConnectorState::Consumed),
+            "the terminal state must have been taken, got {:?}",
+            connector.state
+        );
+
+        // The proxy sent nothing in answer to the redirection.
+        drop(framed);
+        let mut leftover = Vec::new();
+        server_side
+            .read_to_end(&mut leftover)
+            .await
+            .expect("read until client close");
+        assert!(
+            leftover.is_empty(),
+            "nothing may be written back after a redirection"
+        );
+    }
+
+    /// Counterpart of the refusal: an informational redirection
+    /// (`LB_NOREDIRECT`) asks for no reconnection and must not abort the
+    /// handshake. The connector keeps waiting for the Demand Active.
+    #[tokio::test]
+    async fn test_finalize_ignores_informational_server_redirection() {
+        use ironrdp_pdu::rdp::server_redirection::ServerRedirectionFlags;
+        use tokio::io::AsyncWriteExt as _;
+
+        let (client_side, mut server_side) = tokio::io::duplex(64 * 1024);
+        let mut framed = ironrdp_tokio::TokioFramed::new(client_side);
+        let mut connector = connector_awaiting_demand_active();
+        let mut buf = WriteBuf::new();
+
+        server_side
+            .write_all(&encode_server_redirection(
+                ServerRedirectionFlags::NO_REDIRECT,
+            ))
+            .await
+            .expect("server writes informational redirection");
+
+        let outcome = finalize_step(&mut connector, &mut framed, &mut buf)
+            .await
+            .expect("an informational redirection must not abort the handshake");
+        assert_eq!(outcome, FinalizeStepOutcome::SteppedConnector);
+        assert!(
+            connector.state.take_outcome().is_none(),
+            "an informational redirection is not a terminal state"
+        );
+        assert!(
+            matches!(
+                connector.state,
+                ClientConnectorState::CapabilitiesExchange { .. }
+            ),
+            "the connector must still wait for the Demand Active, got {:?}",
+            connector.state
+        );
+    }
+
+    /// A connector parked in `MultitransportPending` is not stepped (the
+    /// upstream `step` errors in that state): the loop declines the request
+    /// with `E_ABORT` on the message channel, echoing its request ID, and
+    /// goes back to reading.
+    #[tokio::test]
+    async fn test_finalize_declines_pending_multitransport_with_e_abort() {
+        use ironrdp_pdu::mcs::McsMessage;
+        use ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu;
+        use ironrdp_pdu::x224::X224;
+
+        const REQUEST_ID: u32 = 0x1234_5678;
+
+        let (client_side, mut server_side) = tokio::io::duplex(64 * 1024);
+        let mut framed = ironrdp_tokio::TokioFramed::new(client_side);
+        let mut connector = connector_awaiting_demand_active();
+        connector.state = ClientConnectorState::MultitransportPending {
+            io_channel_id: IO_CHANNEL_ID,
+            user_channel_id: USER_CHANNEL_ID,
+            message_channel_id: Some(MESSAGE_CHANNEL_ID),
+            request: initiate_multitransport_request(REQUEST_ID),
+            requests_seen: 1,
+            soft_sync: false,
+        };
+        let mut buf = WriteBuf::new();
+
+        // The scripted server reads the answer, then hangs up: the loop is
+        // back to reading by then, so it ends on the closed transport.
+        // Bounded: a loop that stops answering would otherwise leave the
+        // scripted server waiting forever instead of failing the test.
+        let (result, frame) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(
+                drive_finalize_to_connected(&mut connector, &mut framed, &mut buf),
+                async move {
+                    let frame = read_tpkt_frame(&mut server_side).await;
+                    drop(server_side);
+                    frame
+                }
+            )
+        })
+        .await
+        .expect("the loop must answer the pending multitransport request");
+
+        let mcs = ironrdp_core::decode::<X224<McsMessage<'_>>>(&frame)
+            .expect("the answer must be a valid X224/MCS PDU");
+        let McsMessage::SendDataRequest(data) = mcs.0 else {
+            panic!("the answer must be an MCS Send Data Request");
+        };
+        assert_eq!(data.channel_id, MESSAGE_CHANNEL_ID);
+        let response = ironrdp_core::decode::<MultitransportResponsePdu>(&data.user_data)
+            .expect("payload must be an Initiate Multitransport Response");
+        assert_eq!(response.request_id, REQUEST_ID);
+        assert_eq!(response.hr_response, MultitransportResponsePdu::E_ABORT);
+        assert!(!response.is_success());
+
+        assert!(
+            result.is_err(),
+            "the server hung up before the Demand Active: no connected session"
+        );
+        assert!(
+            matches!(
+                connector.state,
+                ClientConnectorState::MultitransportBootstrapping { .. }
+            ),
+            "declining must return the connector to reading, got {:?}",
+            connector.state
+        );
+    }
+
+    /// On the wire an Initiate Multitransport Request travels on the
+    /// message channel, where the demux swallows it: the connector is never
+    /// parked in `MultitransportPending`, and the request gets no answer.
+    #[tokio::test]
+    async fn test_demux_swallows_initiate_multitransport_request() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let (client_side, mut server_side) = tokio::io::duplex(64 * 1024);
+        let mut framed = ironrdp_tokio::TokioFramed::new(client_side);
+        let mut connector = connector_awaiting_demand_active();
+        let mut buf = WriteBuf::new();
+
+        let request = ironrdp_core::encode_vec(&initiate_multitransport_request(42))
+            .expect("encode Initiate Multitransport Request");
+        server_side
+            .write_all(&encode_send_data_indication(MESSAGE_CHANNEL_ID, &request))
+            .await
+            .expect("server writes multitransport request");
+
+        let outcome = finalize_step(&mut connector, &mut framed, &mut buf)
+            .await
+            .expect("a multitransport request must not abort the handshake");
+        assert_eq!(outcome, FinalizeStepOutcome::IgnoredMessageChannelPdu);
+        assert!(
+            !connector.should_perform_multitransport(),
+            "the request must not reach the connector"
+        );
+        assert!(
+            matches!(
+                connector.state,
+                ClientConnectorState::MultitransportBootstrapping {
+                    requests_seen: 0,
+                    ..
+                }
+            ),
+            "the connector must be untouched, got {:?}",
+            connector.state
+        );
+
+        drop(framed);
+        let mut leftover = Vec::new();
+        server_side
+            .read_to_end(&mut leftover)
+            .await
+            .expect("read until client close");
+        assert!(leftover.is_empty(), "a swallowed request gets no answer");
+    }
 
     mod reactivation_invariants {
         use proptest::prelude::*;
@@ -6181,8 +6504,8 @@ mod tests {
         #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
         use super::*;
-        use ironrdp::connector::sspi::NetworkProtocol;
-        use ironrdp::connector::sspi::generator::NetworkRequest;
+        use ironrdp_connector::sspi::NetworkProtocol;
+        use ironrdp_connector::sspi::generator::NetworkRequest;
         use proptest::prelude::*;
 
         fn test_realm() -> shared::kerberos::Realm {

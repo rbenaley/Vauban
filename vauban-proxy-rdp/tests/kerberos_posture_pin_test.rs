@@ -22,8 +22,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use ironrdp::connector::sspi::credssp::{CredSspMode, write_ts_credentials};
-use ironrdp::connector::sspi::{AuthIdentity, AuthIdentityBuffers, CredentialsBuffers, Username};
+use ironrdp_connector::sspi::credssp::{CredSspMode, write_ts_credentials};
+use ironrdp_connector::sspi::{AuthIdentity, AuthIdentityBuffers, CredentialsBuffers, Username};
 use proptest::prelude::*;
 
 /// UTF-16LE encoding of `s`, the way TSPasswordCreds encodes its OCTET

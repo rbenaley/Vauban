@@ -53,7 +53,7 @@ bash vauban-web/scripts/check_pin_routes_csrf.sh
 rtk cargo test -p vauban-supervisor --all-features -- attack_ file_broker -- --test-threads=1
 rtk cargo test -p vauban-web --all-features --lib -- middleware::tests rdp_open_failure models::asset
 rtk cargo test -p vauban-web --all-features --test integration_tests -- pin_csrf attack_assets_read attack_api_never -- --test-threads=1
-rtk cargo test --manifest-path vauban-proxy-rdp/Cargo.toml --target-dir target-rdp
+rtk cargo test -p vauban-proxy-rdp
 ```
 
 ## Lab prerequisites

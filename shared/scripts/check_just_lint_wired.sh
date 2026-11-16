@@ -78,10 +78,18 @@ if [[ -z "${catalog_line}" ]] || ! grep -q -- '--test-threads=1' <<<"${catalog_l
     exit 1
 fi
 
-# RDP's lockfile must not share the workspace target directory.
-if ! grep -q 'rdp_manifest := rdp_path + " --target-dir target-rdp"' "${JUST}"; then
-    echo "[lint] rdp_manifest must compile into target-rdp" >&2
+# The recipes reach vauban-proxy-rdp through `--workspace` alone, so it
+# has to be a workspace member: outside, no recipe would build, lint or
+# test it.
+CARGO="${ROOT}/Cargo.toml"
+members="$(awk '/^members = \[/{p=1;next} p && /^\]/{exit} p' "${CARGO}")"
+if ! grep -q '"vauban-proxy-rdp"' <<<"${members}"; then
+    echo "[lint] vauban-proxy-rdp must be a workspace member (the just recipes only cover --workspace)" >&2
+    exit 1
+fi
+if grep -qE '^exclude = .*vauban-proxy-rdp' "${CARGO}"; then
+    echo "[lint] vauban-proxy-rdp must not be excluded from the workspace" >&2
     exit 1
 fi
 
-echo "[lint] just validate is lint + clippy + test; just test passes --all-features; RDP uses target-rdp"
+echo "[lint] just validate is lint + clippy + test; just test passes --all-features; RDP is a workspace member"

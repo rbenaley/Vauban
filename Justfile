@@ -1,42 +1,18 @@
 # Vauban build recipes
 #
-# vauban-proxy-rdp is excluded from the Cargo workspace due to irreconcilable
-# pre-release dependency conflicts in the RustCrypto ecosystem (ironrdp/picky/sspi
-# vs russh/ssh-key). These recipes ensure it is always built alongside the workspace.
-#
-# RDP compiles into target-rdp/ so its lockfile cannot invalidate the
-# workspace target/. link-rdp points ./target/{debug,release}/vauban-proxy-rdp
-# at that artifact: the supervisor execs bin_path = "./target/debug".
-
-rdp_path     := "--manifest-path vauban-proxy-rdp/Cargo.toml"
-rdp_manifest := rdp_path + " --target-dir target-rdp"
+# Every crate, vauban-proxy-rdp included, is a member of the Cargo workspace:
+# one lockfile, one target/. The supervisor execs bin_path = "./target/debug".
 
 # Workspace config/ for recipes that boot or load conf (not a global export).
 repo_config_dir := justfile_directory() / "config"
 
-# Build all crates (workspace + vauban-proxy-rdp)
+# Build all crates
 build *ARGS:
     cargo build --workspace {{ARGS}}
-    cargo build {{rdp_manifest}} {{ARGS}}
-    just link-rdp
-
-# Point the supervisor's bin_path at the RDP artifact in target-rdp/.
-# No-op until that binary exists (check, clippy, and test do not need it).
-link-rdp:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    for profile in debug release; do
-        src="target-rdp/${profile}/vauban-proxy-rdp"
-        if [[ -x "${src}" ]]; then
-            mkdir -p "target/${profile}"
-            ln -sfn "../../${src}" "target/${profile}/vauban-proxy-rdp"
-        fi
-    done
 
 # Check all crates without producing binaries
 check *ARGS:
     cargo check --workspace {{ARGS}}
-    cargo check {{rdp_manifest}} {{ARGS}}
 
 # Run all tests.
 # Requires PostgreSQL for crates that hit DATABASE_URL (see config/testing.toml).
@@ -52,7 +28,6 @@ check *ARGS:
 test *ARGS:
     cargo test --workspace --all-features --exclude vauban-web --exclude vauban-access --exclude vauban-supervisor {{ARGS}}
     cargo test --all-features -p vauban-web -p vauban-access -p vauban-supervisor {{ARGS}} -- --test-threads=1
-    cargo test {{rdp_manifest}} {{ARGS}}
 
 # Coverage gate for the MCP security fixes (MCP Arch §13.1):
 # 100 % on the fix modules, diff coverage on every other changed line.
@@ -69,7 +44,6 @@ cov-mcp:
 # Run clippy on all crates (warnings are errors, same as the agent cycle).
 clippy *ARGS:
     cargo clippy --workspace --all-targets {{ARGS}} -- -D warnings
-    cargo clippy {{rdp_manifest}} --all-targets {{ARGS}} -- -D warnings
 
 # Structural check_*.sh + cargo-deny advisories + Semgrep.
 # Fail-closed if cargo-deny or semgrep is missing (see docs/runbooks/local_lint_tools.md).
@@ -90,7 +64,7 @@ lint:
     just deny
     just semgrep
 
-# RustSec advisories on both lockfiles (cargo-deny).
+# RustSec advisories on the workspace lockfile (cargo-deny).
 deny *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -99,7 +73,6 @@ deny *ARGS:
         exit 1
     fi
     cargo deny check advisories {{ARGS}}
-    cargo deny --manifest-path vauban-proxy-rdp/Cargo.toml check advisories {{ARGS}}
 
 # Semgrep class rules (untrusted interpolation + in-band verifying key).
 semgrep:
@@ -126,7 +99,7 @@ semgrep:
 
 # Full validation cycle: lint + clippy + test (stops on first failure).
 # Clippy and test already compile the crates; `just build` stays the
-# recipe that produces a runnable tree (and the RDP symlink).
+# recipe that produces a runnable tree.
 # The MCP packaging dry-check runs inside lint. FreeBSD live A–C stays in
 # docs/runbooks/mcp_staging_gwt_acceptance.md.
 # Exports VAUBAN_CONFIG_DIR to the repo config/ for the duration (release
@@ -142,8 +115,6 @@ validate:
 # Build release binaries
 release:
     cargo build --workspace --release
-    cargo build {{rdp_manifest}} --release
-    just link-rdp
 
 # Examples: just run | just run --release | just run -- -- create-superuser
 # Run the supervisor (workspace default-members → vauban-supervisor).
@@ -163,24 +134,13 @@ package:
 check-mcp-pkg *args:
     ./pkg/check-mcp-pkg.sh {{args}}
 
-# Uses {{rdp_path}} (no --target-dir): `cargo update` only rewrites
-# Cargo.lock and rejects --target-dir.
-# Update dependencies in both lockfiles (workspace + vauban-proxy-rdp)
+# Update dependencies in the workspace lockfile
 update *ARGS:
     cargo update {{ARGS}}
-    cargo update {{rdp_path}} {{ARGS}}
 
-# Scan both lockfiles for RustSec advisories (cargo audit uses -f, not
-# --manifest-path, so the rdp lock is passed explicitly). Both scans always
-# run; the recipe fails if either lockfile has advisories (CI-friendly).
-# Audit dependencies in both lockfiles (workspace + vauban-proxy-rdp)
+# Audit the workspace lockfile for RustSec advisories
 audit *ARGS:
-    #!/usr/bin/env bash
-    set -uo pipefail
-    rc=0
-    cargo audit {{ARGS}} || rc=1
-    cargo audit -f vauban-proxy-rdp/Cargo.lock {{ARGS}} || rc=1
-    exit $rc
+    cargo audit {{ARGS}}
 
 # Clean all build artifacts
 clean:

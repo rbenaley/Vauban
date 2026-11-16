@@ -28,13 +28,13 @@ pub(crate) mod mit_kdc;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use ironrdp::connector::sspi;
-use ironrdp::connector::sspi::credssp::{
+use ironrdp_connector::sspi;
+use ironrdp_connector::sspi::credssp::{
     CredSspServer, CredentialsProxy, ServerMode, ServerState, TsRequest,
 };
-use ironrdp::connector::sspi::generator::NetworkRequest;
-use ironrdp::connector::sspi::kerberos::ServerProperties;
-use ironrdp::connector::sspi::network_client::NetworkClient as SyncNetworkClient;
+use ironrdp_connector::sspi::generator::NetworkRequest;
+use ironrdp_connector::sspi::kerberos::ServerProperties;
+use ironrdp_connector::sspi::network_client::NetworkClient as SyncNetworkClient;
 use kdc_mock::{KdcMock, MAX_TIME_SKEW, PasswordCreds, UserName, Validators};
 use picky_asn1::restricted_string::IA5String;
 use picky_asn1::wrapper::{Asn1SequenceOf, ExplicitContextTag0, ExplicitContextTag1, IntegerAsn1};
@@ -338,7 +338,7 @@ impl CredsspTarget {
 
             match server.process(ts_request).resolve_with_client(&kdc_client) {
                 Ok(ServerState::ReplyNeeded(reply)) => {
-                    let mut out = vec![0u8; usize::from(reply.buffer_len())];
+                    let mut out = vec![0u8; usize::from(reply.buffer_len().unwrap())];
                     reply.encode_ts_request(out.as_mut_slice()).unwrap();
                     if stream.write_all(&out).await.is_err() {
                         break TargetOutcome::ClientGone;
@@ -354,7 +354,7 @@ impl CredsspTarget {
                     // As a real target does, tell the client when the
                     // protocol has an error TsRequest for it.
                     if let Some(reply) = error.ts_request {
-                        let mut out = vec![0u8; usize::from(reply.buffer_len())];
+                        let mut out = vec![0u8; usize::from(reply.buffer_len().unwrap())];
                         if reply.encode_ts_request(out.as_mut_slice()).is_ok() {
                             let _ = stream.write_all(&out).await;
                         }

@@ -522,7 +522,7 @@ vauban-web/tests/
 └── ipc/                   # vauban-access in-process IPC tests
 ```
 
-The workspace and `vauban-proxy-rdp` are tested separately (`just test` runs both).
+`vauban-proxy-rdp` is a workspace member: `just test` covers it with the other crates.
 
 ### Setting Up Test Database
 

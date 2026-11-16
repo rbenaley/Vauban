@@ -949,8 +949,8 @@ in CI. The CredSSP leg is covered by two harnesses in
   socket over `SCM_RIGHTS`, framed I/O on the received descriptor.
 
   ```bash
-  VAUBAN_TEST_MIT_KDC=1 cargo test --manifest-path vauban-proxy-rdp/Cargo.toml \
-    --target-dir target-rdp -- --ignored mit_kdc --test-threads=1
+  VAUBAN_TEST_MIT_KDC=1 cargo test -p vauban-proxy-rdp \
+    -- --ignored mit_kdc --test-threads=1
   ```
 
   It needs `krb5kdc`, `kdb5_util` and `kadmin.local` (searched in

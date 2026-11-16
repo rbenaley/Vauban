@@ -162,7 +162,7 @@ pub(super) async fn open_with(
             &mut framed,
             &mut network_client,
             &mut buf,
-            connector::ServerName::new(host),
+            ironrdp_connector::ServerName::new(host),
             server_public_key(),
             mode,
         ),
@@ -586,7 +586,7 @@ async fn negotiate(mode: RdpAuthMode, confirm: nego::ConnectionConfirm) -> Sessi
     let target = tokio::spawn(async move {
         let mut request = [0u8; 1024];
         let _ = target_io.read(&mut request).await;
-        let pdu = ironrdp::core::encode_vec(&X224(confirm)).unwrap();
+        let pdu = ironrdp_core::encode_vec(&X224(confirm)).unwrap();
         let _ = target_io.write_all(&pdu).await;
         // Keep the stream open until the client is done with it.
         let _ = target_io.read(&mut request).await;
@@ -821,7 +821,7 @@ async fn attack_handshake_without_credssp_is_rejected() {
             connector,
             &mut framed,
             &mut network_client,
-            connector::ServerName::new(TARGET_HOST),
+            ironrdp_connector::ServerName::new(TARGET_HOST),
             server_public_key(),
             mode,
         )

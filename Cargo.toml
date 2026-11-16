@@ -15,20 +15,21 @@ members = [
     "vauban-mcp",
     "vauban-vault",
     "vauban-audit",
+    # A member since IronRDP moved to picky 7.0.0-rc.26. It lived outside
+    # the workspace, with its own lockfile, while picky pinned
+    # curve25519-dalek =5.0.0-rc.1 against russh's ^5. The two stacks still
+    # meet on exact pre-release pins (rsa =0.10.0-rc.18, pkcs1
+    # =0.8.0-rc.4): russh and the ironrdp-* crates have to move off them
+    # together, or the workspace stops resolving.
+    "vauban-proxy-rdp",
 ]
-# vauban-proxy-rdp is excluded due to irreconcilable pre-release version
-# conflicts in the RustCrypto ecosystem between ironrdp/picky/sspi (sha1
-# =0.11.0-rc.2, digest =0.11.0-rc.5, crypto-common =0.2.0-rc.8) and
-# russh/ssh-key (sha1 ^0.11.0-rc.3 with russh 0.61; russh 0.65 is on the
-# stable sha1 0.11 / digest 0.11). Use `just build` to compile everything.
-exclude = ["vauban-proxy-rdp"]
 
 # Default package for `cargo run` from workspace root
 # vauban-supervisor is the main entry point that orchestrates all services
 default-members = ["vauban-supervisor"]
 
 [workspace.package]
-version = "0.9.52"
+version = "0.9.53"
 edition = "2024"
 rust-version = "1.98"
 authors = ["Richard Ben Aleya"]
@@ -108,6 +109,13 @@ dbg_macro      = "deny"
 unimplemented  = "deny"
 print_stdout   = "deny"
 print_stderr   = "deny"
+
+# AVX2 support (vauban-proxy-rdp): upstream openh264-sys2 build.rs does not
+# pass -DHAVE_AVX2 to NASM or the C++ compiler, unlike Cisco's official
+# meson.build. Use our fork with AVX2 optimizations for SAD and Intra
+# Prediction.
+[patch.crates-io]
+openh264-sys2 = { git = "https://github.com/rbenaley/openh264-rs-avx2" }
 
 [profile.release]
 opt-level = 3

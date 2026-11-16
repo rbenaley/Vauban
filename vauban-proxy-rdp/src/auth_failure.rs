@@ -18,7 +18,7 @@
 //! reply is untrusted input: the reader below is bounded, allocates
 //! nothing and never indexes without a length check.
 
-use ironrdp::connector::sspi::ErrorKind;
+use ironrdp_connector::sspi::ErrorKind;
 use shared::kerberos::KdcLeaseRefusal;
 use shared::messages::{RdpAuthFailure, RdpAuthMode};
 
