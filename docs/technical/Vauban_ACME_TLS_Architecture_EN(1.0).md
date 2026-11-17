@@ -564,9 +564,18 @@ request anything that decides what is written or where:
   A renewal runs on the supervisor's own loop and talks to the
   certificate authority; `vauban-web` asks once per renewal window and
   never reaches the bound. A request refused for another reason does
-  not count. `vauban-web` does not ask again by itself after a refusal:
-  restart it once the cause is corrected, and no more than three times
-  in a quarter of an hour.
+  not count.
+- `vauban-web` asks again by itself. A refusal, a failure at the
+  certificate authority, a request that could not be sent, or no
+  answer within thirty minutes is followed by a new request after
+  fifteen minutes, then thirty, one hour, and so on up to six hours.
+  `acme_too_soon` waits fifteen minutes without lengthening the next
+  waits. The first wait is the window of the supervisor's bound, so a
+  retry is never the request that trips it. A certificate activated
+  meanwhile ends the retries.
+- A write interrupted between create and rename leaves a temporary
+  file next to its destination; the next write of the same file
+  removes it.
 - The certificate, key and account paths are made absolute when the
   request is authorized, against the directory the supervisor runs in.
   Each file is written to a temporary file created exclusively with

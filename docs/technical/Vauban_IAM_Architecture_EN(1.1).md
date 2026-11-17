@@ -1456,6 +1456,46 @@ Since 0.9.53:
 - `Asset` and `NewAsset` do not derive `Debug`. It is written by hand
   and prints the key names of `connection_config`, never a value.
 
+### 9.5.2 Writing `connection_config`
+
+`connection_config` holds the pinned identity of a target, the
+mismatch flags, the credentials (as vault ciphertext) and the MCP tool
+catalogue. No handler writes the whole document of an existing asset.
+Three functions of `models::asset` are the only way in:
+
+| Function | For | How |
+|----------|-----|-----|
+| `patch_connection_config` | a write that names its keys: a pin, a flag | one statement, `(document - removed keys) \|\| set keys` |
+| `ConfigPatch::between(old, new)` | an edit form or an update request, which compute a whole document | the keys that differ between the document that was read and the one computed, applied to the document as the database holds it |
+| `update_connection_config_with` | a document that depends on the current one: merging a tool catalogue | read, compute, write only if the document is still the one read; otherwise again, up to five times |
+
+Before this, a handler read the asset, talked to the target or to an
+upstream server, and wrote its whole copy back: a pin, a flag or an
+edit stored in between was lost.
+
+A pin is also conditional on the pin the handler read
+(`ConfigPatch::expecting`). "No pin yet, so no confirmation is needed"
+and "the administrator confirmed replacing this pin" are decisions
+about a particular stored value. If another request pinned something
+else meanwhile, nothing is written: the web zone asks to reload, the
+API answers 409.
+
+`vauban-web/scripts/check_connection_config_writes.sh` fails on an
+`UPDATE` in `handlers/` or `ipc/` that writes the column without a
+`ConfigPatch`. Two writes stay whole-document: the scrub of a deleted
+asset, and the supervisor's one-shot credential-migration command.
+
+### 9.5.3 SSH operations answer with codes
+
+The SSH proxy answers every operation with an `SshOpenFailure` code:
+opening a session, fetching a host key, pushing a public key, testing
+key authentication. `vauban-web` shows one constant sentence per code;
+the text of the error, which for a key push may quote the output of
+the target, stays in the `vauban-proxy-ssh` log. A failure of the
+supervisor to broker the connection is shown as one constant sentence
+too. A host key mismatch seen during a key push or a key test raises
+the mismatch flag, as one seen while connecting does.
+
 ### 9.6 PermissionContext (Casbin-backed UI gating)
 
 To eliminate hardcoded `is_staff || is_superuser` shortcuts (issue #1) that

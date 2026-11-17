@@ -561,8 +561,11 @@ and no sandboxed service can forge one. `session_owner` keeps that
 fact: once the token of session S has been accepted for service X, S is
 served by X. An entry never changes service (a token for the same
 session and another service is refused), the table is bounded, and a
-lease on a session it does not know is refused. The table lives in
-memory: the services, and every session with them, do not outlive the
+lease on a session it does not know is refused. When the table is
+full the least recently used session goes first: a token presented
+again and a lease both count as a use, so a long session that keeps
+asking for files is not the one forgotten. The table lives in memory:
+the services, and every session with them, do not outlive the
 supervisor.
 
 **What a proxy may ask for.** The path must be
@@ -587,13 +590,17 @@ audit.
 | Source | Files | Condition |
 |--------|-------|-----------|
 | `proxy_ssh`, `proxy_rdp` | `meta.json` | that proxy serves the session |
-| `proxy_iacs` | `session.json`, `meta.json`, `channels/NNN.pcap`, `channels/NNN.pcap.gz` | the session has no recorded owner or is served by `proxy_iacs`, and its directory holds no media of another recorder |
+| `proxy_iacs` | `session.json`, `meta.json`, `channels/NNN.pcap`, `channels/NNN.pcap.gz` | `proxy_iacs` serves the session |
 
-IACS is the one case the token does not cover: `session.json` is
-written when the operator authenticates, before any channel presents
-the token. The directory vouches for it instead: a session that has
-`session.cast`, `session.mcp.jsonl` or `001.mp4` is not an IACS
-session.
+An IACS session records from the moment the operator authenticates
+(`session.json`), before its first channel asks for a connection, and
+a session without a channel never asks for one. `vauban-web` therefore
+presents the session token when it opens the tunnel
+(`SessionClaimRequest`): the supervisor verifies it exactly as for a
+connection, records the session for `proxy_iacs`, and opens no socket.
+Only `web` may claim, and only for `ProxyIacs`; a proxy that could
+claim would claim the session of another. If the claim is refused the
+tunnel is not opened.
 
 **How the file is opened.** `shared::recording_open` descends from the
 storage base one component at a time with
@@ -615,17 +622,11 @@ recording-end message whose metadata path is not a `meta.json`.
 
 What remains open:
 
-- A token for a session can be presented by the service it was minted
-  for only, so a proxy cannot claim another proxy's session. A
-  `proxy_iacs` that names a session identifier before that session's
-  recorder has created its first file can still have audit create
-  `session.json` and `meta.json` there. It must know the identifier in
-  advance, and it learns no identifier but its own.
 - The read and delete brokers (web only) keep canonical containment
   rather than the no-follow walk: a deployment may link old months to
   another volume.
-- A supervisor that opened more than 262 144 sessions since its last
-  start forgets the oldest; a session that old can no longer obtain a
+- The table holds 262 144 sessions. A session that stayed idle while
+  that many others were used is forgotten and can no longer obtain a
   new file.
 
 A TCP connection to a target that needs no session token has one caller
