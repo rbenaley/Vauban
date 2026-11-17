@@ -3985,6 +3985,24 @@ pub enum Message {
         /// The mode the proxy attempted (echo of the open request).
         rdp_auth_mode: RdpAuthMode,
     },
+
+    /// Audit -> Supervisor: write lease on a recording file that the
+    /// audit service writes on behalf of a session proxy.
+    ///
+    /// `source` is the service whose pipe carried the message that made
+    /// audit ask (the pipe is the identity; nothing a proxy sends sets
+    /// it). The supervisor grants the lease only when that service is the
+    /// one serving `session_id`, so a proxy cannot have audit write the
+    /// metadata of a session it does not serve. Answered by
+    /// [`Message::RecordingFileResponse`]. Caller = audit only.
+    /// Appended at END.
+    AuditRecordingFileRequest {
+        request_id: u64,
+        session_id: String,
+        /// `YYYY/MM/<session_id>/<file>`.
+        relative_path: String,
+        source: Service,
+    },
 }
 
 /// Largest payload of one [`Message::McpRelayBody`] or [`Message::McpTunnelData`].

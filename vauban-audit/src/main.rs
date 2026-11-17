@@ -32,7 +32,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use ed25519_dalek::SigningKey;
 use recording_manager::RecordingManager;
 use shared::ipc::{IpcChannel, poll_readable};
-use shared::messages::{AuditEventType, ControlMessage, Message, ServiceStats};
+use shared::messages::{AuditEventType, ControlMessage, Message, Service, ServiceStats};
 use shared::recording_fd::{DEFAULT_BROKER_TIMEOUT, lease_write_fd};
 use shared::sandbox as capsicum;
 use ssh_recording_manager::{SshEndSessionResult, SshRecordingManager};
@@ -1591,6 +1591,7 @@ fn handle_recording_message(
                 fd_passing_socket,
                 &session_id,
                 &meta_json_relative_path,
+                Service::ProxyRdp,
             ) {
                 Ok(meta_file) => {
                     use std::io::Write;
@@ -1700,6 +1701,7 @@ fn handle_ssh_recording_message(
                 fd_passing_socket,
                 &session_id,
                 &result.meta_json_relative_path,
+                Service::ProxySsh,
             ) {
                 Ok(meta_file) => {
                     use std::io::Write;
@@ -1780,6 +1782,7 @@ fn handle_iacs_recording_message(ctx: IacsRecordingHandlerCtx<'_>, msg: Message)
                 fd_passing_socket,
                 &session_id,
                 &session_json_relative,
+                Service::ProxyIacs,
             ) {
                 Ok(mut file) => {
                     use std::io::Write;
@@ -1824,6 +1827,7 @@ fn handle_iacs_recording_message(ctx: IacsRecordingHandlerCtx<'_>, msg: Message)
                 fd_passing_socket,
                 &session_id,
                 &relative_path,
+                Service::ProxyIacs,
             ) {
                 Ok(file) => {
                     let endpoints = crate::iacs_recording_manager::IacsChannelEndpoints {
@@ -1963,6 +1967,7 @@ fn enqueue_iacs_gzip_job(
         fd_passing_socket,
         &session_id,
         &paths.dst_relative,
+        Service::ProxyIacs,
     ) {
         Ok(f) => f,
         Err(e) => {
@@ -2083,6 +2088,7 @@ fn finish_iacs_session_end(
         fd_passing_socket,
         session_id,
         &result.meta_json_relative_path,
+        Service::ProxyIacs,
     ) {
         Ok(meta_file) => {
             use std::io::Write;
@@ -2115,7 +2121,13 @@ fn finish_iacs_session_end(
             info,
             Some((ended_at_us, reason)),
         );
-        match request_file_from_supervisor(supervisor_channel, fd_passing_socket, session_id, rel) {
+        match request_file_from_supervisor(
+            supervisor_channel,
+            fd_passing_socket,
+            session_id,
+            rel,
+            Service::ProxyIacs,
+        ) {
             Ok(mut file) => {
                 use std::io::Write;
                 if let Err(e) = file
@@ -2194,13 +2206,19 @@ fn names_meta_json(relative_path: &str) -> bool {
 
 /// Request a file from the supervisor via IPC + SCM_RIGHTS.
 ///
-/// Sends a `RecordingFileRequest`, waits for the `RecordingFileResponse`,
-/// and receives the file descriptor on the fd_passing socket.
+/// Sends an `AuditRecordingFileRequest`, waits for the
+/// `RecordingFileResponse`, and receives the file descriptor on the
+/// fd_passing socket.
+///
+/// `source` is the proxy whose pipe carried the message being handled.
+/// It is fixed by the handler, never read from the message: the
+/// supervisor grants the file only if that proxy serves the session.
 fn request_file_from_supervisor(
     channel: &IpcChannel,
     fd_passing_socket: Option<RawFd>,
     session_id: &str,
     relative_path: &str,
+    source: Service,
 ) -> Result<std::fs::File> {
     let fd_socket =
         fd_passing_socket.ok_or_else(|| anyhow::anyhow!("no fd_passing socket available"))?;
@@ -2209,6 +2227,7 @@ fn request_file_from_supervisor(
         fd_socket,
         session_id,
         relative_path,
+        source,
         DEFAULT_BROKER_TIMEOUT,
     )
     .map_err(Into::into)
@@ -2716,13 +2735,14 @@ mod tests {
         // Audit only leases meta.json; session.cast is proxy-owned.
         let handle = std::thread::spawn(move || {
             let msg = supervisor_channel.recv().unwrap();
-            if let Message::RecordingFileRequest {
+            if let Message::AuditRecordingFileRequest {
                 request_id,
                 session_id,
                 relative_path,
-                ..
+                source,
             } = msg
             {
+                assert_eq!(source, Service::ProxySsh, "the SSH handler names its pipe");
                 assert!(relative_path.ends_with("/meta.json"));
                 let full_path = dir_path.join(&relative_path);
                 if let Some(parent) = full_path.parent() {
@@ -2739,7 +2759,7 @@ mod tests {
                     })
                     .unwrap();
             } else {
-                panic!("Expected RecordingFileRequest, got {:?}", msg);
+                panic!("Expected AuditRecordingFileRequest, got {:?}", msg);
             }
         });
 
@@ -2877,6 +2897,44 @@ mod tests {
         .unwrap();
         assert!(supervisor_channel.try_recv().is_err());
         assert_eq!(state.requests_failed, 1);
+    }
+
+    /// The source of a lease is the pipe, fixed by the handler. No
+    /// handler may take it from a message.
+    #[test]
+    fn test_lease_source_is_fixed_per_handler() {
+        let source = prod_source();
+        let handlers = [
+            ("\nfn handle_recording_message(", "Service::ProxyRdp"),
+            ("\nfn handle_ssh_recording_message(", "Service::ProxySsh"),
+            ("\nfn handle_iacs_recording_message(", "Service::ProxyIacs"),
+            ("\nfn finish_iacs_session_end(", "Service::ProxyIacs"),
+        ];
+        for (handler, expected) in handlers {
+            let body = source.split(handler).nth(1).expect(handler);
+            let end = body.find("\n}\n").expect("the function closes");
+            let body = &body[..end];
+            let leases = body.matches("request_file_from_supervisor(").count();
+            assert!(leases > 0, "{handler} leases a file");
+            assert_eq!(
+                body.matches(expected).count(),
+                leases,
+                "{handler}: every lease names {expected}"
+            );
+            for other in [
+                "Service::ProxyRdp",
+                "Service::ProxySsh",
+                "Service::ProxyIacs",
+            ] {
+                if other != expected {
+                    assert!(!body.contains(other), "{handler} must not name {other}");
+                }
+            }
+        }
+        assert!(
+            !source.contains("Message::RecordingFileRequest"),
+            "audit asks through AuditRecordingFileRequest only"
+        );
     }
 
     /// Both handlers that take a metadata path from a proxy check it.

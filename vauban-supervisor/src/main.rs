@@ -27,6 +27,7 @@ mod file_broker;
 mod kdc_broker;
 mod privsep_fs;
 mod recording_delete;
+mod session_owner;
 mod tcp_resolve;
 
 use anyhow::{Context, Result};
@@ -3047,6 +3048,26 @@ fn handle_tcp_connect_request(
             let _ = requesting_channel.send(&response);
             return;
         }
+
+        // The token is the only proof of which service serves a session.
+        // Keep it: the file broker grants a recording lease on this
+        // session to `target_key` and to nobody else. A session already
+        // recorded for another service is refused here, before DNS.
+        if !session_owner::record(&token.session_id, target_key) {
+            warn!(
+                session_id = %session_id,
+                target = ?target_service,
+                "session already served by another service; fail-closed deny"
+            );
+            let response = Message::TcpConnectResponse {
+                request_id,
+                session_id,
+                success: false,
+                error: Some("Access denied".to_string()),
+            };
+            let _ = requesting_channel.send(&response);
+            return;
+        }
     }
 
     // Get the target service's FD passing socket
@@ -3492,6 +3513,36 @@ fn handle_kerberos_kdc_request(
     let _ = requesting_channel.send(&response);
     // Keep the TcpStream alive until after send_fd (child owns a copy).
     drop(connection);
+}
+
+/// The service key of a session proxy, for a `source` named by audit.
+fn recorder_service_key(source: Service) -> Option<&'static str> {
+    match source {
+        Service::ProxySsh => Some("proxy_ssh"),
+        Service::ProxyRdp => Some("proxy_rdp"),
+        Service::ProxyIacs => Some("proxy_iacs"),
+        _ => None,
+    }
+}
+
+/// Whether the session directory of an IACS lease already holds the
+/// media of another recorder (`file_broker::FOREIGN_TO_IACS`).
+///
+/// IACS writes `session.json` before any token names the session, so the
+/// owner table cannot vouch for it. The directory can: a session that
+/// has an SSH, RDP or MCP recording is not an IACS session.
+fn session_dir_holds_foreign_media(
+    storage_base: &str,
+    session_id: &str,
+    relative_path: &str,
+) -> bool {
+    let Some(dir) = file_broker::session_dir(session_id, relative_path) else {
+        return true;
+    };
+    let dir = std::path::Path::new(storage_base).join(dir);
+    file_broker::FOREIGN_TO_IACS
+        .iter()
+        .any(|media| dir.join(media).symlink_metadata().is_ok())
 }
 
 /// How `handle_recording_file_request` opens the file.
@@ -4209,7 +4260,13 @@ fn dispatch_service_message(
             let open = if read_only {
                 RecordingOpen::Read
             } else {
-                match file_broker::write_lease(service_key, &session_id, &relative_path) {
+                let owner = session_owner::owner(&session_id);
+                match file_broker::write_lease(
+                    service_key,
+                    &session_id,
+                    &relative_path,
+                    owner.as_deref(),
+                ) {
                     Some(lease) => RecordingOpen::Write(lease),
                     None => {
                         // The path is request data: logged as Debug so a
@@ -4218,7 +4275,7 @@ fn dispatch_service_message(
                             service = service_key,
                             session_id = ?session_id,
                             path = ?relative_path,
-                            "Refused recording write lease: path not allowed for this service"
+                            "Refused recording write lease: not a file of a session this service serves"
                         );
                         let _ = state.channel.send(&Message::RecordingFileResponse {
                             request_id,
@@ -4235,6 +4292,57 @@ fn dispatch_service_message(
                 &session_id,
                 &relative_path,
                 open,
+                recording_storage_path,
+                state,
+            );
+        }
+        Message::AuditRecordingFileRequest {
+            request_id,
+            session_id,
+            relative_path,
+            source,
+        } => {
+            let refuse = |error: &str| {
+                let _ = state.channel.send(&Message::RecordingFileResponse {
+                    request_id,
+                    session_id: session_id.clone(),
+                    success: false,
+                    error: Some(error.to_string()),
+                });
+            };
+            let op = file_broker::FileBrokerOp::RecordingWrite;
+            if service_key != "audit" {
+                refuse_file_broker_caller(service_key, op);
+                refuse(file_broker::CALLER_NOT_ALLOWED);
+                return;
+            }
+            let owner = session_owner::owner(&session_id);
+            let lease = recorder_service_key(source).and_then(|source_key| {
+                file_broker::audit_lease(source_key, &session_id, &relative_path, owner.as_deref())
+                    .filter(|_| {
+                        source_key != "proxy_iacs"
+                            || !session_dir_holds_foreign_media(
+                                recording_storage_path,
+                                &session_id,
+                                &relative_path,
+                            )
+                    })
+            });
+            let Some(lease) = lease else {
+                warn!(
+                    source = ?source,
+                    session_id = ?session_id,
+                    path = ?relative_path,
+                    "Refused audit recording lease: the source does not serve this session"
+                );
+                refuse(file_broker::PATH_NOT_ALLOWED);
+                return;
+            };
+            handle_recording_file_request(
+                request_id,
+                &session_id,
+                &relative_path,
+                RecordingOpen::Write(lease),
                 recording_storage_path,
                 state,
             );
@@ -4313,7 +4421,13 @@ fn dispatch_service_message(
                 });
                 return;
             }
-            if !file_broker::is_raw_capture(&session_id, &relative_path) {
+            // A capture belongs to an IACS session: one with no recorded
+            // owner yet, or served by proxy_iacs.
+            let iacs_session = matches!(
+                session_owner::owner(&session_id).as_deref(),
+                None | Some("proxy_iacs")
+            );
+            if !iacs_session || !file_broker::is_raw_capture(&session_id, &relative_path) {
                 warn!(
                     service = service_key,
                     session_id = ?session_id,
@@ -5708,7 +5822,23 @@ mod tests {
         (replies, file)
     }
 
-    const LEASE_SID: &str = "8f1c2a34-5b6d-4e7f-8a9b-0c1d2e3f4a5b";
+    /// A fresh session identifier recorded as served by `service`, the
+    /// way an accepted session token records it. The owner table is
+    /// process-wide, so every test takes its own identifiers.
+    fn session_served_by(service: &str) -> String {
+        let sid = unowned_session();
+        assert!(session_owner::record(&sid, service));
+        sid
+    }
+
+    /// A fresh session identifier no token was ever accepted for.
+    fn unowned_session() -> String {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        format!(
+            "lease-test-{:08}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    }
 
     fn write_request(session_id: &str, relative_path: &str) -> Message {
         Message::RecordingFileRequest {
@@ -5719,6 +5849,15 @@ mod tests {
         }
     }
 
+    fn audit_request(session_id: &str, relative_path: &str, source: Service) -> Message {
+        Message::AuditRecordingFileRequest {
+            request_id: 9,
+            session_id: session_id.to_string(),
+            relative_path: relative_path.to_string(),
+            source,
+        }
+    }
+
     fn seed(dir: &std::path::Path, relative: &str, content: &[u8]) -> std::path::PathBuf {
         let file = dir.join(relative);
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -5726,23 +5865,34 @@ mod tests {
         file
     }
 
-    /// The finding this closes: a proxy asked for the recording of a
-    /// session it does not serve, and the lease truncated it and handed
-    /// over a read-write descriptor.
+    fn lease_granted(replies: &[Message]) -> bool {
+        matches!(
+            replies,
+            [Message::RecordingFileResponse { success: true, .. }]
+        )
+    }
+
+    const PROXY_FILES: [(&str, &str); 5] = [
+        ("proxy_ssh", "session.cast"),
+        ("proxy_rdp", "001.mp4"),
+        ("proxy_mcp", "session.mcp.jsonl"),
+        ("proxy_mcp", "session.cast"),
+        ("proxy_mcp", "meta.json"),
+    ];
+
+    /// A proxy asked for the recording of a session it does not serve,
+    /// and the lease truncated it and handed over a read-write
+    /// descriptor. Now even the proxy that serves the session cannot
+    /// reopen a recording that holds data.
     #[test]
     fn attack_proxy_write_lease_on_an_existing_recording_is_rejected() {
-        for (proxy, file) in [
-            ("proxy_ssh", "session.cast"),
-            ("proxy_rdp", "001.mp4"),
-            ("proxy_mcp", "session.mcp.jsonl"),
-            ("proxy_mcp", "session.cast"),
-            ("proxy_mcp", "meta.json"),
-        ] {
+        for (proxy, file) in PROXY_FILES {
             let dir = tempfile::tempdir().unwrap();
-            let relative = format!("2026/11/{LEASE_SID}/{file}");
+            let sid = session_served_by(proxy);
+            let relative = format!("2026/11/{sid}/{file}");
             let on_disk = seed(dir.path(), &relative, b"evidence");
             let (replies, fd) =
-                dispatch_with_fd_socket(proxy, write_request(LEASE_SID, &relative), dir.path());
+                dispatch_with_fd_socket(proxy, write_request(&sid, &relative), dir.path());
             assert_eq!(
                 recording_refusal(&replies).as_deref(),
                 Some(file_broker::FILE_EXISTS),
@@ -5757,21 +5907,179 @@ mod tests {
         }
     }
 
+    /// The session exists and is served by another proxy, or by nobody
+    /// the supervisor has seen a token for.
     #[test]
-    fn attack_audit_write_lease_on_an_existing_capture_or_seal_is_rejected() {
-        for file in ["channels/001.pcap", "channels/001.pcap.gz", "meta.json"] {
-            let dir = tempfile::tempdir().unwrap();
-            let relative = format!("2026/11/{LEASE_SID}/{file}");
-            let on_disk = seed(dir.path(), &relative, b"capture");
-            let (replies, fd) =
-                dispatch_with_fd_socket("audit", write_request(LEASE_SID, &relative), dir.path());
+    fn attack_proxy_write_lease_on_a_session_it_does_not_serve_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        for (proxy, file) in PROXY_FILES {
+            let others = ["proxy_ssh", "proxy_rdp", "proxy_mcp", "proxy_iacs"];
+            let mut victims: Vec<String> = others
+                .iter()
+                .filter(|o| **o != proxy)
+                .map(|o| session_served_by(o))
+                .collect();
+            victims.push(unowned_session());
+            for sid in victims {
+                let relative = format!("2026/11/{sid}/{file}");
+                let (replies, fd) =
+                    dispatch_with_fd_socket(proxy, write_request(&sid, &relative), dir.path());
+                assert_eq!(
+                    recording_refusal(&replies).as_deref(),
+                    Some(file_broker::PATH_NOT_ALLOWED),
+                    "{proxy} {file} {sid}"
+                );
+                assert!(fd.is_none());
+            }
+        }
+        assert!(
+            std::fs::read_dir(dir.path()).unwrap().next().is_none(),
+            "a refused lease must not create a directory"
+        );
+    }
+
+    /// The deputy: a proxy sends a recording-end message for a session
+    /// another proxy serves, and audit asks for its `meta.json`.
+    #[test]
+    fn attack_audit_lease_for_a_proxy_that_does_not_serve_the_session_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        for (source, owner) in [
+            (Service::ProxySsh, "proxy_rdp"),
+            (Service::ProxySsh, "proxy_mcp"),
+            (Service::ProxySsh, "proxy_iacs"),
+            (Service::ProxyRdp, "proxy_ssh"),
+            (Service::ProxyRdp, "proxy_iacs"),
+            (Service::ProxyIacs, "proxy_ssh"),
+            (Service::ProxyIacs, "proxy_rdp"),
+            (Service::ProxyIacs, "proxy_mcp"),
+            (Service::ProxyMcp, "proxy_mcp"),
+            (Service::Web, "proxy_ssh"),
+            (Service::Audit, "proxy_ssh"),
+        ] {
+            let sid = session_served_by(owner);
+            let relative = format!("2026/11/{sid}/meta.json");
+            let (replies, fd) = dispatch_with_fd_socket(
+                "audit",
+                audit_request(&sid, &relative, source),
+                dir.path(),
+            );
             assert_eq!(
                 recording_refusal(&replies).as_deref(),
-                Some(file_broker::FILE_EXISTS),
+                Some(file_broker::PATH_NOT_ALLOWED),
+                "{source:?} for a session of {owner}"
+            );
+            assert!(fd.is_none());
+        }
+        // SSH and RDP seals need a token: an unknown session is refused.
+        for source in [Service::ProxySsh, Service::ProxyRdp] {
+            let sid = unowned_session();
+            let relative = format!("2026/11/{sid}/meta.json");
+            let (replies, _) = dispatch_with_fd_socket(
+                "audit",
+                audit_request(&sid, &relative, source),
+                dir.path(),
+            );
+            assert_eq!(
+                recording_refusal(&replies).as_deref(),
+                Some(file_broker::PATH_NOT_ALLOWED),
+                "{source:?}"
+            );
+        }
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+    }
+
+    /// IACS files are written before any token. A proxy_iacs that names
+    /// the session of another recorder is stopped by what is on disk.
+    #[test]
+    fn attack_iacs_files_in_a_directory_of_another_recorder_are_rejected() {
+        for media in file_broker::FOREIGN_TO_IACS {
+            let dir = tempfile::tempdir().unwrap();
+            let sid = unowned_session();
+            seed(dir.path(), &format!("2026/11/{sid}/{media}"), b"media");
+            for file in ["session.json", "meta.json", "channels/001.pcap"] {
+                let relative = format!("2026/11/{sid}/{file}");
+                let (replies, fd) = dispatch_with_fd_socket(
+                    "audit",
+                    audit_request(&sid, &relative, Service::ProxyIacs),
+                    dir.path(),
+                );
+                assert_eq!(
+                    recording_refusal(&replies).as_deref(),
+                    Some(file_broker::PATH_NOT_ALLOWED),
+                    "{media} {file}"
+                );
+                assert!(fd.is_none());
+                assert!(!dir.path().join(&relative).exists(), "{media} {file}");
+            }
+        }
+    }
+
+    /// Only audit may send the on-behalf request.
+    #[test]
+    fn attack_audit_recording_request_from_another_service_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        for service in ["proxy_ssh", "proxy_rdp", "proxy_mcp", "proxy_iacs", "web"] {
+            let sid = session_served_by("proxy_ssh");
+            let relative = format!("2026/11/{sid}/meta.json");
+            let (replies, fd) = dispatch_with_fd_socket(
+                service,
+                audit_request(&sid, &relative, Service::ProxySsh),
+                dir.path(),
+            );
+            assert_eq!(
+                recording_refusal(&replies).as_deref(),
+                Some(file_broker::CALLER_NOT_ALLOWED),
+                "{service}"
+            );
+            assert!(fd.is_none());
+        }
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+    }
+
+    /// Audit no longer obtains a file through the plain request, which
+    /// carries no source.
+    #[test]
+    fn attack_audit_plain_write_request_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        for file in ["meta.json", "session.json", "channels/001.pcap"] {
+            let sid = session_served_by("proxy_iacs");
+            let relative = format!("2026/11/{sid}/{file}");
+            let (replies, fd) =
+                dispatch_with_fd_socket("audit", write_request(&sid, &relative), dir.path());
+            assert_eq!(
+                recording_refusal(&replies).as_deref(),
+                Some(file_broker::PATH_NOT_ALLOWED),
                 "{file}"
             );
             assert!(fd.is_none());
-            assert_eq!(std::fs::read(&on_disk).unwrap(), b"capture", "{file}");
+        }
+    }
+
+    #[test]
+    fn attack_audit_lease_on_an_existing_capture_or_seal_is_rejected() {
+        for (source, owner, file) in [
+            (Service::ProxyIacs, "proxy_iacs", "channels/001.pcap"),
+            (Service::ProxyIacs, "proxy_iacs", "channels/001.pcap.gz"),
+            (Service::ProxyIacs, "proxy_iacs", "meta.json"),
+            (Service::ProxySsh, "proxy_ssh", "meta.json"),
+            (Service::ProxyRdp, "proxy_rdp", "meta.json"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let sid = session_served_by(owner);
+            let relative = format!("2026/11/{sid}/{file}");
+            let on_disk = seed(dir.path(), &relative, b"sealed");
+            let (replies, fd) = dispatch_with_fd_socket(
+                "audit",
+                audit_request(&sid, &relative, source),
+                dir.path(),
+            );
+            assert_eq!(
+                recording_refusal(&replies).as_deref(),
+                Some(file_broker::FILE_EXISTS),
+                "{source:?} {file}"
+            );
+            assert!(fd.is_none());
+            assert_eq!(std::fs::read(&on_disk).unwrap(), b"sealed", "{file}");
         }
     }
 
@@ -5779,9 +6087,11 @@ mod tests {
     #[test]
     fn attack_write_lease_with_a_substring_session_id_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
-        let relative = format!("2026/11/{LEASE_SID}/session.cast");
+        let sid = session_served_by("proxy_ssh");
+        let relative = format!("2026/11/{sid}/session.cast");
         let on_disk = seed(dir.path(), &relative, b"evidence");
-        for forged in ["2", "8f1c", "session", "2026"] {
+        for forged in ["2", "lease", "session", "2026"] {
+            assert!(session_owner::record(forged, "proxy_ssh"));
             let (replies, fd) =
                 dispatch_with_fd_socket("proxy_ssh", write_request(forged, &relative), dir.path());
             assert_eq!(
@@ -5804,13 +6114,11 @@ mod tests {
             ("proxy_rdp", "meta.json"),
             ("proxy_mcp", "001.mp4"),
             ("proxy_ssh", "channels/001.pcap"),
-            ("audit", "session.cast"),
-            ("audit", "001.mp4"),
-            ("audit", "session.mcp.jsonl"),
         ] {
-            let relative = format!("2026/11/{LEASE_SID}/{file}");
+            let sid = session_served_by(service);
+            let relative = format!("2026/11/{sid}/{file}");
             let (replies, fd) =
-                dispatch_with_fd_socket(service, write_request(LEASE_SID, &relative), dir.path());
+                dispatch_with_fd_socket(service, write_request(&sid, &relative), dir.path());
             assert_eq!(
                 recording_refusal(&replies).as_deref(),
                 Some(file_broker::PATH_NOT_ALLOWED),
@@ -5836,27 +6144,58 @@ mod tests {
             ("proxy_mcp", "session.mcp.jsonl"),
             ("proxy_mcp", "session.cast"),
             ("proxy_mcp", "meta.json"),
-            ("audit", "channels/001.pcap"),
-            ("audit", "channels/001.pcap.gz"),
-            ("audit", "meta.json"),
-            ("audit", "session.json"),
         ] {
             let dir = tempfile::tempdir().unwrap();
-            let relative = format!("2026/11/{LEASE_SID}/{file}");
+            let sid = session_served_by(service);
+            let relative = format!("2026/11/{sid}/{file}");
             let (replies, fd) =
-                dispatch_with_fd_socket(service, write_request(LEASE_SID, &relative), dir.path());
-            assert!(
-                matches!(
-                    replies.as_slice(),
-                    [Message::RecordingFileResponse { success: true, .. }]
-                ),
-                "{service} {file}: {replies:?}"
-            );
+                dispatch_with_fd_socket(service, write_request(&sid, &relative), dir.path());
+            assert!(lease_granted(&replies), "{service} {file}: {replies:?}");
             fd.expect("descriptor").write_all(b"data").unwrap();
             assert_eq!(
                 std::fs::read(dir.path().join(&relative)).unwrap(),
                 b"data",
                 "{service} {file}"
+            );
+        }
+    }
+
+    /// Audit writes the seal of an SSH or RDP session for the proxy that
+    /// serves it, and the IACS bundle before and after the first token.
+    #[test]
+    fn test_audit_lease_creates_the_files_it_writes() {
+        use std::io::Write;
+        let cases: [(Service, Option<&str>, &str); 7] = [
+            (Service::ProxySsh, Some("proxy_ssh"), "meta.json"),
+            (Service::ProxyRdp, Some("proxy_rdp"), "meta.json"),
+            (Service::ProxyIacs, None, "session.json"),
+            (Service::ProxyIacs, None, "meta.json"),
+            (Service::ProxyIacs, Some("proxy_iacs"), "channels/001.pcap"),
+            (
+                Service::ProxyIacs,
+                Some("proxy_iacs"),
+                "channels/001.pcap.gz",
+            ),
+            (Service::ProxyIacs, Some("proxy_iacs"), "meta.json"),
+        ];
+        for (source, owner, file) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let sid = match owner {
+                Some(owner) => session_served_by(owner),
+                None => unowned_session(),
+            };
+            let relative = format!("2026/11/{sid}/{file}");
+            let (replies, fd) = dispatch_with_fd_socket(
+                "audit",
+                audit_request(&sid, &relative, source),
+                dir.path(),
+            );
+            assert!(lease_granted(&replies), "{source:?} {file}: {replies:?}");
+            fd.expect("descriptor").write_all(b"data").unwrap();
+            assert_eq!(
+                std::fs::read(dir.path().join(&relative)).unwrap(),
+                b"data",
+                "{source:?} {file}"
             );
         }
     }
@@ -5867,17 +6206,15 @@ mod tests {
     fn test_audit_may_rewrite_session_json() {
         use std::io::Write;
         let dir = tempfile::tempdir().unwrap();
-        let relative = format!("2026/11/{LEASE_SID}/session.json");
+        let sid = session_served_by("proxy_iacs");
+        let relative = format!("2026/11/{sid}/session.json");
         let on_disk = seed(dir.path(), &relative, b"{\"started\":true,\"padding\":1}");
-        let (replies, fd) =
-            dispatch_with_fd_socket("audit", write_request(LEASE_SID, &relative), dir.path());
-        assert!(
-            matches!(
-                replies.as_slice(),
-                [Message::RecordingFileResponse { success: true, .. }]
-            ),
-            "{replies:?}"
+        let (replies, fd) = dispatch_with_fd_socket(
+            "audit",
+            audit_request(&sid, &relative, Service::ProxyIacs),
+            dir.path(),
         );
+        assert!(lease_granted(&replies), "{replies:?}");
         fd.expect("descriptor").write_all(b"{}").unwrap();
         assert_eq!(std::fs::read(&on_disk).unwrap(), b"{}");
     }
@@ -5886,11 +6223,12 @@ mod tests {
     #[test]
     fn test_write_lease_without_fd_socket_touches_no_file() {
         let dir = tempfile::tempdir().unwrap();
-        let relative = format!("2026/11/{LEASE_SID}/session.json");
+        let sid = session_served_by("proxy_iacs");
+        let relative = format!("2026/11/{sid}/session.json");
         let on_disk = seed(dir.path(), &relative, b"sealed");
         let replies = dispatch_as(
             "audit",
-            write_request(LEASE_SID, &relative),
+            audit_request(&sid, &relative, Service::ProxyIacs),
             dir.path(),
             &crate::config::TlsCertPaths::default(),
         );
@@ -5900,10 +6238,11 @@ mod tests {
         );
         assert_eq!(std::fs::read(&on_disk).unwrap(), b"sealed");
 
-        let fresh = format!("2026/11/{LEASE_SID}/session.cast");
+        let sid = session_served_by("proxy_ssh");
+        let fresh = format!("2026/11/{sid}/session.cast");
         let replies = dispatch_as(
             "proxy_ssh",
-            write_request(LEASE_SID, &fresh),
+            write_request(&sid, &fresh),
             dir.path(),
             &crate::config::TlsCertPaths::default(),
         );
@@ -5914,54 +6253,59 @@ mod tests {
         assert!(!dir.path().join(&fresh).exists());
     }
 
+    fn unlink_request(session_id: &str, relative_path: &str) -> Message {
+        Message::RecordingFileUnlinkRequest {
+            request_id: 13,
+            session_id: session_id.to_string(),
+            relative_path: relative_path.to_string(),
+        }
+    }
+
+    fn unlink_refusal(replies: &[Message]) -> Option<String> {
+        match replies {
+            [
+                Message::RecordingFileUnlinkResponse {
+                    success: false,
+                    error,
+                    ..
+                },
+            ] => error.clone(),
+            other => panic!("expected one refused unlink, got {other:?}"),
+        }
+    }
+
     /// The unlink broker used the same substring anchor as the write
     /// lease: any short identifier matched any capture.
     #[test]
     fn attack_audit_unlink_with_a_substring_session_id_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
-        let relative = format!("2026/11/{LEASE_SID}/channels/001.pcap");
+        let sid = session_served_by("proxy_iacs");
+        let relative = format!("2026/11/{sid}/channels/001.pcap");
         let on_disk = seed(dir.path(), &relative, b"capture");
-        let sealed = format!("2026/11/{LEASE_SID}/session.pcap");
-        let other = seed(dir.path(), &sealed, b"capture");
+        let flat = format!("2026/11/{sid}/session.pcap");
+        let other = seed(dir.path(), &flat, b"capture");
         for (session_id, path) in [
             ("p", relative.as_str()),
             ("channels", relative.as_str()),
-            (LEASE_SID, sealed.as_str()),
+            (sid.as_str(), flat.as_str()),
         ] {
             let replies = dispatch_as(
                 "audit",
-                Message::RecordingFileUnlinkRequest {
-                    request_id: 13,
-                    session_id: session_id.to_string(),
-                    relative_path: path.to_string(),
-                },
+                unlink_request(session_id, path),
                 dir.path(),
                 &crate::config::TlsCertPaths::default(),
             );
-            match replies.as_slice() {
-                [
-                    Message::RecordingFileUnlinkResponse {
-                        success: false,
-                        error,
-                        ..
-                    },
-                ] => assert_eq!(
-                    error.as_deref(),
-                    Some(file_broker::PATH_NOT_ALLOWED),
-                    "{session_id} {path}"
-                ),
-                other => panic!("expected one refusal, got {other:?}"),
-            }
+            assert_eq!(
+                unlink_refusal(&replies).as_deref(),
+                Some(file_broker::PATH_NOT_ALLOWED),
+                "{session_id} {path}"
+            );
         }
         assert!(on_disk.exists() && other.exists());
 
         let replies = dispatch_as(
             "audit",
-            Message::RecordingFileUnlinkRequest {
-                request_id: 13,
-                session_id: LEASE_SID.to_string(),
-                relative_path: relative.clone(),
-            },
+            unlink_request(&sid, &relative),
             dir.path(),
             &crate::config::TlsCertPaths::default(),
         );
@@ -5973,6 +6317,29 @@ mod tests {
             "{replies:?}"
         );
         assert!(!on_disk.exists(), "the real capture is still unlinked");
+    }
+
+    /// A capture-shaped path in a session another recorder serves.
+    #[test]
+    fn attack_audit_unlink_in_a_session_of_another_recorder_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        for owner in ["proxy_ssh", "proxy_rdp", "proxy_mcp"] {
+            let sid = session_served_by(owner);
+            let relative = format!("2026/11/{sid}/channels/001.pcap");
+            let on_disk = seed(dir.path(), &relative, b"capture");
+            let replies = dispatch_as(
+                "audit",
+                unlink_request(&sid, &relative),
+                dir.path(),
+                &crate::config::TlsCertPaths::default(),
+            );
+            assert_eq!(
+                unlink_refusal(&replies).as_deref(),
+                Some(file_broker::PATH_NOT_ALLOWED),
+                "{owner}"
+            );
+            assert!(on_disk.exists());
+        }
     }
 
     fn recording_request(read_only: bool) -> Message {

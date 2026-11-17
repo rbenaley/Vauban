@@ -15,33 +15,30 @@
 //!
 //! Default deny: a service or an operation that is not listed is refused.
 //!
-//! The caller table decides by service. A write lease is narrowed further
-//! by [`write_lease`], which decides by file:
+//! The caller table decides by service. A write lease is narrowed further,
+//! by session and by file ([`write_lease`], [`audit_lease`]):
 //!
 //! - the path must be `YYYY/MM/<session_id>/<file>`, with the session
 //!   identifier as a whole directory name, not a substring;
-//! - each service may only name the files of its own format (a proxy its
-//!   media, the audit service the metadata and the IACS captures);
-//! - a media or capture file is opened with `O_EXCL`: the lease creates
-//!   it or fails. No service can obtain a descriptor on a recording that
-//!   already exists, so none can truncate it or read what is appended to
-//!   it, whichever session it belongs to;
-//! - only the audit service may rewrite a file, and only `session.json`
-//!   (IACS writes it at session start and again at session end).
+//! - a proxy obtains a lease only on a session it serves, as recorded by
+//!   `session_owner` when the session token was accepted;
+//! - each service may only name the files of its own format;
+//! - the audit service asks on behalf of the proxy whose pipe carried the
+//!   message, and is granted only when that proxy serves the session;
+//! - a media, capture or seal file is opened with `O_EXCL`: the lease
+//!   creates it or fails. No service can obtain a descriptor on a
+//!   recording that already holds data;
+//! - only the audit service may rewrite a file, and only IACS
+//!   `session.json` (written at session start and again at session end).
 //!
 //! A raw capture is unlinked under the same shape rule
 //! ([`is_raw_capture`]).
 //!
-//! What this still does NOT do: the supervisor does not know which
-//! service serves which session. A proxy that learns the identifier of a
-//! session before its recording starts can create that session's file
-//! first; the real lease then fails and the recording is refused (denial,
-//! not disclosure). The same goes for `meta.json`: the audit service
-//! writes it on a message from a proxy and does not know which proxy
-//! serves the session, so a proxy can have the `meta.json` of a session
-//! that has none yet created with content of its choosing, and
-//! `proxy_mcp` can create one directly. An existing `meta.json` cannot
-//! be replaced.
+//! IACS is the one case the token does not cover: `session.json` is
+//! written when the operator authenticates, before any channel presents
+//! the token. An IACS file is therefore granted while the session has no
+//! recorded owner, and refused in a directory that already holds the
+//! media of another recorder ([`FOREIGN_TO_IACS`]).
 
 /// A file operation a service can request from the supervisor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,33 +181,89 @@ pub fn is_raw_capture(session_id: &str, relative_path: &str) -> bool {
     )
 }
 
-/// Decide whether `service_key` may obtain a write lease on
+/// Media files whose presence in a session directory shows that the
+/// session is not an IACS one. Checked before an IACS file is created.
+pub const FOREIGN_TO_IACS: [&str; 3] = ["session.cast", "session.mcp.jsonl", "001.mp4"];
+
+/// Decide whether proxy `service_key` may obtain a write lease on
 /// `relative_path` for `session_id`, and how the file is opened.
 ///
-/// `None` is a refusal. The caller must already have passed
-/// [`caller_may`] for [`FileBrokerOp::RecordingWrite`]; a service that is
-/// not listed here is refused all the same (default deny).
+/// `owner` is the service recorded for the session by `session_owner`.
+/// `None` is a refusal: the proxy must serve the session, and may only
+/// name the files of its own format. The audit service never comes
+/// through here; see [`audit_lease`].
 ///
 /// The layout is the one every recorder uses:
-/// `YYYY/MM/<session_id>/<file>`, plus `channels/<file>` for IACS
-/// captures.
-pub fn write_lease(service_key: &str, session_id: &str, relative_path: &str) -> Option<WriteLease> {
+/// `YYYY/MM/<session_id>/<file>`.
+pub fn write_lease(
+    service_key: &str,
+    session_id: &str,
+    relative_path: &str,
+    owner: Option<&str>,
+) -> Option<WriteLease> {
     let file = session_file(session_id, relative_path)?;
+    if owner != Some(service_key) {
+        return None;
+    }
     match (service_key, file.as_slice()) {
         ("proxy_ssh", ["session.cast"]) => Some(WriteLease::CreateNew),
         ("proxy_rdp", [segment]) if is_numbered(segment, ".mp4") => Some(WriteLease::CreateNew),
         ("proxy_mcp", ["session.mcp.jsonl" | "session.cast" | "meta.json"]) => {
             Some(WriteLease::CreateNew)
         }
-        ("audit", ["session.json"]) => Some(WriteLease::Rewrite),
-        ("audit", ["meta.json"]) => Some(WriteLease::CreateNew),
-        ("audit", ["channels", capture])
-            if is_numbered(capture, ".pcap") || is_numbered(capture, ".pcap.gz") =>
-        {
-            Some(WriteLease::CreateNew)
-        }
         _ => None,
     }
+}
+
+/// Decide whether the audit service may obtain a write lease on
+/// `relative_path` for `session_id` on behalf of `source`.
+///
+/// `source` is the service key of the proxy whose pipe carried the
+/// message that made audit ask; `owner` is the service recorded for the
+/// session.
+///
+/// - `proxy_ssh`, `proxy_rdp`: the seal `meta.json`, and only when that
+///   proxy serves the session.
+/// - `proxy_iacs`: the IACS bundle. The session must have no recorded
+///   owner or be an IACS one; the caller must also check
+///   [`FOREIGN_TO_IACS`] on disk.
+/// - anything else: refused (`proxy_mcp` writes its own files).
+pub fn audit_lease(
+    source: &str,
+    session_id: &str,
+    relative_path: &str,
+    owner: Option<&str>,
+) -> Option<WriteLease> {
+    let file = session_file(session_id, relative_path)?;
+    match (source, file.as_slice()) {
+        ("proxy_ssh" | "proxy_rdp", ["meta.json"]) if owner == Some(source) => {
+            Some(WriteLease::CreateNew)
+        }
+        ("proxy_iacs", file) if owner.is_none() || owner == Some("proxy_iacs") => match file {
+            ["session.json"] => Some(WriteLease::Rewrite),
+            ["meta.json"] => Some(WriteLease::CreateNew),
+            ["channels", capture]
+                if is_numbered(capture, ".pcap") || is_numbered(capture, ".pcap.gz") =>
+            {
+                Some(WriteLease::CreateNew)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The session directory of a well-formed lease path
+/// (`YYYY/MM/<session_id>`), for the on-disk IACS check.
+pub fn session_dir(session_id: &str, relative_path: &str) -> Option<String> {
+    session_file(session_id, relative_path)?;
+    let mut parts = relative_path.splitn(4, '/');
+    Some(format!(
+        "{}/{}/{}",
+        parts.next()?,
+        parts.next()?,
+        parts.next()?
+    ))
 }
 
 #[cfg(test)]
@@ -341,40 +394,79 @@ mod tests {
 
     const SID: &str = "8f1c2a34-5b6d-4e7f-8a9b-0c1d2e3f4a5b";
 
+    const FILES: [&str; 8] = [
+        "session.cast",
+        "001.mp4",
+        "999999.mp4",
+        "session.mcp.jsonl",
+        "meta.json",
+        "session.json",
+        "channels/001.pcap",
+        "channels/001.pcap.gz",
+    ];
+
+    /// A proxy asking for a file of a session it serves.
     fn lease(service: &str, file: &str) -> Option<WriteLease> {
-        write_lease(service, SID, &format!("2026/11/{SID}/{file}"))
+        write_lease(
+            service,
+            SID,
+            &format!("2026/11/{SID}/{file}"),
+            Some(service),
+        )
+    }
+
+    /// Audit asking on behalf of `source`, which serves the session.
+    fn on_behalf(source: &str, file: &str) -> Option<WriteLease> {
+        audit_lease(source, SID, &format!("2026/11/{SID}/{file}"), Some(source))
+    }
+
+    fn granted(decide: impl Fn(&str) -> Option<WriteLease>) -> Vec<(&'static str, WriteLease)> {
+        FILES
+            .iter()
+            .filter_map(|f| decide(f).map(|l| (*f, l)))
+            .collect()
     }
 
     #[test]
     fn test_write_lease_table_is_exactly_the_documented_one() {
-        let files = [
-            "session.cast",
-            "001.mp4",
-            "session.mcp.jsonl",
-            "meta.json",
-            "session.json",
-            "channels/001.pcap",
-            "channels/001.pcap.gz",
-        ];
-        let granted = |service: &str| -> Vec<(&str, WriteLease)> {
-            files
-                .iter()
-                .filter_map(|f| lease(service, f).map(|l| (*f, l)))
-                .collect()
-        };
-        use WriteLease::{CreateNew, Rewrite};
-        assert_eq!(granted("proxy_ssh"), [("session.cast", CreateNew)]);
-        assert_eq!(granted("proxy_rdp"), [("001.mp4", CreateNew)]);
+        use WriteLease::CreateNew;
         assert_eq!(
-            granted("proxy_mcp"),
+            granted(|f| lease("proxy_ssh", f)),
+            [("session.cast", CreateNew)]
+        );
+        assert_eq!(
+            granted(|f| lease("proxy_rdp", f)),
+            [("001.mp4", CreateNew), ("999999.mp4", CreateNew)]
+        );
+        assert_eq!(
+            granted(|f| lease("proxy_mcp", f)),
             [
                 ("session.cast", CreateNew),
                 ("session.mcp.jsonl", CreateNew),
                 ("meta.json", CreateNew)
             ]
         );
+        for service in SERVICES
+            .iter()
+            .filter(|s| !matches!(**s, "proxy_ssh" | "proxy_rdp" | "proxy_mcp"))
+        {
+            assert!(granted(|f| lease(service, f)).is_empty(), "{service:?}");
+        }
+    }
+
+    #[test]
+    fn test_audit_lease_table_is_exactly_the_documented_one() {
+        use WriteLease::{CreateNew, Rewrite};
         assert_eq!(
-            granted("audit"),
+            granted(|f| on_behalf("proxy_ssh", f)),
+            [("meta.json", CreateNew)]
+        );
+        assert_eq!(
+            granted(|f| on_behalf("proxy_rdp", f)),
+            [("meta.json", CreateNew)]
+        );
+        assert_eq!(
+            granted(|f| on_behalf("proxy_iacs", f)),
             [
                 ("meta.json", CreateNew),
                 ("session.json", Rewrite),
@@ -382,33 +474,117 @@ mod tests {
                 ("channels/001.pcap.gz", CreateNew)
             ]
         );
-        for service in SERVICES
+        for source in SERVICES
             .iter()
-            .filter(|s| !caller_may(s, FileBrokerOp::RecordingWrite))
+            .filter(|s| !matches!(**s, "proxy_ssh" | "proxy_rdp" | "proxy_iacs"))
         {
-            assert!(granted(service).is_empty(), "{service:?}");
+            assert!(granted(|f| on_behalf(source, f)).is_empty(), "{source:?}");
         }
     }
 
-    /// Invariant: only the audit service is ever granted `Rewrite`, and
-    /// only on `session.json`.
+    /// The finding: a proxy naming a session another service serves, or
+    /// one that no token was ever accepted for.
     #[test]
-    fn attack_no_proxy_is_ever_granted_a_rewrite() {
-        let files = [
-            "session.cast",
-            "001.mp4",
-            "999999.mp4",
-            "session.mcp.jsonl",
-            "meta.json",
-            "session.json",
-            "channels/001.pcap",
-            "channels/001.pcap.gz",
+    fn attack_proxy_lease_on_a_session_it_does_not_serve_is_rejected() {
+        for proxy in ["proxy_ssh", "proxy_rdp", "proxy_mcp"] {
+            for owner in [
+                None,
+                Some("proxy_ssh"),
+                Some("proxy_rdp"),
+                Some("proxy_mcp"),
+                Some("proxy_iacs"),
+                Some("audit"),
+                Some(""),
+            ] {
+                if owner == Some(proxy) {
+                    continue;
+                }
+                for file in FILES {
+                    assert_eq!(
+                        write_lease(proxy, SID, &format!("2026/11/{SID}/{file}"), owner),
+                        None,
+                        "{proxy} owner={owner:?} {file}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The deputy: a proxy has audit write the seal of a session that
+    /// another proxy serves.
+    #[test]
+    fn attack_audit_lease_on_behalf_of_a_proxy_that_does_not_serve_the_session_is_rejected() {
+        let seal = format!("2026/11/{SID}/meta.json");
+        for source in ["proxy_ssh", "proxy_rdp"] {
+            for owner in [
+                None,
+                Some("proxy_ssh"),
+                Some("proxy_rdp"),
+                Some("proxy_mcp"),
+                Some("proxy_iacs"),
+            ] {
+                if owner == Some(source) {
+                    continue;
+                }
+                assert_eq!(
+                    audit_lease(source, SID, &seal, owner),
+                    None,
+                    "{source} owner={owner:?}"
+                );
+            }
+        }
+        // IACS files in a session another proxy serves.
+        for owner in ["proxy_ssh", "proxy_rdp", "proxy_mcp"] {
+            for file in FILES {
+                assert_eq!(
+                    audit_lease(
+                        "proxy_iacs",
+                        SID,
+                        &format!("2026/11/{SID}/{file}"),
+                        Some(owner)
+                    ),
+                    None,
+                    "owner={owner} {file}"
+                );
+            }
+        }
+    }
+
+    /// IACS writes `session.json` before any token is presented.
+    #[test]
+    fn test_iacs_files_are_granted_before_the_first_token() {
+        for file in ["session.json", "meta.json", "channels/001.pcap"] {
+            assert!(
+                audit_lease("proxy_iacs", SID, &format!("2026/11/{SID}/{file}"), None).is_some(),
+                "{file}"
+            );
+        }
+    }
+
+    /// Invariant: `Rewrite` is granted for IACS `session.json` and
+    /// nothing else, whatever the caller, source and owner.
+    #[test]
+    fn attack_nothing_but_iacs_session_json_is_ever_rewritten() {
+        let owners = [
+            None,
+            Some("proxy_ssh"),
+            Some("proxy_rdp"),
+            Some("proxy_mcp"),
+            Some("proxy_iacs"),
+            Some("audit"),
         ];
         for service in SERVICES {
-            for file in files {
-                if lease(service, file) == Some(WriteLease::Rewrite) {
-                    assert_eq!(service, "audit", "{service:?} rewrites {file}");
-                    assert_eq!(file, "session.json", "audit rewrites {file}");
+            for owner in owners {
+                for file in FILES {
+                    let path = format!("2026/11/{SID}/{file}");
+                    assert_ne!(
+                        write_lease(service, SID, &path, owner),
+                        Some(WriteLease::Rewrite),
+                        "write_lease {service:?} {owner:?} {file}"
+                    );
+                    if audit_lease(service, SID, &path, owner) == Some(WriteLease::Rewrite) {
+                        assert_eq!((service, file), ("proxy_iacs", "session.json"));
+                    }
                 }
             }
         }
@@ -424,9 +600,11 @@ mod tests {
         assert_eq!(lease("proxy_mcp", "001.mp4"), None);
         assert_eq!(lease("proxy_mcp", "session.json"), None);
         assert_eq!(lease("proxy_ssh", "channels/001.pcap"), None);
-        assert_eq!(lease("audit", "session.cast"), None);
-        assert_eq!(lease("audit", "001.mp4"), None);
-        assert_eq!(lease("audit", "session.mcp.jsonl"), None);
+        assert_eq!(on_behalf("proxy_ssh", "session.cast"), None);
+        assert_eq!(on_behalf("proxy_rdp", "001.mp4"), None);
+        assert_eq!(on_behalf("proxy_ssh", "session.json"), None);
+        assert_eq!(on_behalf("proxy_iacs", "session.cast"), None);
+        assert_eq!(on_behalf("proxy_mcp", "meta.json"), None);
     }
 
     /// The old anchoring was `relative_path.contains(session_id)`: a
@@ -434,12 +612,16 @@ mod tests {
     #[test]
     fn attack_session_id_as_a_substring_of_the_path_is_rejected() {
         let victim = format!("2026/11/{SID}/session.cast");
-        for forged in ["2", "0", "8f1c", "session", "cast", "11", "2026"] {
-            assert_eq!(write_lease("proxy_ssh", forged, &victim), None, "{forged}");
-        }
-        for forged in ["", "/", ".", "..", "2026/11", &format!("11/{SID}")] {
+        for forged in [
+            "2", "0", "8f1c", "session", "cast", "11", "2026", "", "/", ".", "..", "2026/11",
+        ] {
             assert_eq!(
-                write_lease("proxy_ssh", forged, &victim),
+                write_lease("proxy_ssh", forged, &victim, Some("proxy_ssh")),
+                None,
+                "{forged:?}"
+            );
+            assert_eq!(
+                audit_lease("proxy_iacs", forged, &victim, None),
                 None,
                 "{forged:?}"
             );
@@ -463,7 +645,11 @@ mod tests {
             format!("2026/11/{SID}"),
             format!("2026/11/{SID}/"),
         ] {
-            assert_eq!(write_lease("proxy_ssh", SID, &path), None, "{path}");
+            assert_eq!(
+                write_lease("proxy_ssh", SID, &path, Some("proxy_ssh")),
+                None,
+                "{path}"
+            );
         }
         for file in [
             "1.mp4",
@@ -484,8 +670,16 @@ mod tests {
             "001.pcap",
             "channel/001.pcap",
         ] {
-            assert_eq!(lease("audit", file), None, "{file}");
+            assert_eq!(on_behalf("proxy_iacs", file), None, "{file}");
         }
+    }
+
+    #[test]
+    fn test_session_dir_is_the_first_three_components() {
+        assert_eq!(
+            session_dir(SID, &format!("2026/11/{SID}/channels/001.pcap")).as_deref(),
+            Some(format!("2026/11/{SID}").as_str())
+        );
     }
 
     #[test]
@@ -514,7 +708,7 @@ mod tests {
     fn test_numbered_files_past_three_digits_are_accepted() {
         assert_eq!(lease("proxy_rdp", "1000.mp4"), Some(WriteLease::CreateNew));
         assert_eq!(
-            lease("audit", "channels/4294967295.pcap.gz"),
+            on_behalf("proxy_iacs", "channels/4294967295.pcap.gz"),
             Some(WriteLease::CreateNew)
         );
     }

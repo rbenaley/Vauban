@@ -118,14 +118,18 @@ pub fn recv_fd_timed(socket_fd: RawFd, deadline: Instant) -> Result<OwnedFd, Rec
 
 /// Lease a write-side recording file FD from the supervisor broker.
 ///
-/// Sends `RecordingFileRequest { read_only: false }`, waits for a matching
+/// Sends `AuditRecordingFileRequest`, waits for a matching
 /// `RecordingFileResponse` for `session_id` (skipping mismatches), then
 /// receives the FD via SCM_RIGHTS and wraps it as a [`File`].
+///
+/// `source` is the service on whose behalf the file is written: the
+/// proxy whose pipe carried the message that triggered the request.
 pub fn lease_write_fd(
     channel: &IpcChannel,
     fd_passing_socket: RawFd,
     session_id: &str,
     relative_path: &str,
+    source: crate::messages::Service,
     timeout: Duration,
 ) -> Result<File, RecordingFdError> {
     validate_recording_file_relative_path(relative_path, session_id)
@@ -133,11 +137,11 @@ pub fn lease_write_fd(
 
     let deadline = Instant::now() + timeout;
 
-    channel.send(&Message::RecordingFileRequest {
+    channel.send(&Message::AuditRecordingFileRequest {
         request_id: 0,
         session_id: session_id.to_string(),
         relative_path: relative_path.to_string(),
-        read_only: false,
+        source,
     })?;
 
     loop {
