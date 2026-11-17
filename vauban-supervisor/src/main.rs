@@ -3526,6 +3526,27 @@ fn recorder_service_key(source: Service) -> Option<&'static str> {
     }
 }
 
+/// Whether the session directory of an IACS lease already holds the
+/// media of another recorder (`file_broker::FOREIGN_TO_IACS`).
+///
+/// The owner table is the first guard. It is in memory, so an entry is
+/// gone after a restart or an eviction, and the identifier of a closed
+/// SSH, RDP or MCP session could then be claimed for IACS. The
+/// directory is the second guard: it still says whose the session was.
+fn session_dir_holds_foreign_media(
+    storage_base: &str,
+    session_id: &str,
+    relative_path: &str,
+) -> bool {
+    let Some(dir) = file_broker::session_dir(session_id, relative_path) else {
+        return true;
+    };
+    let dir = std::path::Path::new(storage_base).join(dir);
+    file_broker::FOREIGN_TO_IACS
+        .iter()
+        .any(|media| dir.join(media).symlink_metadata().is_ok())
+}
+
 /// How `handle_recording_file_request` opens the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecordingOpen {
@@ -4354,7 +4375,10 @@ fn dispatch_service_message(
                     &relative_path,
                     owner.as_deref(),
                 ) {
-                    Some(lease) => RecordingOpen::Write(lease),
+                    Some(lease) => {
+                        session_owner::used(&session_id);
+                        RecordingOpen::Write(lease)
+                    }
                     None => {
                         // The path is request data: logged as Debug so a
                         // newline in it cannot forge a log line.
@@ -4406,6 +4430,14 @@ fn dispatch_service_message(
             let owner = session_owner::owner(&session_id);
             let lease = recorder_service_key(source).and_then(|source_key| {
                 file_broker::audit_lease(source_key, &session_id, &relative_path, owner.as_deref())
+                    .filter(|_| {
+                        source_key != "proxy_iacs"
+                            || !session_dir_holds_foreign_media(
+                                recording_storage_path,
+                                &session_id,
+                                &relative_path,
+                            )
+                    })
             });
             let Some(lease) = lease else {
                 warn!(
@@ -4417,6 +4449,7 @@ fn dispatch_service_message(
                 refuse(file_broker::PATH_NOT_ALLOWED);
                 return;
             };
+            session_owner::used(&session_id);
             handle_recording_file_request(
                 request_id,
                 &session_id,
@@ -6283,6 +6316,37 @@ mod tests {
             assert!(fd.is_none());
         }
         assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+    }
+
+    /// The owner table is in memory. After a restart, or once an idle
+    /// entry is evicted, the identifier of a closed SSH, RDP or MCP
+    /// session can be recorded for proxy_iacs. Its directory must still
+    /// refuse IACS files.
+    #[test]
+    fn attack_iacs_files_in_a_directory_of_another_recorder_are_rejected() {
+        for media in file_broker::FOREIGN_TO_IACS {
+            let dir = tempfile::tempdir().unwrap();
+            // The session was another recorder's; its entry is gone and
+            // the identifier has been claimed for proxy_iacs since.
+            let sid = session_served_by("proxy_iacs");
+            let recording = seed(dir.path(), &format!("2026/11/{sid}/{media}"), b"media");
+            for file in ["session.json", "meta.json", "channels/001.pcap"] {
+                let relative = format!("2026/11/{sid}/{file}");
+                let (replies, fd) = dispatch_with_fd_socket(
+                    "audit",
+                    audit_request(&sid, &relative, Service::ProxyIacs),
+                    dir.path(),
+                );
+                assert_eq!(
+                    recording_refusal(&replies).as_deref(),
+                    Some(file_broker::PATH_NOT_ALLOWED),
+                    "{media} {file}"
+                );
+                assert!(fd.is_none());
+                assert!(!dir.path().join(&relative).exists(), "{media} {file}");
+            }
+            assert_eq!(std::fs::read(&recording).unwrap(), b"media");
+        }
     }
 
     /// Present a session claim as `service_key` and return what it reads

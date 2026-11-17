@@ -181,6 +181,29 @@ pub fn is_raw_capture(session_id: &str, relative_path: &str) -> bool {
     )
 }
 
+/// Media files whose presence in a session directory shows that the
+/// session is not an IACS one.
+///
+/// The owner table is in memory: it is empty after a supervisor restart
+/// and forgets idle sessions when full, while recording directories
+/// stay. A session identifier whose entry is gone can be claimed again,
+/// for another service. The directory still says whose it was: an IACS
+/// file is refused where another recorder's media is.
+pub const FOREIGN_TO_IACS: [&str; 3] = ["session.cast", "session.mcp.jsonl", "001.mp4"];
+
+/// The session directory of a well-formed lease path
+/// (`YYYY/MM/<session_id>`), for the on-disk IACS check.
+pub fn session_dir(session_id: &str, relative_path: &str) -> Option<String> {
+    session_file(session_id, relative_path)?;
+    let mut parts = relative_path.splitn(4, '/');
+    Some(format!(
+        "{}/{}/{}",
+        parts.next()?,
+        parts.next()?,
+        parts.next()?
+    ))
+}
+
 /// Decide whether proxy `service_key` may obtain a write lease on
 /// `relative_path` for `session_id`, and how the file is opened.
 ///
@@ -222,7 +245,8 @@ pub fn write_lease(
 ///   proxy serves the session.
 /// - `proxy_iacs`: the IACS bundle, and only when `proxy_iacs` serves
 ///   the session (vauban-web presents the token when it opens the
-///   tunnel).
+///   tunnel). The caller must also check [`FOREIGN_TO_IACS`] on
+///   disk.
 /// - anything else: refused (`proxy_mcp` writes its own files).
 pub fn audit_lease(
     source: &str,
@@ -657,6 +681,15 @@ mod tests {
         ] {
             assert_eq!(on_behalf("proxy_iacs", file), None, "{file}");
         }
+    }
+
+    #[test]
+    fn test_session_dir_is_the_first_three_components() {
+        assert_eq!(
+            session_dir(SID, &format!("2026/11/{SID}/channels/001.pcap")).as_deref(),
+            Some(format!("2026/11/{SID}").as_str())
+        );
+        assert_eq!(session_dir(SID, &format!("2026/11/other/{SID}")), None);
     }
 
     #[test]

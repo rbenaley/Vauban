@@ -15,9 +15,9 @@
 //! - **INV-1** an entry never changes service. A second token for the
 //!   same session and another service is refused.
 //! - **INV-2** the table is bounded. The least recently used session is
-//!   evicted first (a token presented again and a lease both count as a
-//!   use); a lease on an evicted or unknown session is refused (fail
-//!   closed).
+//!   evicted first (an accepted token and a granted lease count as a
+//!   use, a refused request does not); a lease on an evicted or unknown
+//!   session is refused (fail closed).
 //! - **INV-3** nothing but an accepted token writes to the table.
 //!
 //! The table lives in memory. The services, and with them every session,
@@ -110,14 +110,21 @@ impl SessionOwners {
         true
     }
 
-    /// The service that serves `session_id`, when known. Looking a
-    /// session up is using it: a session that keeps asking for files is
-    /// not the one evicted when the table is full.
-    pub fn owner(&mut self, session_id: &str) -> Option<&str> {
-        self.touch(session_id);
+    /// The service that serves `session_id`, when known. A lookup is
+    /// not a use: a request that is then refused must not keep the
+    /// session it names alive, or a service could pin its own sessions
+    /// in the table and push those of others out.
+    pub fn owner(&self, session_id: &str) -> Option<&str> {
         self.owners
             .get(session_id)
             .map(|(service, _)| service.as_str())
+    }
+
+    /// Mark `session_id` as used: a lease on it was granted. A session
+    /// that keeps obtaining files is not the one evicted when the table
+    /// is full.
+    pub fn used(&mut self, session_id: &str) {
+        self.touch(session_id);
     }
 
     #[cfg(test)]
@@ -147,7 +154,14 @@ pub fn owner(session_id: &str) -> Option<String> {
     table()
         .lock()
         .ok()
-        .and_then(|mut owners| owners.owner(session_id).map(str::to_string))
+        .and_then(|owners| owners.owner(session_id).map(str::to_string))
+}
+
+/// A lease on `session_id` was granted: keep it among the last evicted.
+pub fn used(session_id: &str) {
+    if let Ok(mut owners) = table().lock() {
+        owners.used(session_id);
+    }
 }
 
 #[cfg(test)]
@@ -205,11 +219,32 @@ mod tests {
         for n in 0..50 {
             // The long session leases a segment between newer sessions.
             assert_eq!(owners.owner("long"), Some("proxy_rdp"), "round {n}");
+            owners.used("long");
             assert!(owners.record(&format!("new-{n}"), "proxy_ssh"));
             assert_eq!(owners.len(), 3);
         }
         assert_eq!(owners.owner("long"), Some("proxy_rdp"));
         assert_eq!(owners.owner("idle-1"), None);
+    }
+
+    /// Naming a session in requests that are refused does not keep it in
+    /// the table: only a granted lease or an accepted token is a use.
+    #[test]
+    fn attack_lookups_do_not_keep_a_session_alive() {
+        let mut owners = SessionOwners::with_capacity(2);
+        assert!(owners.record("hoarded", "proxy_ssh"));
+        assert!(owners.record("victim", "proxy_rdp"));
+        for _ in 0..100 {
+            // What a refused request does: it looks the session up.
+            assert_eq!(owners.owner("hoarded"), Some("proxy_ssh"));
+        }
+        owners.used("victim");
+        assert!(owners.record("new", "proxy_mcp"));
+        assert_eq!(owners.owner("hoarded"), None, "the idle one is evicted");
+        assert_eq!(owners.owner("victim"), Some("proxy_rdp"));
+        // A use of a session that is not there changes nothing.
+        owners.used("never-seen");
+        assert_eq!(owners.len(), 2);
     }
 
     #[test]
@@ -218,7 +253,7 @@ mod tests {
         assert!(owners.record("s", "proxy_iacs"));
         for _ in 0..10_000 {
             assert!(owners.record("s", "proxy_iacs"));
-            assert_eq!(owners.owner("s"), Some("proxy_iacs"));
+            owners.used("s");
         }
         assert!(
             owners.order.len() <= 4 * 2 + 16 + 1,

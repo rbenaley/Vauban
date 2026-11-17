@@ -631,7 +631,7 @@ fn atomic_write_pem(path: &str, data: &str) -> Result<(), Box<dyn std::error::Er
 }
 
 /// Remove the temporary files an interrupted write of `path` left next
-/// to it: regular files named `<file>.<anything>.tmp`. A symlink of
+/// to it: regular files named `<file>.<pid>.<nanoseconds>.<counter>.tmp`. A symlink of
 /// that name is not followed and not removed.
 fn remove_stale_temps(path: &Path) {
     let (Some(parent), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str()))
@@ -647,7 +647,10 @@ fn remove_stale_temps(path: &Path) {
         let Some(candidate) = file_name.to_str() else {
             continue;
         };
-        let is_temp = candidate.starts_with(&prefix) && candidate.ends_with(".tmp");
+        let is_temp = candidate
+            .strip_prefix(&prefix)
+            .and_then(|rest| rest.strip_suffix(".tmp"))
+            .is_some_and(is_temp_suffix);
         let is_regular = entry.file_type().is_ok_and(|kind| kind.is_file());
         if is_temp && is_regular {
             match std::fs::remove_file(entry.path()) {
@@ -663,6 +666,18 @@ fn remove_stale_temps(path: &Path) {
             }
         }
     }
+}
+
+/// Whether `middle` is the `<pid>.<nanoseconds>.<counter>` part of a
+/// name made by [`temp_sibling`]: three runs of digits. Anything else
+/// (`server.key.bak.tmp`, the temporary file of `server.key.pem`) is
+/// someone else's file.
+fn is_temp_suffix(middle: &str) -> bool {
+    let parts: Vec<&str> = middle.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// `<file>.<pid>.<nanoseconds>.<counter>.tmp`, next to `path`.
@@ -1153,6 +1168,12 @@ mod tests {
         let target = dir.path().join("server.key");
         let stale = dir.path().join("server.key.4242.17.0.tmp");
         std::fs::write(&stale, "old private key").unwrap();
+        // Not ours: an operator's backup, the temporary file of a target
+        // whose name starts with ours.
+        let backup = dir.path().join("server.key.bak.tmp");
+        let longer_target = dir.path().join("server.key.pem.4242.17.0.tmp");
+        std::fs::write(&backup, "x").unwrap();
+        std::fs::write(&longer_target, "x").unwrap();
         // Not ours: another file, another target, a directory, a symlink.
         let other_target = dir.path().join("server.crt.4242.17.0.tmp");
         let unrelated = dir.path().join("notes.tmp");
@@ -1170,6 +1191,14 @@ mod tests {
         assert!(!stale.exists(), "the stale temporary file is removed");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "new key");
         assert!(other_target.exists() && unrelated.exists() && directory.exists());
+        assert!(
+            backup.exists(),
+            "an operator's file is not a temporary file of ours"
+        );
+        assert!(
+            longer_target.exists(),
+            "the temporary file of another target is left alone"
+        );
         assert!(link.symlink_metadata().is_ok(), "a symlink is left alone");
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
     }
