@@ -29,4 +29,14 @@ ignore = [
     # vauban-web/askama.toml with it. Askama's master uses toml, but
     # no release does yet, and 0.16.1 still depends on basic-toml.
     "RUSTSEC-2026-0374",
+    # 2026-11-17: chrono is declared unmaintained (RUSTSEC-2026-0543), no
+    # patched release. Not a vulnerability. It cannot leave the lockfile
+    # from here: diesel (date columns), russh (russh-util) and axum-test
+    # depend on it. Used directly by vauban-web, vauban-access,
+    # vauban-mailer, vauban-supervisor and vauban-web-evidence. Revisit
+    # once diesel and russh have moved; the advisory names jiff and time.
+    "RUSTSEC-2026-0543",
+    # 2026-11-17: chrono-tz, same announcement (RUSTSEC-2026-0555).
+    # vauban-web only (display time zones). Goes with chrono.
+    "RUSTSEC-2026-0555",
 ]
