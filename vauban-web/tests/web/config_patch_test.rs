@@ -309,45 +309,155 @@ async fn test_update_with_nothing_to_change_writes_nothing() {
     assert_eq!(row(&mut conn, asset).await.config, json!({"k": 1}));
 }
 
-/// The handlers that write after a round trip no longer write the whole
-/// document. `handlers/api/manage_assets.rs` keeps one such write, in
-/// the edit handler, which has no round trip.
+/// The edit form. It reads the asset, encrypts credentials through the
+/// vault, and writes. A flag raised in between must survive, and what
+/// the form changed must be applied.
+#[tokio::test]
+#[serial]
+async fn attack_edit_computed_from_a_stale_copy_keeps_what_was_stored_meanwhile() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let (asset, _) = new_asset(app, &mut conn).await;
+    store(
+        &mut conn,
+        asset,
+        &json!({"username": "root", "rdp_auth_mode": "ntlm", "domain": "old.example"}),
+    )
+    .await;
+
+    // The form's copy, and the document it computes from it: the mode
+    // changes, the domain is cleared, the username is left alone.
+    let read = row(&mut conn, asset).await.config;
+    let computed = json!({"username": "root", "rdp_auth_mode": "kerberos"});
+
+    // Meanwhile: a failed connection raises the flag, a pin is stored.
+    store(
+        &mut conn,
+        asset,
+        &json!({
+            "username": "root",
+            "rdp_auth_mode": "ntlm",
+            "domain": "old.example",
+            "rdp_server_cert_mismatch": true,
+            "rdp_server_cert_spki": "pinned-meanwhile",
+        }),
+    )
+    .await;
+
+    let change = ConfigPatch::between(&read, &computed);
+    let rows = patch_connection_config(&mut conn, asset, &change)
+        .await
+        .expect("patch");
+    assert_eq!(rows, 1);
+
+    assert_eq!(
+        row(&mut conn, asset).await.config,
+        json!({
+            "username": "root",
+            "rdp_auth_mode": "kerberos",
+            "rdp_server_cert_mismatch": true,
+            "rdp_server_cert_spki": "pinned-meanwhile",
+        })
+    );
+}
+
+/// An edit that changes nothing writes nothing over a concurrent change
+/// of the same key.
+#[tokio::test]
+#[serial]
+async fn test_edit_that_leaves_a_key_alone_does_not_write_it() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let (asset, _) = new_asset(app, &mut conn).await;
+    store(
+        &mut conn,
+        asset,
+        &json!({"ssh_host_key": "k1", "port_hint": 22}),
+    )
+    .await;
+    let read = row(&mut conn, asset).await.config;
+
+    store(
+        &mut conn,
+        asset,
+        &json!({"ssh_host_key": "k2", "port_hint": 22}),
+    )
+    .await;
+
+    let mut computed = read.clone();
+    computed["port_hint"] = json!(2222);
+    let change = ConfigPatch::between(&read, &computed);
+    patch_connection_config(&mut conn, asset, &change)
+        .await
+        .expect("patch");
+
+    assert_eq!(
+        row(&mut conn, asset).await.config,
+        json!({"ssh_host_key": "k2", "port_hint": 2222})
+    );
+}
+
+/// No handler and no IPC command writes the whole document of an
+/// existing asset. Same rule as `scripts/check_connection_config_writes.sh`.
 #[test]
-fn test_round_trip_handlers_do_not_write_the_whole_document() {
-    let whole_document_writes = |source: &str| {
+fn test_handlers_do_not_write_the_whole_document() {
+    let whole_document_writes = |source: &str| -> Vec<String> {
         let production = source.split("#[cfg(test)]").next().unwrap_or(source);
-        production.matches("connection_config.eq(").count()
-            + production.matches("config_col.eq(").count()
+        let mut statement = "";
+        let mut found = Vec::new();
+        for line in production.lines() {
+            if line.contains("diesel::insert_into(") {
+                statement = "insert";
+            }
+            if line.contains("diesel::update(") {
+                statement = "update";
+            }
+            let argument = ["connection_config.eq(", "config_col.eq("]
+                .iter()
+                .find_map(|needle| line.split_once(needle).map(|(_, rest)| rest));
+            let Some(argument) = argument else { continue };
+            if line.contains(".filter(") || statement == "insert" {
+                continue;
+            }
+            let through_a_patch = argument.starts_with("crate::models::asset::ConfigPatch")
+                || argument.contains(".expression()")
+                || argument.starts_with("serde_json::json!({})");
+            if !through_a_patch {
+                found.push(line.trim().to_string());
+            }
+        }
+        found
     };
-    for (file, source, allowed) in [
-        (
-            "web/ssh.rs",
-            include_str!("../../src/handlers/web/ssh.rs"),
-            0,
-        ),
-        (
-            "web/rdp.rs",
-            include_str!("../../src/handlers/web/rdp.rs"),
-            0,
-        ),
+    for (file, source) in [
+        ("web/ssh.rs", include_str!("../../src/handlers/web/ssh.rs")),
+        ("web/rdp.rs", include_str!("../../src/handlers/web/rdp.rs")),
         (
             "web/mcp_discover.rs",
             include_str!("../../src/handlers/web/mcp_discover.rs"),
-            0,
+        ),
+        (
+            "web/manage_assets.rs",
+            include_str!("../../src/handlers/web/manage_assets.rs"),
         ),
         (
             "api/manage_assets.rs",
             include_str!("../../src/handlers/api/manage_assets.rs"),
-            1,
         ),
+        ("ipc/admin.rs", include_str!("../../src/ipc/admin.rs")),
     ] {
         assert_eq!(
             whole_document_writes(source),
-            allowed,
-            "{file}: write named keys with patch_connection_config, or merge with \
-             update_connection_config_with"
+            Vec::<String>::new(),
+            "{file}: write named keys with patch_connection_config, the change of an edit \
+             with ConfigPatch::between, or merge with update_connection_config_with"
         );
     }
+    // The rule sees a whole-document write when there is one.
+    assert_eq!(
+        whole_document_writes("diesel::update(t)\n    .set(dsl::connection_config.eq(&config))\n")
+            .len(),
+        1
+    );
     // Each pin is conditional on the pin that was read.
     for (file, source, key) in [
         (

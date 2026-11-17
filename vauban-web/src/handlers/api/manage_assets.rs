@@ -418,7 +418,13 @@ pub async fn update_asset(
             port_col.eq(new_port),
             status_col.eq(request.status.unwrap_or(existing.status)),
             description_col.eq(sanitized_description),
-            config_col.eq(new_connection_config),
+            // What the request changed, applied to the document as it
+            // is now.
+            config_col.eq(crate::models::asset::ConfigPatch::between(
+                &existing.connection_config,
+                &new_connection_config,
+            )
+            .expression()),
             updated_at.eq(Utc::now()),
             updated_by_col.eq(actor_id),
         ))

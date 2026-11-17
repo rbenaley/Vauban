@@ -783,7 +783,7 @@ impl TrustAnchorFlag {
 #[derive(Debug, Clone, Default)]
 pub struct ConfigPatch {
     set: serde_json::Map<String, serde_json::Value>,
-    remove: Vec<&'static str>,
+    remove: Vec<String>,
     expect: Option<(&'static str, Option<String>)>,
     stamp: Option<Option<i32>>,
 }
@@ -801,8 +801,58 @@ impl ConfigPatch {
 
     /// Remove a top-level key.
     pub fn remove(mut self, key: &'static str) -> Self {
-        self.remove.push(key);
+        self.remove.push(key.to_string());
         self
+    }
+
+    /// The change that turns `old` into `new`, key by key: a key whose
+    /// value differs is set, a key that is gone is removed, a key that
+    /// is the same in both is not mentioned.
+    ///
+    /// An edit form computes a whole document from the one it read.
+    /// Writing that document back would undo whatever was stored since:
+    /// a mismatch flag, a pin, a catalogue. Writing the difference
+    /// applies what the form changed and leaves the rest as the database
+    /// holds it now.
+    ///
+    /// The key names come from the two documents, both built by this
+    /// service; they are bound as parameters like any other.
+    pub fn between(old: &serde_json::Value, new: &serde_json::Value) -> Self {
+        let empty = serde_json::Map::new();
+        let old = old.as_object().unwrap_or(&empty);
+        let new = new.as_object().unwrap_or(&empty);
+        let mut patch = Self::default();
+        for (key, value) in new {
+            if old.get(key) != Some(value) {
+                patch.set.insert(key.clone(), value.clone());
+            }
+        }
+        for key in old.keys() {
+            if !new.contains_key(key) {
+                patch.remove.push(key.clone());
+            }
+        }
+        patch
+    }
+
+    /// `(connection_config - removed keys) || set keys`, on the document
+    /// as the database holds it when the statement runs. For an `UPDATE`
+    /// that changes other columns of the asset in the same statement:
+    /// `.set((..., assets::connection_config.eq(patch.expression())))`.
+    pub fn expression(&self) -> ConfigExpression {
+        use diesel::dsl::{case_when, jsonb_typeof};
+        use diesel::sql_types::Jsonb;
+        use diesel::{IntoSql, PgJsonbExpressionMethods};
+        let empty = serde_json::Value::Object(serde_json::Map::new()).into_sql::<Jsonb>();
+        Box::new(
+            case_when(
+                jsonb_typeof(assets::connection_config).eq("object"),
+                assets::connection_config,
+            )
+            .otherwise(empty)
+            .remove(self.remove.clone())
+            .concat(serde_json::Value::Object(self.set.clone())),
+        )
     }
 
     /// Apply only if `key` still holds the string `value` (`None`: the
@@ -825,6 +875,12 @@ impl ConfigPatch {
     }
 }
 
+/// The expression of [`ConfigPatch::expression`].
+pub type ConfigExpression = Box<
+    dyn diesel::BoxableExpression<assets::table, diesel::pg::Pg, SqlType = diesel::sql_types::Jsonb>
+        + Send,
+>;
+
 /// Shown when a pin could not be stored because the pin of the asset
 /// changed between the moment it was read and the moment it was written
 /// ([`ConfigPatch::expecting`]).
@@ -841,24 +897,6 @@ pub async fn patch_connection_config(
     asset_uuid: Uuid,
     patch: &ConfigPatch,
 ) -> QueryResult<usize> {
-    use diesel::dsl::{case_when, jsonb_typeof};
-    use diesel::sql_types::Jsonb;
-    use diesel::{IntoSql, PgJsonbExpressionMethods};
-
-    // `(document - removed keys) || set keys`, on the document as the
-    // database holds it when the statement runs.
-    let patched = || {
-        let empty = serde_json::Value::Object(serde_json::Map::new()).into_sql::<Jsonb>();
-        let removed: Vec<String> = patch.remove.iter().map(|key| key.to_string()).collect();
-        case_when(
-            jsonb_typeof(assets::connection_config).eq("object"),
-            assets::connection_config,
-        )
-        .otherwise(empty)
-        .remove(removed)
-        .concat(serde_json::Value::Object(patch.set.clone()))
-    };
-
     let mut target = diesel::update(assets::table)
         .filter(assets::uuid.eq(asset_uuid))
         .into_boxed();
@@ -876,14 +914,14 @@ pub async fn patch_connection_config(
     match patch.stamp {
         Some(actor_id) => {
             let statement = target.set((
-                assets::connection_config.eq(patched()),
+                assets::connection_config.eq(patch.expression()),
                 assets::updated_at.eq(Utc::now()),
                 assets::updated_by_id.eq(actor_id),
             ));
             diesel_async::RunQueryDsl::execute(statement, conn).await
         }
         None => {
-            let statement = target.set(assets::connection_config.eq(patched()));
+            let statement = target.set(assets::connection_config.eq(patch.expression()));
             diesel_async::RunQueryDsl::execute(statement, conn).await
         }
     }
@@ -2131,6 +2169,86 @@ mod tests {
             "svc-bastion",
         ] {
             assert!(!text.contains(leaked), "{leaked} leaked into the summary");
+        }
+    }
+
+    fn patch_parts(patch: &ConfigPatch) -> (serde_json::Value, Vec<String>) {
+        let mut removed = patch.remove.clone();
+        removed.sort();
+        (serde_json::Value::Object(patch.set.clone()), removed)
+    }
+
+    #[test]
+    fn test_patch_between_names_only_what_changed() {
+        let old = serde_json::json!({
+            "same": 1, "changed": "a", "gone": true, "nested": {"x": [1, 2]}, "deep": {"k": 1},
+        });
+        let new = serde_json::json!({
+            "same": 1, "changed": "b", "added": null, "nested": {"x": [1, 2]}, "deep": {"k": 2},
+        });
+        let (set, removed) = patch_parts(&ConfigPatch::between(&old, &new));
+        assert_eq!(
+            set,
+            serde_json::json!({"changed": "b", "added": null, "deep": {"k": 2}})
+        );
+        assert_eq!(removed, ["gone"]);
+    }
+
+    #[test]
+    fn test_patch_between_identical_documents_is_empty() {
+        let document = serde_json::json!({"a": 1, "b": {"c": [true]}});
+        let (set, removed) = patch_parts(&ConfigPatch::between(&document, &document));
+        assert_eq!(set, serde_json::json!({}));
+        assert!(removed.is_empty());
+    }
+
+    #[test]
+    fn test_patch_between_documents_that_are_not_objects() {
+        let object = serde_json::json!({"a": 1});
+        for other in [
+            serde_json::Value::Null,
+            serde_json::json!("text"),
+            serde_json::json!([1]),
+        ] {
+            let (set, removed) = patch_parts(&ConfigPatch::between(&other, &object));
+            assert_eq!(set, object, "{other} -> object sets every key");
+            assert!(removed.is_empty());
+
+            let (set, removed) = patch_parts(&ConfigPatch::between(&object, &other));
+            assert_eq!(set, serde_json::json!({}));
+            assert_eq!(removed, ["a"], "object -> {other} removes every key");
+        }
+    }
+
+    proptest::proptest! {
+        /// Applying `between(old, new)` to `old` gives `new`, and a key
+        /// that is the same in both is never mentioned: the property
+        /// that keeps a concurrent change of that key.
+        #[test]
+        fn prop_patch_between_is_the_difference(
+            old in proptest::collection::btree_map("[a-e]", 0u8..3, 0..5),
+            new in proptest::collection::btree_map("[a-e]", 0u8..3, 0..5),
+        ) {
+            let as_json = |map: &std::collections::BTreeMap<String, u8>| {
+                serde_json::Value::Object(
+                    map.iter().map(|(k, v)| (k.clone(), serde_json::json!(v))).collect(),
+                )
+            };
+            let patch = ConfigPatch::between(&as_json(&old), &as_json(&new));
+            let mut applied = old.clone();
+            for key in &patch.remove {
+                applied.remove(key);
+            }
+            for (key, value) in &patch.set {
+                applied.insert(key.clone(), value.as_u64().unwrap() as u8);
+            }
+            proptest::prop_assert_eq!(&applied, &new);
+            for (key, value) in &old {
+                if new.get(key) == Some(value) {
+                    proptest::prop_assert!(!patch.set.contains_key(key));
+                    proptest::prop_assert!(!patch.remove.contains(key));
+                }
+            }
         }
     }
 

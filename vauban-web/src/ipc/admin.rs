@@ -381,9 +381,17 @@ async fn handle_update_asset_connection_config(
         return AdminResponse::Error(format!("Refused connection config: {e}"));
     }
 
+    // The command carries a whole document computed from the one that
+    // was read. Its difference with that one is applied to the document
+    // as it is now, so a flag or a pin stored in between is kept.
+    let stored = existing
+        .as_ref()
+        .map(|(_, _, stored)| stored.clone())
+        .unwrap_or(serde_json::Value::Null);
+    let change = crate::models::asset::ConfigPatch::between(&stored, &config_value);
     match diesel::update(assets::table.filter(assets::id.eq(asset_id)))
         .set((
-            assets::connection_config.eq(config_value),
+            assets::connection_config.eq(change.expression()),
             assets::updated_at.eq(chrono::Utc::now()),
         ))
         .execute(&mut conn)
