@@ -14,8 +14,10 @@
 //!
 //! - **INV-1** an entry never changes service. A second token for the
 //!   same session and another service is refused.
-//! - **INV-2** the table is bounded. The oldest entry is evicted first;
-//!   a lease on an evicted or unknown session is refused (fail closed).
+//! - **INV-2** the table is bounded. The least recently used session is
+//!   evicted first (a token presented again and a lease both count as a
+//!   use); a lease on an evicted or unknown session is refused (fail
+//!   closed).
 //! - **INV-3** nothing but an accepted token writes to the table.
 //!
 //! The table lives in memory. The services, and with them every session,
@@ -31,9 +33,13 @@ pub const MAX_SESSIONS: usize = 262_144;
 
 #[derive(Debug)]
 pub struct SessionOwners {
-    owners: HashMap<String, String>,
-    order: VecDeque<String>,
+    /// Session -> (service, stamp of its last use).
+    owners: HashMap<String, (String, u64)>,
+    /// Uses in order, oldest first. An entry whose stamp is no longer
+    /// the session's current one is stale and skipped.
+    order: VecDeque<(String, u64)>,
     capacity: usize,
+    next_stamp: u64,
 }
 
 impl SessionOwners {
@@ -42,6 +48,39 @@ impl SessionOwners {
             owners: HashMap::new(),
             order: VecDeque::new(),
             capacity: capacity.max(1),
+            next_stamp: 0,
+        }
+    }
+
+    /// Mark `session_id` as just used, so it is the last to be evicted.
+    fn touch(&mut self, session_id: &str) {
+        let Some((_, stamp)) = self.owners.get_mut(session_id) else {
+            return;
+        };
+        self.next_stamp += 1;
+        *stamp = self.next_stamp;
+        self.order
+            .push_back((session_id.to_string(), self.next_stamp));
+        // Stale entries pile up with every use; drop them once they
+        // outnumber the live ones.
+        if self.order.len() > self.capacity.saturating_mul(2).saturating_add(16) {
+            let owners = &self.owners;
+            self.order
+                .retain(|(id, stamp)| owners.get(id).is_some_and(|(_, current)| current == stamp));
+        }
+    }
+
+    /// Drop the least recently used session.
+    fn evict_one(&mut self) {
+        while let Some((id, stamp)) = self.order.pop_front() {
+            if self
+                .owners
+                .get(&id)
+                .is_some_and(|(_, current)| *current == stamp)
+            {
+                self.owners.remove(&id);
+                return;
+            }
         }
     }
 
@@ -51,26 +90,34 @@ impl SessionOwners {
     /// recorded for another service (INV-1). Recording the same pair
     /// again is accepted: IACS and MCP present one token many times.
     pub fn record(&mut self, session_id: &str, service_key: &str) -> bool {
-        if let Some(owner) = self.owners.get(session_id) {
-            return owner == service_key;
+        if let Some((owner, _)) = self.owners.get(session_id) {
+            let same = owner == service_key;
+            if same {
+                self.touch(session_id);
+            }
+            return same;
         }
         while self.owners.len() >= self.capacity {
-            match self.order.pop_front() {
-                Some(oldest) => {
-                    self.owners.remove(&oldest);
-                }
-                None => break,
+            let before = self.owners.len();
+            self.evict_one();
+            if self.owners.len() == before {
+                break;
             }
         }
         self.owners
-            .insert(session_id.to_string(), service_key.to_string());
-        self.order.push_back(session_id.to_string());
+            .insert(session_id.to_string(), (service_key.to_string(), 0));
+        self.touch(session_id);
         true
     }
 
-    /// The service that serves `session_id`, when known.
-    pub fn owner(&self, session_id: &str) -> Option<&str> {
-        self.owners.get(session_id).map(String::as_str)
+    /// The service that serves `session_id`, when known. Looking a
+    /// session up is using it: a session that keeps asking for files is
+    /// not the one evicted when the table is full.
+    pub fn owner(&mut self, session_id: &str) -> Option<&str> {
+        self.touch(session_id);
+        self.owners
+            .get(session_id)
+            .map(|(service, _)| service.as_str())
     }
 
     #[cfg(test)]
@@ -100,7 +147,7 @@ pub fn owner(session_id: &str) -> Option<String> {
     table()
         .lock()
         .ok()
-        .and_then(|owners| owners.owner(session_id).map(str::to_string))
+        .and_then(|mut owners| owners.owner(session_id).map(str::to_string))
 }
 
 #[cfg(test)]
@@ -145,6 +192,41 @@ mod tests {
         assert_eq!(owners.owner("s3"), Some("proxy_rdp"));
     }
 
+    /// A session that keeps asking for files outlives newer idle ones.
+    /// Eviction used to follow insertion order: a long RDP session lost
+    /// its entry, and its next segment, once enough sessions had been
+    /// opened after it.
+    #[test]
+    fn test_session_in_use_is_not_the_one_evicted() {
+        let mut owners = SessionOwners::with_capacity(3);
+        assert!(owners.record("long", "proxy_rdp"));
+        assert!(owners.record("idle-1", "proxy_ssh"));
+        assert!(owners.record("idle-2", "proxy_ssh"));
+        for n in 0..50 {
+            // The long session leases a segment between newer sessions.
+            assert_eq!(owners.owner("long"), Some("proxy_rdp"), "round {n}");
+            assert!(owners.record(&format!("new-{n}"), "proxy_ssh"));
+            assert_eq!(owners.len(), 3);
+        }
+        assert_eq!(owners.owner("long"), Some("proxy_rdp"));
+        assert_eq!(owners.owner("idle-1"), None);
+    }
+
+    #[test]
+    fn test_use_log_stays_bounded() {
+        let mut owners = SessionOwners::with_capacity(4);
+        assert!(owners.record("s", "proxy_iacs"));
+        for _ in 0..10_000 {
+            assert!(owners.record("s", "proxy_iacs"));
+            assert_eq!(owners.owner("s"), Some("proxy_iacs"));
+        }
+        assert!(
+            owners.order.len() <= 4 * 2 + 16 + 1,
+            "{}",
+            owners.order.len()
+        );
+    }
+
     #[test]
     fn test_presenting_a_token_again_does_not_grow_the_table() {
         let mut owners = SessionOwners::with_capacity(2);
@@ -170,7 +252,7 @@ mod tests {
             for (session, service) in ops {
                 let session = format!("s{session}");
                 let service = services[service as usize];
-                let before = owners.owner(&session).map(str::to_string);
+                let before = owners.owners.get(&session).map(|(service, _)| service.clone());
                 let accepted = owners.record(&session, service);
                 match before {
                     Some(owner) => {

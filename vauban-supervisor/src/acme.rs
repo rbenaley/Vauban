@@ -591,6 +591,10 @@ fn atomic_write_pem(path: &str, data: &str) -> Result<(), Box<dyn std::error::Er
             .map_err(|e| format!("Failed to create directory {}: {}", parent.display(), e))?;
     }
 
+    // A renewal interrupted between create and rename leaves its
+    // temporary file behind, private key included.
+    remove_stale_temps(path);
+
     // A name nothing else uses, created exclusively and private from the
     // first byte. The old `<file>.tmp` was opened with `File::create`: it
     // followed a symlink left at that name, truncated whatever was
@@ -624,6 +628,41 @@ fn atomic_write_pem(path: &str, data: &str) -> Result<(), Box<dyn std::error::Er
     }
 
     Ok(())
+}
+
+/// Remove the temporary files an interrupted write of `path` left next
+/// to it: regular files named `<file>.<anything>.tmp`. A symlink of
+/// that name is not followed and not removed.
+fn remove_stale_temps(path: &Path) {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str()))
+    else {
+        return;
+    };
+    let prefix = format!("{name}.");
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(candidate) = file_name.to_str() else {
+            continue;
+        };
+        let is_temp = candidate.starts_with(&prefix) && candidate.ends_with(".tmp");
+        let is_regular = entry.file_type().is_ok_and(|kind| kind.is_file());
+        if is_temp && is_regular {
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => warn!(
+                    file = %entry.path().display(),
+                    "Removed a temporary file left by an interrupted ACME write"
+                ),
+                Err(e) => warn!(
+                    file = %entry.path().display(),
+                    error = %e,
+                    "Could not remove a stale ACME temporary file"
+                ),
+            }
+        }
+    }
 }
 
 /// `<file>.<pid>.<nanoseconds>.<counter>.tmp`, next to `path`.
@@ -1104,6 +1143,35 @@ mod tests {
 
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "secret key");
+    }
+
+    /// A write interrupted between create and rename left the private
+    /// key in a temporary file for ever.
+    #[test]
+    fn test_stale_temporary_files_are_removed_by_the_next_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("server.key");
+        let stale = dir.path().join("server.key.4242.17.0.tmp");
+        std::fs::write(&stale, "old private key").unwrap();
+        // Not ours: another file, another target, a directory, a symlink.
+        let other_target = dir.path().join("server.crt.4242.17.0.tmp");
+        let unrelated = dir.path().join("notes.tmp");
+        let directory = dir.path().join("server.key.dir.tmp");
+        let victim = dir.path().join("victim");
+        let link = dir.path().join("server.key.link.tmp");
+        std::fs::write(&other_target, "x").unwrap();
+        std::fs::write(&unrelated, "x").unwrap();
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(&victim, "untouched").unwrap();
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+        atomic_write_pem(target.to_str().unwrap(), "new key").unwrap();
+
+        assert!(!stale.exists(), "the stale temporary file is removed");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new key");
+        assert!(other_target.exists() && unrelated.exists() && directory.exists());
+        assert!(link.symlink_metadata().is_ok(), "a symlink is left alone");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
     }
 
     #[test]

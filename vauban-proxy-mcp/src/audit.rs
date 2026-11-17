@@ -1051,14 +1051,20 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
+    /// A directory of its own for each call. The process id and the
+    /// clock are not enough: tests run in parallel in one process, and
+    /// two of them asking within the clock's resolution got the same
+    /// directory, then removed it under each other.
     fn temp_dir(tag: &str) -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         std::env::temp_dir().join(format!(
-            "vauban-mcp-{tag}-{}-{}",
+            "vauban-mcp-{tag}-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ))
     }
 
