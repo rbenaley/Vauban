@@ -3618,39 +3618,30 @@ fn handle_recording_file_request(
     };
 
     let file = if let RecordingOpen::Write(lease) = open {
-        if let Some(parent) = full_path.parent()
-            && let Err(e) = std::fs::create_dir_all(parent)
-        {
-            error!(session_id, error = %e, "Failed to create recording directory");
-            let _ = requester_state
-                .channel
-                .send(&Message::RecordingFileResponse {
-                    request_id,
-                    session_id: session_id.to_string(),
-                    success: false,
-                    error: Some(format!("mkdir: {e}")),
-                });
-            return;
-        }
-
-        // O_RDWR so audit can seek+read the raw IACS `.pcap` FD for
-        // in-process gzip after ChannelEnd (Capsicum: no second open).
-        let mut options = std::fs::OpenOptions::new();
-        options.read(true).write(true);
-        match lease {
-            // O_EXCL: never a descriptor on a file that already exists,
-            // and never through a symlink planted at the target.
-            file_broker::WriteLease::CreateNew => options.create_new(true),
-            file_broker::WriteLease::Rewrite => options.create(true).truncate(true),
+        // No symlink is followed below the storage base, and the
+        // directories are created on the way. O_RDWR so audit can
+        // seek+read the raw IACS `.pcap` FD for in-process gzip after
+        // ChannelEnd (Capsicum: no second open).
+        let mode = match lease {
+            // Never a descriptor on a file that holds data. A file left
+            // empty by a lease whose reply was lost is reopened: the
+            // lease was already granted to the service that serves the
+            // session.
+            file_broker::WriteLease::CreateNew => shared::recording_open::WriteOpen::CreateNew,
+            file_broker::WriteLease::Rewrite => shared::recording_open::WriteOpen::Rewrite,
         };
-        match options.open(&full_path) {
+        match shared::recording_open::open_for_write(
+            std::path::Path::new(storage_base),
+            relative_path,
+            mode,
+        ) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 warn!(
                     session_id,
                     service = %requester_state.service_key,
                     path = %full_path.display(),
-                    "Refused recording write lease: the file already exists"
+                    "Refused recording write lease: the file already holds data"
                 );
                 let _ = requester_state
                     .channel
@@ -3695,11 +3686,8 @@ fn handle_recording_file_request(
 
     if let Err(e) = send_fd(fd_socket, file.as_raw_fd()) {
         error!(session_id, error = %e, "Failed to send recording file fd via SCM_RIGHTS");
-        // The file was created by this request and nobody holds it: remove
-        // it so the caller's next attempt is not refused as "exists".
-        if open == RecordingOpen::Write(file_broker::WriteLease::CreateNew) {
-            let _ = std::fs::remove_file(&full_path);
-        }
+        // Nothing to undo: a file created by this request is empty, and
+        // the caller's next attempt reopens an empty file.
         let _ = requester_state
             .channel
             .send(&Message::RecordingFileResponse {
@@ -3954,33 +3942,36 @@ fn handle_recording_file_unlink_request(
         }
     };
 
-    if !full_path.exists() {
-        // Idempotent: missing raw after a prior unlink is success.
-        debug!(
-            session_id,
-            path = %relative_path,
-            "Recording unlink: raw PCAP already absent"
-        );
-        let _ = requester_state
-            .channel
-            .send(&Message::RecordingFileUnlinkResponse {
-                request_id,
-                session_id: session_id.to_string(),
-                success: true,
-                error: None,
-            });
-        return;
-    }
-
-    if let Err(e) = std::fs::remove_file(&full_path) {
-        error!(
-            session_id,
-            path = %full_path.display(),
-            error = %e,
-            "Failed to unlink raw PCAP"
-        );
-        fail(format!("unlink: {e}"));
-        return;
+    // No symlink is followed on the way to the capture.
+    match shared::recording_open::unlink(std::path::Path::new(storage_base), relative_path) {
+        Ok(true) => {}
+        Ok(false) => {
+            // Idempotent: missing raw after a prior unlink is success.
+            debug!(
+                session_id,
+                path = %relative_path,
+                "Recording unlink: raw PCAP already absent"
+            );
+            let _ = requester_state
+                .channel
+                .send(&Message::RecordingFileUnlinkResponse {
+                    request_id,
+                    session_id: session_id.to_string(),
+                    success: true,
+                    error: None,
+                });
+            return;
+        }
+        Err(e) => {
+            error!(
+                session_id,
+                path = %full_path.display(),
+                error = %e,
+                "Failed to unlink raw PCAP"
+            );
+            fail(format!("unlink: {e}"));
+            return;
+        }
     }
 
     debug!(
@@ -6196,6 +6187,71 @@ mod tests {
                 std::fs::read(dir.path().join(&relative)).unwrap(),
                 b"data",
                 "{source:?} {file}"
+            );
+        }
+    }
+
+    /// The lease was granted and the file created, but the reply never
+    /// reached the proxy. Asking again must work, for the same service
+    /// only, and only while the file is empty.
+    #[test]
+    fn test_lost_lease_reply_can_be_asked_again_by_the_owner() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let sid = session_served_by("proxy_rdp");
+        let relative = format!("2026/11/{sid}/001.mp4");
+        seed(dir.path(), &relative, b"");
+
+        let (replies, fd) =
+            dispatch_with_fd_socket("proxy_ssh", write_request(&sid, &relative), dir.path());
+        assert_eq!(
+            recording_refusal(&replies).as_deref(),
+            Some(file_broker::PATH_NOT_ALLOWED),
+            "another service cannot pick up the empty file"
+        );
+        assert!(fd.is_none());
+
+        let (replies, fd) =
+            dispatch_with_fd_socket("proxy_rdp", write_request(&sid, &relative), dir.path());
+        assert!(lease_granted(&replies), "{replies:?}");
+        fd.expect("descriptor").write_all(b"frame").unwrap();
+
+        let (replies, fd) =
+            dispatch_with_fd_socket("proxy_rdp", write_request(&sid, &relative), dir.path());
+        assert_eq!(
+            recording_refusal(&replies).as_deref(),
+            Some(file_broker::FILE_EXISTS),
+            "once it holds data, not even its owner reopens it"
+        );
+        assert!(fd.is_none());
+        assert_eq!(std::fs::read(dir.path().join(&relative)).unwrap(), b"frame");
+    }
+
+    /// Root must not be led outside the storage tree by a symlink.
+    #[test]
+    fn attack_write_lease_through_a_symlinked_directory_is_rejected() {
+        use std::os::unix::fs::symlink;
+        for level in 0..3 {
+            let dir = tempfile::tempdir().unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            let sid = session_served_by("proxy_ssh");
+            let levels = [
+                "2026".to_string(),
+                "2026/11".to_string(),
+                format!("2026/11/{sid}"),
+            ];
+            let link = dir.path().join(&levels[level]);
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            symlink(outside.path(), &link).unwrap();
+
+            let relative = format!("2026/11/{sid}/session.cast");
+            let (replies, fd) =
+                dispatch_with_fd_socket("proxy_ssh", write_request(&sid, &relative), dir.path());
+            assert!(!lease_granted(&replies), "level {level}: {replies:?}");
+            assert!(fd.is_none());
+            assert!(
+                std::fs::read_dir(outside.path()).unwrap().next().is_none(),
+                "level {level}: nothing may be created outside the storage tree"
             );
         }
     }

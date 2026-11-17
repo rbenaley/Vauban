@@ -54,8 +54,9 @@ fn broker_has_no_naked_join() {
 /// INV-2 (pre-syscall order): the path resolution happens before every
 /// filesystem syscall in the handler.
 ///
-/// Write opens use `OpenOptions` (O_RDWR + create) so audit can later
-/// gzip the raw IACS `.pcap` on the same FD -- not bare `File::create`.
+/// The write path goes through `shared::recording_open`, which walks the
+/// tree without following a symlink and never truncates outside
+/// `WriteOpen::Rewrite`.
 #[test]
 fn broker_validates_before_fs_calls() {
     let body = fn_body(SUPERVISOR_MAIN, "fn handle_recording_file_request(");
@@ -64,7 +65,7 @@ fn broker_validates_before_fs_calls() {
         .find("resolve_recording_file_target")
         .expect("resolve seam must be present");
 
-    for syscall in ["File::open", "OpenOptions::new", "create_dir_all"] {
+    for syscall in ["File::open", "recording_open::open_for_write"] {
         let at = body
             .find(syscall)
             .unwrap_or_else(|| panic!("`{syscall}` must be present in the handler"));
@@ -74,31 +75,37 @@ fn broker_validates_before_fs_calls() {
         );
     }
 
-    assert!(
-        body.contains(".create(true)")
-            && body.contains(".read(true)")
-            && body.contains(".write(true)"),
-        "write path MUST open O_RDWR via OpenOptions (audit gzip on same FD)."
-    );
-    assert!(
-        body.contains(".create_new(true)"),
-        "media and capture leases MUST open O_EXCL: no descriptor on an existing recording."
-    );
+    for naked in [
+        "OpenOptions",
+        "create_dir_all",
+        "File::create",
+        ".truncate(",
+    ] {
+        assert!(
+            !body.contains(naked),
+            "the write path MUST go through shared::recording_open, not `{naked}`."
+        );
+    }
     assert_eq!(
-        body.matches(".truncate(true)").count(),
+        body.matches("WriteOpen::Rewrite").count(),
         1,
-        "exactly one truncating open, reserved to WriteLease::Rewrite."
-    );
-    let rewrite_at = body
-        .find("WriteLease::Rewrite =>")
-        .expect("the Rewrite arm must be present");
-    let truncate_at = body.find(".truncate(true)").expect("checked above");
-    assert!(
-        rewrite_at < truncate_at && truncate_at - rewrite_at < 80,
-        "the truncating open MUST sit in the WriteLease::Rewrite arm."
+        "exactly one rewriting open, mapped from WriteLease::Rewrite."
     );
     assert!(
-        !body.contains("File::create"),
-        "write path MUST NOT use bare File::create (O_WRONLY would break audit gzip)."
+        body.contains(
+            "file_broker::WriteLease::Rewrite => shared::recording_open::WriteOpen::Rewrite"
+        ),
+        "WriteOpen::Rewrite MUST come from WriteLease::Rewrite only."
+    );
+}
+
+/// The unlink broker walks the tree without following a symlink.
+#[test]
+fn unlink_broker_does_not_follow_symlinks() {
+    let body = fn_body(SUPERVISOR_MAIN, "fn handle_recording_file_unlink_request(");
+    assert!(body.contains("shared::recording_open::unlink("));
+    assert!(
+        !body.contains("remove_file"),
+        "unlink MUST go through shared::recording_open::unlink."
     );
 }

@@ -30,6 +30,7 @@ pub mod messages;
 pub mod pipe_store;
 pub mod privdrop;
 pub mod recording_fd;
+pub mod recording_open;
 pub mod recording_paths;
 pub mod sandbox;
 pub mod smtp;
