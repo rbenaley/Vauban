@@ -466,7 +466,31 @@ async fn create_user_with_mfa_internal(
 /// Compute the TOTP code that `/api/v1/auth/login` will accept right now
 /// for the given base32-encoded shared secret.
 pub fn current_totp_for(mfa_secret: &str) -> String {
+    wait_out_the_end_of_the_totp_window();
     unwrap_some!(AuthService::get_current_totp(mfa_secret))
+}
+
+/// Seconds a caller needs between generating a code and having it
+/// verified.
+const TOTP_USE_MARGIN_SECS: u64 = 3;
+
+/// A code is accepted in its own 30-second window only
+/// (`shared::totp::TOTP_SKEW` is 0). Generated in the last instants of
+/// a window, it is refused once the request that carries it is handled
+/// in the next one: a test failed that way about once in several full
+/// runs. When the window is about to end, wait for the next one.
+fn wait_out_the_end_of_the_totp_window() {
+    let step = shared::totp::TOTP_STEP;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let into_window = now.as_secs() % step;
+    if step - into_window <= TOTP_USE_MARGIN_SECS {
+        let next_window = std::time::Duration::from_secs(step - into_window).saturating_sub(
+            std::time::Duration::from_nanos(u64::from(now.subsec_nanos())),
+        ) + std::time::Duration::from_millis(50);
+        std::thread::sleep(next_window);
+    }
 }
 
 /// Test asset data.
