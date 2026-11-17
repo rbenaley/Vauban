@@ -26,6 +26,44 @@ use crate::acme::resolver::AcmeResolver;
 use crate::config::AcmeConfig;
 use crate::ipc::SupervisorClient;
 
+/// The supervisor's code for "too many renewals were started recently".
+pub const ACME_TOO_SOON: &str = "acme_too_soon";
+
+/// First wait before a renewal is asked again; doubles after each
+/// failure.
+pub const RETRY_BASE: Duration = Duration::from_secs(15 * 60);
+/// Longest wait between two attempts.
+pub const RETRY_MAX: Duration = Duration::from_secs(6 * 60 * 60);
+/// How long the scheduler waits for the supervisor to answer a renewal
+/// before treating it as failed. An issuance takes seconds to a few
+/// minutes.
+pub const RENEWAL_ANSWER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// How long to wait before asking again after `failures` consecutive
+/// failures (the one just seen included, so `failures >= 1`).
+///
+/// 15 minutes, 30 minutes, 1 hour, ... capped at 6 hours. The first wait
+/// is the window of the supervisor's renewal bound, so a retry cannot
+/// itself be refused as too soon.
+pub fn retry_delay(failures: u32) -> Duration {
+    let doublings = failures.saturating_sub(1).min(16);
+    RETRY_BASE
+        .checked_mul(1u32 << doublings)
+        .map_or(RETRY_MAX, |delay| delay.min(RETRY_MAX))
+}
+
+/// What became of one renewal request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenewalOutcome {
+    /// A new certificate was activated.
+    Activated,
+    /// The supervisor refused because of its renewal bound.
+    TooSoon,
+    /// The request could not be sent, was refused, failed at the
+    /// authority, or was never answered.
+    Failed,
+}
+
 /// Parsed certificate metadata extracted before sandbox entry.
 #[derive(Debug)]
 pub struct CertInfo {
@@ -44,6 +82,10 @@ pub struct CertExpiry {
     not_after_epoch: AtomicI64,
     self_signed: AtomicBool,
     waker: Notify,
+    /// Woken when the supervisor answers a renewal with a failure.
+    failure_waker: Notify,
+    /// Whether that failure was the supervisor's renewal bound.
+    failure_too_soon: AtomicBool,
 }
 
 impl CertExpiry {
@@ -52,6 +94,8 @@ impl CertExpiry {
             not_after_epoch: AtomicI64::new(info.not_after_epoch),
             self_signed: AtomicBool::new(info.self_signed),
             waker: Notify::new(),
+            failure_waker: Notify::new(),
+            failure_too_soon: AtomicBool::new(false),
         }
     }
 
@@ -98,6 +142,23 @@ impl CertExpiry {
     /// Wait until the certificate metadata changes (new certificate activated).
     pub async fn notified(&self) {
         self.waker.notified().await;
+    }
+
+    /// Record that the supervisor answered a renewal with a failure, and
+    /// wake the scheduler. Called by the IPC handler when a failed
+    /// `AcmeRenewResponse` arrives. `code` is the supervisor's code; only
+    /// `acme_too_soon` is told apart, the text is not kept.
+    pub fn renewal_failed(&self, code: Option<&str>) {
+        self.failure_too_soon
+            .store(code == Some(ACME_TOO_SOON), Ordering::Relaxed);
+        self.failure_waker.notify_one();
+    }
+
+    /// Wait until a renewal fails. Returns whether the failure was the
+    /// supervisor's renewal bound.
+    pub async fn renewal_failure(&self) -> bool {
+        self.failure_waker.notified().await;
+        self.failure_too_soon.load(Ordering::Relaxed)
     }
 }
 
@@ -185,8 +246,14 @@ async fn renewal_scheduler(
         // Self-signed certificates must be replaced immediately.
         if cert_expiry.is_self_signed() {
             warn!("Current certificate is self-signed, requesting ACME renewal immediately");
-            request_renewal(&acme_config, &cert_path, &key_path, &supervisor).await;
-            cert_expiry.notified().await;
+            renew_until_activated(
+                &acme_config,
+                &cert_path,
+                &key_path,
+                &supervisor,
+                &cert_expiry,
+            )
+            .await;
             continue;
         }
 
@@ -221,9 +288,70 @@ async fn renewal_scheduler(
             renew_before_hours = acme_config.renew_before_hours,
             "Certificate renewal needed"
         );
-        request_renewal(&acme_config, &cert_path, &key_path, &supervisor).await;
+        renew_until_activated(
+            &acme_config,
+            &cert_path,
+            &key_path,
+            &supervisor,
+            &cert_expiry,
+        )
+        .await;
+    }
+}
 
-        cert_expiry.notified().await;
+/// Ask for a renewal and wait for a new certificate, asking again after
+/// a refusal or a failure.
+///
+/// The scheduler used to send one request and then wait for a new
+/// certificate with no limit: a refusal, a failure at the authority or a
+/// lost answer left it waiting until vauban-web was restarted, while
+/// the certificate ran towards its expiry.
+async fn renew_until_activated(
+    acme_config: &AcmeConfig,
+    cert_path: &str,
+    key_path: &str,
+    supervisor: &Option<Arc<SupervisorClient>>,
+    cert_expiry: &CertExpiry,
+) {
+    let mut failures: u32 = 0;
+    loop {
+        let sent = request_renewal(acme_config, cert_path, key_path, supervisor).await;
+        let outcome = if sent {
+            tokio::select! {
+                () = cert_expiry.notified() => RenewalOutcome::Activated,
+                too_soon = cert_expiry.renewal_failure() => {
+                    if too_soon { RenewalOutcome::TooSoon } else { RenewalOutcome::Failed }
+                }
+                () = tokio::time::sleep(RENEWAL_ANSWER_TIMEOUT) => {
+                    warn!("No answer to the ACME renewal request");
+                    RenewalOutcome::Failed
+                }
+            }
+        } else {
+            RenewalOutcome::Failed
+        };
+
+        let wait = match outcome {
+            RenewalOutcome::Activated => return,
+            // The bound is the supervisor's, not a failed attempt: wait
+            // its window out without lengthening the next waits.
+            RenewalOutcome::TooSoon => RETRY_BASE,
+            RenewalOutcome::Failed => {
+                failures = failures.saturating_add(1);
+                retry_delay(failures)
+            }
+        };
+        warn!(
+            outcome = ?outcome,
+            retry_in_minutes = wait.as_secs() / 60,
+            days_remaining = cert_expiry.days_remaining(),
+            "ACME renewal did not complete; it will be asked again"
+        );
+        tokio::select! {
+            () = tokio::time::sleep(wait) => {}
+            // A certificate activated meanwhile ends the retries.
+            () = cert_expiry.notified() => return,
+        }
     }
 }
 
@@ -423,23 +551,24 @@ fn parse_datetime_components(
         })
 }
 
-/// Request certificate renewal from the supervisor via IPC.
+/// Request certificate renewal from the supervisor via IPC. Returns
+/// whether the request was sent.
 async fn request_renewal(
     acme_config: &AcmeConfig,
     cert_path: &str,
     key_path: &str,
     supervisor: &Option<Arc<SupervisorClient>>,
-) {
+) -> bool {
     let Some(sup) = supervisor else {
         warn!("ACME renewal needed but no supervisor connection available");
-        return;
+        return false;
     };
 
     let directory_url = match acme_config.resolve_directory_url() {
         Ok(url) => url,
         Err(e) => {
             error!(error = %e, "Failed to resolve ACME directory URL");
-            return;
+            return false;
         }
     };
 
@@ -470,12 +599,130 @@ async fn request_renewal(
     // and AcmeCertActivate messages.
     if let Err(e) = sup.inner().channel.send(&msg) {
         error!(error = %e, "Failed to send ACME renewal request to supervisor");
+        return false;
     }
+    true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_retry_delay_doubles_from_the_bound_window_to_the_cap() {
+        let minutes: Vec<u64> = (1..=8).map(|n| retry_delay(n).as_secs() / 60).collect();
+        assert_eq!(minutes, [15, 30, 60, 120, 240, 360, 360, 360]);
+        assert_eq!(
+            retry_delay(0),
+            RETRY_BASE,
+            "never shorter than the first wait"
+        );
+    }
+
+    /// However many failures, the wait never exceeds the cap and never
+    /// overflows.
+    #[test]
+    fn test_retry_delay_is_bounded_for_any_count() {
+        for failures in [0, 1, 6, 17, 64, 1_000, u32::MAX] {
+            let delay = retry_delay(failures);
+            assert!(delay >= RETRY_BASE && delay <= RETRY_MAX, "{failures}");
+        }
+    }
+
+    /// The first retry waits at least the window of the supervisor's
+    /// renewal bound (three starts per fifteen minutes): a retry is
+    /// never the request that trips the bound.
+    #[test]
+    fn test_first_retry_waits_out_the_supervisor_bound_window() {
+        assert_eq!(RETRY_BASE, Duration::from_secs(15 * 60));
+        assert!(RENEWAL_ANSWER_TIMEOUT >= RETRY_BASE);
+    }
+
+    fn expiry() -> CertExpiry {
+        CertExpiry::new(CertInfo {
+            not_after_epoch: chrono::Utc::now().timestamp() + 3600,
+            self_signed: false,
+        })
+    }
+
+    /// The scheduler used to wait for a new certificate only. A failed
+    /// answer must wake it.
+    #[tokio::test]
+    async fn attack_failed_renewal_wakes_the_scheduler() {
+        let expiry = expiry();
+        expiry.renewal_failed(Some("acme_directory_mismatch"));
+        let too_soon = tokio::time::timeout(Duration::from_secs(1), expiry.renewal_failure())
+            .await
+            .expect("a failure recorded before the wait still wakes it");
+        assert!(!too_soon);
+    }
+
+    #[tokio::test]
+    async fn test_too_soon_is_told_apart_by_its_exact_code() {
+        let expiry = expiry();
+        for (code, expected) in [
+            (Some("acme_too_soon"), true),
+            (Some("acme_too_soon "), false),
+            (Some("ACME_TOO_SOON"), false),
+            (Some("the CA said acme_too_soon"), false),
+            (None, false),
+        ] {
+            expiry.renewal_failed(code);
+            let too_soon = tokio::time::timeout(Duration::from_secs(1), expiry.renewal_failure())
+                .await
+                .expect("woken");
+            assert_eq!(too_soon, expected, "{code:?}");
+        }
+    }
+
+    /// A failure does not look like a new certificate, and the reverse.
+    #[tokio::test]
+    async fn test_failure_and_activation_wake_different_waits() {
+        let expiry = expiry();
+        expiry.renewal_failed(None);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), expiry.notified())
+                .await
+                .is_err(),
+            "a failure must not be taken for an activated certificate"
+        );
+    }
+
+    /// After a request the scheduler never waits for a certificate
+    /// alone: it also waits for a failure and for a deadline.
+    #[test]
+    fn test_scheduler_never_waits_for_a_certificate_alone() {
+        let source = include_str!("acme.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let scheduler = production
+            .split("async fn renewal_scheduler(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("renewal_scheduler");
+        assert!(
+            !scheduler.contains("request_renewal("),
+            "the scheduler asks through renew_until_activated"
+        );
+        assert_eq!(scheduler.matches("renew_until_activated(").count(), 2);
+
+        let retry = production
+            .split("async fn renew_until_activated(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("renew_until_activated");
+        for arm in [
+            "cert_expiry.notified()",
+            "cert_expiry.renewal_failure()",
+            "tokio::time::sleep(RENEWAL_ANSWER_TIMEOUT)",
+        ] {
+            assert!(retry.contains(arm), "missing wait: {arm}");
+        }
+        let ipc = include_str!("../ipc/supervisor.rs");
+        assert!(
+            ipc.contains("expiry.renewal_failed(error.as_deref())"),
+            "the IPC handler must report a failed AcmeRenewResponse to the scheduler"
+        );
+    }
 
     // ==================== ASN.1 low-level parser tests ====================
 

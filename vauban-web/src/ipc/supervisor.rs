@@ -689,6 +689,12 @@ fn supervisor_ipc_loop(inner: Arc<SupervisorClientInner>) {
                         error = ?error,
                         "ACME renewal failed"
                     );
+                    // Wake the scheduler: it asks again after a wait
+                    // instead of waiting for a certificate that will
+                    // not come.
+                    if let Some(expiry) = inner.cert_expiry.get() {
+                        expiry.renewal_failed(error.as_deref());
+                    }
                 }
             }
             Ok(Message::AdminCommand {
