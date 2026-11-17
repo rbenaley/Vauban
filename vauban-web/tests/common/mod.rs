@@ -1657,7 +1657,19 @@ pub mod test_db {
             .execute(conn)
             .await
             .ok();
-        diesel::sql_query("DELETE FROM user_groups WHERE name LIKE 'test-%'")
+        // Groups named `test-%`: the memberships first, then the groups.
+        // This used to be `DELETE FROM user_groups WHERE name LIKE ...`:
+        // `user_groups` is the membership table and has no `name`, so the
+        // statement failed, the `.ok()` hid it, and no group was ever
+        // removed.
+        diesel::sql_query(
+            "DELETE FROM user_groups WHERE group_id IN \
+             (SELECT id FROM vauban_groups WHERE name LIKE 'test-%')",
+        )
+        .execute(conn)
+        .await
+        .ok();
+        diesel::sql_query("DELETE FROM vauban_groups WHERE name LIKE 'test-%'")
             .execute(conn)
             .await
             .ok();
