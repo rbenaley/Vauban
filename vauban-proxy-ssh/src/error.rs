@@ -56,6 +56,10 @@ pub enum SessionError {
     /// The target presented a host certificate.
     #[error("SSH host certificate refused")]
     HostCertificateRefused,
+
+    /// A command run on the target exited with an error.
+    #[error("Remote command failed: {0}")]
+    RemoteCommandFailed(String),
 }
 
 impl SessionError {
@@ -80,6 +84,7 @@ impl SessionError {
             | SessionError::PtyRequestFailed(_)
             | SessionError::ShellStartFailed(_)
             | SessionError::SessionClosed => SshOpenFailure::SessionFailed,
+            SessionError::RemoteCommandFailed(_) => SshOpenFailure::RemoteCommandFailed,
             SessionError::SessionNotFound(_) | SessionError::SessionAlreadyExists(_) => {
                 SshOpenFailure::Internal
             }

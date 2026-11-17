@@ -560,11 +560,9 @@ async fn connect_oneshot_handle(
         .map(str::trim)
         .filter(|s| !s.is_empty());
     if pinned.is_none() {
-        return Err(SessionError::ConnectionFailed(
-            "SSH host key pinning is mandatory for this operation; \
-             fetch and pin the host key first"
-                .to_string(),
-        ));
+        // Pinning is mandatory for a one-shot operation: fetch and pin
+        // the host key first.
+        return Err(SessionError::NoPinnedHostKey);
     }
 
     let ssh_config = make_ssh_config();
@@ -682,7 +680,7 @@ pub async fn push_public_key(
         Some(0) | None => Ok(()),
         Some(code) => {
             let detail = String::from_utf8_lossy(&stderr);
-            Err(SessionError::ShellStartFailed(format!(
+            Err(SessionError::RemoteCommandFailed(format!(
                 "remote authorized_keys update failed (exit {code}): {}",
                 detail.trim()
             )))

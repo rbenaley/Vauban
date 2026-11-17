@@ -43,7 +43,7 @@ use session_manager::{
 };
 use shared::access_guard::{AccessGuard, AccessGuardMetrics, AccessGuardWiring, PROTOCOL_SSH};
 use shared::ipc::{IpcChannel, recv_fd};
-use shared::messages::{ControlMessage, Message, ServiceStats};
+use shared::messages::{ControlMessage, Message, ServiceStats, SshOpenFailure};
 use shared::recording_fd::{DEFAULT_BROKER_TIMEOUT, recv_fd_timed};
 use shared::sandbox as capsicum;
 use shared::session_token::proxy_gate as session_token_gate;
@@ -1187,13 +1187,24 @@ async fn handle_web_message(
                         key_fingerprint: Some(fingerprint),
                         error: None,
                     },
-                    Err(e) => Message::SshHostKeyResult {
-                        request_id,
-                        success: false,
-                        host_key: None,
-                        key_fingerprint: None,
-                        error: Some(e.to_string()),
-                    },
+                    Err(e) => {
+                        // The text stays here; vauban-web gets a code.
+                        let failure = e.open_failure();
+                        warn!(
+                            host = %host,
+                            port,
+                            reason = failure.as_str(),
+                            error = %e,
+                            "SSH host key fetch failed"
+                        );
+                        Message::SshHostKeyResult {
+                            request_id,
+                            success: false,
+                            host_key: None,
+                            key_fingerprint: None,
+                            error: Some(failure.as_str().to_string()),
+                        }
+                    }
                 };
                 let _ = response_tx_clone.send(response);
             });
@@ -1228,13 +1239,18 @@ async fn handle_web_message(
             let vault_clone = vault_client.clone();
 
             tokio::spawn(async move {
-                let result: std::result::Result<(), String> = async {
-                    let vault = vault_clone
-                        .as_ref()
-                        .ok_or_else(|| "vault client not available".to_string())?;
+                let result: std::result::Result<(), SshOpenFailure> = async {
+                    let vault = vault_clone.as_ref().ok_or_else(|| {
+                        warn!("SSH public key push refused: vault client not available");
+                        SshOpenFailure::CredentialsUnavailable
+                    })?;
                     let password = vault
                         .decrypt(DOMAIN_CREDENTIALS, &password_ciphertext)
-                        .await?;
+                        .await
+                        .map_err(|e| {
+                            warn!(error = %e, "SSH public key push: credential decrypt failed");
+                            SshOpenFailure::CredentialsUnavailable
+                        })?;
                     session::push_public_key(
                         &asset_host,
                         asset_port,
@@ -1245,7 +1261,13 @@ async fn handle_web_message(
                         preconnected_fd,
                     )
                     .await
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| {
+                        // The text, which may quote the target's output,
+                        // stays here; vauban-web gets a code.
+                        let failure = e.open_failure();
+                        warn!(reason = failure.as_str(), error = %e, "SSH public key push failed");
+                        failure
+                    })
                 }
                 .await;
 
@@ -1255,10 +1277,10 @@ async fn handle_web_message(
                         success: true,
                         error: None,
                     },
-                    Err(e) => Message::SshPushPublicKeyResult {
+                    Err(failure) => Message::SshPushPublicKeyResult {
                         request_id,
                         success: false,
-                        error: Some(e),
+                        error: Some(failure.as_str().to_string()),
                     },
                 };
                 let _ = response_tx_clone.send(response);
@@ -1293,15 +1315,25 @@ async fn handle_web_message(
             let vault_clone = vault_client.clone();
 
             tokio::spawn(async move {
-                let result: std::result::Result<(), String> = async {
+                let result: std::result::Result<(), SshOpenFailure> = async {
+                    let unavailable = |e: &dyn std::fmt::Display| {
+                        warn!(error = %e, "SSH key authentication test: credential decrypt failed");
+                        SshOpenFailure::CredentialsUnavailable
+                    };
                     let vault = vault_clone
                         .as_ref()
-                        .ok_or_else(|| "vault client not available".to_string())?;
+                        .ok_or_else(|| unavailable(&"vault client not available"))?;
                     let key_pem = vault
                         .decrypt(DOMAIN_CREDENTIALS, &private_key_ciphertext)
-                        .await?;
+                        .await
+                        .map_err(|e| unavailable(&e))?;
                     let passphrase = match passphrase_ciphertext {
-                        Some(ct) => Some(vault.decrypt(DOMAIN_CREDENTIALS, &ct).await?),
+                        Some(ct) => Some(
+                            vault
+                                .decrypt(DOMAIN_CREDENTIALS, &ct)
+                                .await
+                                .map_err(|e| unavailable(&e))?,
+                        ),
                         None => None,
                     };
                     session::test_key_auth(
@@ -1314,7 +1346,11 @@ async fn handle_web_message(
                         preconnected_fd,
                     )
                     .await
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| {
+                        let failure = e.open_failure();
+                        warn!(reason = failure.as_str(), error = %e, "SSH key authentication test failed");
+                        failure
+                    })
                 }
                 .await;
 
@@ -1324,10 +1360,10 @@ async fn handle_web_message(
                         success: true,
                         error: None,
                     },
-                    Err(e) => Message::SshTestKeyAuthResult {
+                    Err(failure) => Message::SshTestKeyAuthResult {
                         request_id,
                         success: false,
-                        error: Some(e),
+                        error: Some(failure.as_str().to_string()),
                     },
                 };
                 let _ = response_tx_clone.send(response);

@@ -298,9 +298,12 @@ impl RdpOpenFailure {
     }
 }
 
-/// Why the SSH proxy could not open a session, as a closed set.
+/// Why the SSH proxy could not open a session or carry out a one-shot
+/// operation (host key fetch, public key push, key authentication
+/// test), as a closed set.
 ///
-/// The proxy answers a failed `SshSessionOpen` with `error: Some(code)`,
+/// The proxy answers a failed `SshSessionOpen`, `SshFetchHostKey`,
+/// `SshPushPublicKey` or `SshTestKeyAuth` with `error: Some(code)`,
 /// where `code` is [`SshOpenFailure::as_str`]. The field is a string for
 /// wire compatibility, but only these codes are written to it. The text
 /// of the underlying error (a russh error, something the target sent)
@@ -330,12 +333,15 @@ pub enum SshOpenFailure {
     ConnectionFailed,
     /// The SSH exchange failed after authentication (channel, PTY, shell).
     SessionFailed,
+    /// A command run on the target for the bastion exited with an error
+    /// (installing a public key). Its output stays in the proxy log.
+    RemoteCommandFailed,
     /// Anything else, including a value that is not one of these codes.
     Internal,
 }
 
 impl SshOpenFailure {
-    pub const ALL: [SshOpenFailure; 10] = [
+    pub const ALL: [SshOpenFailure; 11] = [
         SshOpenFailure::AccessDenied,
         SshOpenFailure::Draining,
         SshOpenFailure::NoPinnedHostKey,
@@ -345,6 +351,7 @@ impl SshOpenFailure {
         SshOpenFailure::AuthenticationFailed,
         SshOpenFailure::ConnectionFailed,
         SshOpenFailure::SessionFailed,
+        SshOpenFailure::RemoteCommandFailed,
         SshOpenFailure::Internal,
     ];
 
@@ -360,6 +367,7 @@ impl SshOpenFailure {
             SshOpenFailure::AuthenticationFailed => "authentication_failed",
             SshOpenFailure::ConnectionFailed => "connection_failed",
             SshOpenFailure::SessionFailed => "session_failed",
+            SshOpenFailure::RemoteCommandFailed => "remote_command_failed",
             SshOpenFailure::Internal => "internal",
         }
     }
@@ -3711,8 +3719,8 @@ pub enum Message {
     SshPushPublicKeyResult {
         request_id: u64,
         success: bool,
-        /// Error message if success is false (auth refused, host
-        /// unreachable, host-key mismatch, exec non-zero, ...).
+        /// An [`SshOpenFailure`] code if success is false. The output of
+        /// the target stays in the proxy log.
         error: Option<String>,
     },
 

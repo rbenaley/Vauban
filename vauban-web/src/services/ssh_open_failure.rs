@@ -48,10 +48,41 @@ pub const fn message(failure: SshOpenFailure) -> &'static str {
         SshOpenFailure::SessionFailed => {
             "The SSH session could not be established. See the vauban-proxy-ssh log for this session."
         }
+        SshOpenFailure::RemoteCommandFailed => {
+            "The command run on the target failed. See the vauban-proxy-ssh log for its output."
+        }
         SshOpenFailure::Internal => {
             "The SSH connection failed. See the vauban-proxy-ssh log for this session."
         }
     }
+}
+
+/// The error the IPC client returns for a failed one-shot operation
+/// (host key fetch, public key push, key authentication test): the
+/// constant sentence of the proxy's code, and nothing the proxy wrote.
+pub fn ipc_error(code: Option<&str>) -> crate::error::AppError {
+    crate::error::AppError::Ipc(message_from_wire(code).to_string())
+}
+
+/// The failure an error of the SSH IPC client stands for, when it is
+/// one of the proxy's verdicts ([`ipc_error`]). `None` for an error of
+/// the web tier itself (supervisor, pipe, timeout).
+///
+/// The match is on this module's own constant sentences, which are
+/// distinct, never on text a proxy or a target wrote.
+pub fn of_error(error: &crate::error::AppError) -> Option<SshOpenFailure> {
+    match error {
+        crate::error::AppError::Ipc(text) => SshOpenFailure::ALL
+            .into_iter()
+            .find(|failure| message(*failure) == text.as_str()),
+        _ => None,
+    }
+}
+
+/// What to show for a failed one-shot operation: the proxy's verdict,
+/// or [`UNREACHABLE_MESSAGE`] when the error is the web tier's own.
+pub fn operation_message(error: &crate::error::AppError) -> &'static str {
+    of_error(error).map(message).unwrap_or(UNREACHABLE_MESSAGE)
 }
 
 /// The sentence for the `error` field of a proxy answer.
@@ -113,6 +144,79 @@ mod tests {
         }
         assert!(!is_host_key_mismatch(None));
         assert!(is_host_key_mismatch(Some("host_key_mismatch")));
+    }
+
+    #[test]
+    fn test_ipc_error_round_trips_to_its_failure() {
+        for failure in SshOpenFailure::ALL {
+            let error = ipc_error(Some(failure.as_str()));
+            assert_eq!(of_error(&error), Some(failure));
+            assert_eq!(operation_message(&error), message(failure));
+        }
+    }
+
+    /// An error of the web tier, or one carrying text that is not one of
+    /// the constants, is no verdict: generic sentence, no flag.
+    #[test]
+    fn attack_ipc_error_text_is_not_shown_nor_taken_for_a_verdict() {
+        use crate::error::AppError;
+        for text in [
+            "host key mismatch",
+            "<script>alert(1)</script>",
+            "Push public key failed: remote authorized_keys update failed (exit 1): rm -rf",
+            "The target presented a host key that is not the pinned one.",
+            "",
+        ] {
+            let error = AppError::Ipc(text.to_string());
+            assert_eq!(of_error(&error), None, "{text:?}");
+            assert_eq!(operation_message(&error), UNREACHABLE_MESSAGE);
+        }
+        let proxy_text = ipc_error(Some("stderr of the target: you have been pwned"));
+        assert_eq!(of_error(&proxy_text), Some(SshOpenFailure::Internal));
+        assert_eq!(
+            of_error(&AppError::Validation(
+                message(SshOpenFailure::HostKeyMismatch).to_string()
+            )),
+            None
+        );
+    }
+
+    /// The SSH web handlers answer with constants only: nothing is
+    /// formatted into the HTMX error response, and no error value is
+    /// passed to it.
+    #[test]
+    fn attack_ssh_handlers_never_pass_error_text_to_the_browser() {
+        let src = include_str!("../handlers/web/ssh.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
+        assert!(
+            !prod.contains("htmx_error_response(&format!("),
+            "an SSH handler formats text into htmx_error_response"
+        );
+        for needle in ["htmx_error_response(&e)", "htmx_error_response(&err)"] {
+            assert!(
+                !prod.contains(needle),
+                "an SSH handler shows an error value"
+            );
+        }
+        for (i, _) in prod.match_indices("htmx_error_response(") {
+            let arg = prod[i + "htmx_error_response(".len()..].trim_start();
+            assert!(
+                arg.starts_with('"')
+                    || arg.starts_with("crate::services::ssh_open_failure::")
+                    || arg.starts_with("crate::models::asset::PIN_CHANGED_MESSAGE)")
+                    // Constant sentences held in a local.
+                    || arg.starts_with("&msg)")
+                    || arg.starts_with("msg)")
+                    || arg.starts_with("message: &str"),
+                "htmx_error_response is called with something that is not a constant: {}",
+                &arg[..arg.len().min(60)]
+            );
+        }
+        // The supervisor's text is not shown either.
+        assert!(
+            !prod
+                .contains(r#"unwrap_or_else(|| "Failed to establish TCP connection".to_string())"#)
+        );
     }
 
     #[test]

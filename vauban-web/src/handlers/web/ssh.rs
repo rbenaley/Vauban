@@ -735,10 +735,10 @@ pub async fn connect_ssh(
                 );
             }
             Ok(result) => {
-                let msg = result
-                    .error
-                    .unwrap_or_else(|| "Failed to establish TCP connection".to_string());
-                tracing::error!(session_id = %session_id, error = %msg, "TCP connect failed");
+                // The supervisor's text stays in the log; the browser
+                // gets a constant sentence.
+                tracing::error!(session_id = %session_id, error = ?result.error, "TCP connect failed");
+                let msg = crate::services::ssh_open_failure::UNREACHABLE_MESSAGE.to_string();
                 if is_htmx {
                     return htmx_error_response(&msg);
                 }
@@ -752,14 +752,15 @@ pub async fn connect_ssh(
             }
             Err(e) => {
                 tracing::error!(session_id = %session_id, error = %e, "TCP connect request failed");
+                let msg = crate::services::ssh_open_failure::UNREACHABLE_MESSAGE.to_string();
                 if is_htmx {
-                    return htmx_error_response(&e);
+                    return htmx_error_response(&msg);
                 }
                 return Json(ConnectSshResponse {
                     success: false,
                     session_id: None,
                     redirect_url: None,
-                    error: Some(e),
+                    error: Some(msg),
                 })
                 .into_response();
             }
@@ -991,7 +992,7 @@ pub async fn fetch_ssh_host_key(
                 error = %e,
                 "Failed to fetch SSH host key"
             );
-            return htmx_error_response(&format!("Failed to fetch host key: {}", e));
+            return htmx_error_response(crate::services::ssh_open_failure::operation_message(&e));
         }
     };
 
@@ -1259,7 +1260,14 @@ pub async fn push_ssh_public_key(
         .await
     {
         tracing::warn!(asset_uuid = %asset_uuid, error = %e, "Failed to push SSH public key");
-        return htmx_error_response(&format!("Failed to push public key: {}", e));
+        // The push checks the pinned host key: a mismatch seen here marks
+        // the asset, as one seen while connecting does.
+        if crate::services::ssh_open_failure::of_error(&e)
+            == Some(shared::messages::SshOpenFailure::HostKeyMismatch)
+        {
+            flag_ssh_host_key_mismatch(&mut conn, asset_uuid).await;
+        }
+        return htmx_error_response(crate::services::ssh_open_failure::operation_message(&e));
     }
 
     // Mark the key as pushed so the UI can reflect the new state. One
@@ -1411,7 +1419,12 @@ pub async fn test_ssh_key_auth(
         .await
     {
         tracing::info!(asset_uuid = %asset_uuid, error = %e, "SSH key-based auth test failed");
-        return htmx_error_response(&format!("Key-based authentication test failed: {}", e));
+        if crate::services::ssh_open_failure::of_error(&e)
+            == Some(shared::messages::SshOpenFailure::HostKeyMismatch)
+        {
+            flag_ssh_host_key_mismatch(&mut conn, asset_uuid).await;
+        }
+        return htmx_error_response(crate::services::ssh_open_failure::operation_message(&e));
     }
 
     tracing::info!(asset_uuid = %asset_uuid, "SSH key-based auth test succeeded");

@@ -469,8 +469,9 @@ impl ProxySshClient {
                     ))
                 }
             }
-            Ok((false, _, _, Some(err))) => {
-                Err(AppError::Ipc(format!("Host key fetch failed: {}", err)))
+            // The proxy answers with a code; its text never leaves here.
+            Ok((false, _, _, err)) => {
+                Err(crate::services::ssh_open_failure::ipc_error(err.as_deref()))
             }
             Ok(_) => Err(AppError::Ipc(
                 "Host key fetch returned unexpected response".to_string(),
@@ -605,10 +606,7 @@ impl ProxySshClient {
             .await
         {
             Ok((true, _)) => Ok(()),
-            Ok((false, err)) => Err(AppError::Ipc(format!(
-                "Push public key failed: {}",
-                err.unwrap_or_else(|| "unknown error".to_string())
-            ))),
+            Ok((false, err)) => Err(crate::services::ssh_open_failure::ipc_error(err.as_deref())),
             Err(e) => Err(e.into_app_ipc()),
         }
     }
@@ -656,10 +654,7 @@ impl ProxySshClient {
             .await
         {
             Ok((true, _)) => Ok(()),
-            Ok((false, err)) => Err(AppError::Ipc(format!(
-                "Key-based authentication failed: {}",
-                err.unwrap_or_else(|| "unknown error".to_string())
-            ))),
+            Ok((false, err)) => Err(crate::services::ssh_open_failure::ipc_error(err.as_deref())),
             Err(e) => Err(e.into_app_ipc()),
         }
     }
