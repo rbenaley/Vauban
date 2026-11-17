@@ -26,6 +26,7 @@ pub mod kerberos;
 pub mod ldap_dn;
 pub mod ldap_filter;
 pub mod ldap_mapping;
+pub mod log_line;
 pub mod messages;
 pub mod pipe_store;
 pub mod privdrop;

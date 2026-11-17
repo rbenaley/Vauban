@@ -252,7 +252,10 @@ fn main() -> ExitCode {
         .add_directive("picky=warn".parse().unwrap())
         .add_directive("rustls=warn".parse().unwrap());
 
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    tracing_subscriber::fmt()
+        .with_writer(shared::log_line::SingleLine)
+        .with_env_filter(env_filter)
+        .init();
 
     info!("vauban-proxy-rdp starting (async mode with Tokio + IronRDP)");
 

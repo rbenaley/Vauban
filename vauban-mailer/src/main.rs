@@ -14,6 +14,7 @@ use vauban_mailer::provision::wait_for_mailer_provision;
 
 fn main() -> ExitCode {
     tracing_subscriber::fmt()
+        .with_writer(shared::log_line::SingleLine)
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive(tracing::Level::INFO.into()),

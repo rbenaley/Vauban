@@ -517,13 +517,17 @@ async fn async_main() -> Result<bool, Box<dyn std::error::Error>> {
         LogFormat::Json => {
             tracing_subscriber::registry()
                 .with(filter)
-                .with(tracing_subscriber::fmt::layer().json())
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .with_writer(shared::log_line::SingleLine)
+                        .json(),
+                )
                 .init();
         }
         LogFormat::Text => {
             tracing_subscriber::registry()
                 .with(filter)
-                .with(tracing_subscriber::fmt::layer())
+                .with(tracing_subscriber::fmt::layer().with_writer(shared::log_line::SingleLine))
                 .init();
         }
     }

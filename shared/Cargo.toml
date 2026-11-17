@@ -16,6 +16,7 @@ thiserror.workspace = true
 libc.workspace = true
 nix.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
 zeroize.workspace = true
 
 # Binary serialization for IPC
