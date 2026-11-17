@@ -38,6 +38,7 @@ pub mod casbin_handler_eradication_web_test;
 pub mod cdn_assets_lints_test;
 pub mod config_dir_battle_test;
 pub mod config_dir_invariants_test;
+pub mod config_patch_test;
 pub mod cutting_events_invariants_test;
 pub mod cutting_events_proptest;
 pub mod dashboard_access_posture_test;

@@ -757,30 +757,24 @@ pub async fn fetch_ssh_host_key_api(
         })));
     }
 
-    let mut config = asset.connection_config.clone();
-    config["ssh_host_key"] = serde_json::Value::String(host_key.clone());
-    config["ssh_host_key_fingerprint"] = serde_json::Value::String(fingerprint.clone());
-    config
-        .as_object_mut()
-        .map(|m| m.remove("ssh_host_key_mismatch"));
-
-    use crate::schema::assets::dsl::connection_config as config_col;
-    use crate::schema::assets::dsl::updated_at;
-    use crate::schema::assets::dsl::updated_by_id as updated_by_col;
-    use chrono::Utc;
-
     // Issue #22 — fetching/refreshing the SSH host key mutates
     // `connection_config`, so we re-stamp the audit actor too.
     let actor_id = crate::services::audit_authors::resolve_actor_id(&mut conn, &user.uuid).await;
 
-    diesel::update(assets.filter(uuid.eq(asset_uuid)))
-        .set((
-            config_col.eq(&config),
-            updated_at.eq(Utc::now()),
-            updated_by_col.eq(actor_id),
-        ))
-        .execute(&mut conn)
-        .await?;
+    // Three keys, set in place, and only if the pin is still the one
+    // this decision was made on: the asset was read before the round
+    // trip to the target.
+    let patch = crate::models::asset::ConfigPatch::new()
+        .set("ssh_host_key", host_key.clone())
+        .set("ssh_host_key_fingerprint", fingerprint.clone())
+        .remove("ssh_host_key_mismatch")
+        .expecting("ssh_host_key", stored_host_key.as_deref())
+        .stamped_by(actor_id);
+    if crate::models::asset::patch_connection_config(&mut conn, asset_uuid, &patch).await? != 1 {
+        return Err(AppError::Conflict(
+            crate::models::asset::PIN_CHANGED_MESSAGE.to_string(),
+        ));
+    }
 
     Ok(Json(serde_json::json!({
         "success": true,
@@ -967,28 +961,21 @@ pub async fn fetch_rdp_server_cert_api(
         })));
     }
 
-    let mut config = asset.connection_config.clone();
-    config["rdp_server_cert_fingerprint"] = serde_json::Value::String(fingerprint.clone());
-    config["rdp_server_cert_spki"] = serde_json::Value::String(server_spki.clone());
-    config
-        .as_object_mut()
-        .map(|m| m.remove("rdp_server_cert_mismatch"));
-
-    use crate::schema::assets::dsl::connection_config as config_col;
-    use crate::schema::assets::dsl::updated_at;
-    use crate::schema::assets::dsl::updated_by_id as updated_by_col;
-    use chrono::Utc;
-
     let actor_id = crate::services::audit_authors::resolve_actor_id(&mut conn, &user.uuid).await;
 
-    diesel::update(assets.filter(uuid.eq(asset_uuid)))
-        .set((
-            config_col.eq(&config),
-            updated_at.eq(Utc::now()),
-            updated_by_col.eq(actor_id),
-        ))
-        .execute(&mut conn)
-        .await?;
+    // As for the SSH host key: three keys, in place, conditional on the
+    // pin that was read.
+    let patch = crate::models::asset::ConfigPatch::new()
+        .set("rdp_server_cert_fingerprint", fingerprint.clone())
+        .set("rdp_server_cert_spki", server_spki.clone())
+        .remove("rdp_server_cert_mismatch")
+        .expecting("rdp_server_cert_spki", stored_spki.as_deref())
+        .stamped_by(actor_id);
+    if crate::models::asset::patch_connection_config(&mut conn, asset_uuid, &patch).await? != 1 {
+        return Err(AppError::Conflict(
+            crate::models::asset::PIN_CHANGED_MESSAGE.to_string(),
+        ));
+    }
 
     Ok(Json(serde_json::json!({
         "success": true,

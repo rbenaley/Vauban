@@ -886,33 +886,35 @@ pub async fn fetch_rdp_server_cert(
         return axum::response::Html(html).into_response();
     }
 
-    // Persist the fingerprint + SPKI and clear any previous mismatch flag.
-    let mut config = asset.connection_config.clone();
-    config["rdp_server_cert_fingerprint"] = serde_json::Value::String(fingerprint.clone());
-    config["rdp_server_cert_spki"] = serde_json::Value::String(server_spki.clone());
-    config
-        .as_object_mut()
-        .map(|m| m.remove("rdp_server_cert_mismatch"));
-
+    // Pin the fingerprint and SPKI and clear a previous mismatch,
+    // touching those three keys and nothing else, and only if the pin is
+    // still the one this decision was made on. The asset was read
+    // before the round trip to the target.
     let actor_id =
         crate::services::audit_authors::resolve_actor_id(&mut conn, &auth_user.uuid).await;
-
-    use chrono::Utc;
-    if let Err(e) = diesel::update(dsl::assets.filter(dsl::uuid.eq(asset_uuid)))
-        .set((
-            dsl::connection_config.eq(&config),
-            dsl::updated_at.eq(Utc::now()),
-            dsl::updated_by_id.eq(actor_id),
-        ))
-        .execute(&mut conn)
-        .await
-    {
-        tracing::error!(
-            asset_uuid = %asset_uuid,
-            error = %e,
-            "Failed to store RDP server certificate"
-        );
-        return htmx_error_response("Failed to store server certificate");
+    let patch = crate::models::asset::ConfigPatch::new()
+        .set("rdp_server_cert_fingerprint", fingerprint.clone())
+        .set("rdp_server_cert_spki", server_spki.clone())
+        .remove("rdp_server_cert_mismatch")
+        .expecting("rdp_server_cert_spki", stored_spki.as_deref())
+        .stamped_by(actor_id);
+    match crate::models::asset::patch_connection_config(&mut conn, asset_uuid, &patch).await {
+        Ok(1) => {}
+        Ok(_) => {
+            tracing::warn!(
+                asset_uuid = %asset_uuid,
+                "RDP server certificate not stored: the pin changed while it was being fetched"
+            );
+            return htmx_error_response(crate::models::asset::PIN_CHANGED_MESSAGE);
+        }
+        Err(e) => {
+            tracing::error!(
+                asset_uuid = %asset_uuid,
+                error = %e,
+                "Failed to store RDP server certificate"
+            );
+            return htmx_error_response("Failed to store server certificate");
+        }
     }
 
     tracing::info!(

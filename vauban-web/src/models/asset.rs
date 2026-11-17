@@ -768,36 +768,184 @@ impl TrustAnchorFlag {
     }
 }
 
-/// Set `flag` to `true` on an asset, in one statement.
+/// A change to named keys of `connection_config`, applied in one
+/// statement by [`patch_connection_config`].
 ///
-/// The flag used to be raised by reading the whole `connection_config`,
-/// changing one key in memory and writing the document back, after a
-/// network round trip to the target. Anything written to the document in
-/// between (a new pin, another flag, an edit of the asset) was lost.
-/// `jsonb_set` changes the one key in place.
+/// Handlers used to change the document by reading the asset, talking
+/// to the target, and writing the whole document back from their copy.
+/// Whatever had been written in between was lost: a pin, a mismatch
+/// flag, an authentication mode. A patch names the keys it sets and the
+/// keys it removes and touches nothing else.
 ///
-/// The key is a closed set and is bound as a parameter, never formatted
-/// into the statement.
+/// Keys are `&'static str`: a call site names them in its source, they
+/// never come from a request. They are bound as parameters, never
+/// formatted into the statement.
+#[derive(Debug, Clone, Default)]
+pub struct ConfigPatch {
+    set: serde_json::Map<String, serde_json::Value>,
+    remove: Vec<&'static str>,
+    expect: Option<(&'static str, Option<String>)>,
+    stamp: Option<Option<i32>>,
+}
+
+impl ConfigPatch {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set a top-level key. The value replaces the key as a whole.
+    pub fn set(mut self, key: &'static str, value: impl Into<serde_json::Value>) -> Self {
+        self.set.insert(key.to_string(), value.into());
+        self
+    }
+
+    /// Remove a top-level key.
+    pub fn remove(mut self, key: &'static str) -> Self {
+        self.remove.push(key);
+        self
+    }
+
+    /// Apply only if `key` still holds the string `value` (`None`: the
+    /// key is absent). Otherwise no row is changed.
+    ///
+    /// A pin is decided on the pin the handler read: "there was none" or
+    /// "it is the one the administrator confirmed replacing". If another
+    /// request pinned something else meanwhile, the decision no longer
+    /// holds and the write must not happen.
+    pub fn expecting(mut self, key: &'static str, value: Option<&str>) -> Self {
+        self.expect = Some((key, value.map(str::to_string)));
+        self
+    }
+
+    /// Also stamp `updated_at` and `updated_by_id`, as an edit of the
+    /// asset does.
+    pub fn stamped_by(mut self, actor_id: Option<i32>) -> Self {
+        self.stamp = Some(actor_id);
+        self
+    }
+}
+
+/// Shown when a pin could not be stored because the pin of the asset
+/// changed between the moment it was read and the moment it was written
+/// ([`ConfigPatch::expecting`]).
+pub const PIN_CHANGED_MESSAGE: &str = "The pinned identity of this asset changed while the request was running. Reload the page and try again.";
+
+/// Apply `patch` to an asset in one statement. Returns the number of
+/// rows changed: `0` when the asset does not exist or when the
+/// [`ConfigPatch::expecting`] condition no longer holds.
 ///
 /// A document that is not an object (SQL `NULL`, JSON `null`, a scalar)
-/// is replaced by an object holding the flag: `jsonb_set` would fail on
-/// it and the flag would silently not be raised.
+/// is treated as empty.
+pub async fn patch_connection_config(
+    conn: &mut diesel_async::AsyncPgConnection,
+    asset_uuid: Uuid,
+    patch: &ConfigPatch,
+) -> QueryResult<usize> {
+    use diesel::dsl::{case_when, jsonb_typeof};
+    use diesel::sql_types::Jsonb;
+    use diesel::{IntoSql, PgJsonbExpressionMethods};
+
+    // `(document - removed keys) || set keys`, on the document as the
+    // database holds it when the statement runs.
+    let patched = || {
+        let empty = serde_json::Value::Object(serde_json::Map::new()).into_sql::<Jsonb>();
+        let removed: Vec<String> = patch.remove.iter().map(|key| key.to_string()).collect();
+        case_when(
+            jsonb_typeof(assets::connection_config).eq("object"),
+            assets::connection_config,
+        )
+        .otherwise(empty)
+        .remove(removed)
+        .concat(serde_json::Value::Object(patch.set.clone()))
+    };
+
+    let mut target = diesel::update(assets::table)
+        .filter(assets::uuid.eq(asset_uuid))
+        .into_boxed();
+    if let Some((key, value)) = &patch.expect {
+        target = target.filter(
+            assets::connection_config
+                .retrieve_as_text(*key)
+                // `->>` yields NULL for an absent key and the text of
+                // any value that is there.
+                .nullable()
+                .is_not_distinct_from(value.clone()),
+        );
+    }
+
+    match patch.stamp {
+        Some(actor_id) => {
+            let statement = target.set((
+                assets::connection_config.eq(patched()),
+                assets::updated_at.eq(Utc::now()),
+                assets::updated_by_id.eq(actor_id),
+            ));
+            diesel_async::RunQueryDsl::execute(statement, conn).await
+        }
+        None => {
+            let statement = target.set(assets::connection_config.eq(patched()));
+            diesel_async::RunQueryDsl::execute(statement, conn).await
+        }
+    }
+}
+
+/// Set `flag` to `true` on an asset, in one statement
+/// ([`patch_connection_config`]). Nothing else in the document is
+/// rewritten, so a pin stored meanwhile is not lost.
 pub async fn raise_trust_anchor_flag(
     conn: &mut diesel_async::AsyncPgConnection,
     asset_uuid: Uuid,
     flag: TrustAnchorFlag,
 ) -> QueryResult<usize> {
-    let statement = diesel::sql_query(
-        "UPDATE assets \
-         SET connection_config = jsonb_set(\
-             CASE WHEN jsonb_typeof(connection_config) = 'object' \
-                  THEN connection_config ELSE '{}'::jsonb END, \
-             ARRAY[$1], 'true'::jsonb, true) \
-         WHERE uuid = $2",
-    )
-    .bind::<diesel::sql_types::Text, _>(flag.key())
-    .bind::<diesel::sql_types::Uuid, _>(asset_uuid);
-    diesel_async::RunQueryDsl::execute(statement, conn).await
+    patch_connection_config(conn, asset_uuid, &ConfigPatch::new().set(flag.key(), true)).await
+}
+
+/// Attempts of [`update_connection_config_with`] before it gives up.
+pub const CONFIG_CAS_ATTEMPTS: usize = 5;
+
+/// Outcome of [`update_connection_config_with`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfigUpdate {
+    /// The document was replaced; this is what was stored.
+    Stored(serde_json::Value),
+    /// The function returned `None`: nothing to change.
+    Unchanged,
+    /// The document kept changing under the update.
+    Conflict,
+}
+
+/// Replace `connection_config` by `next(current)`, where the new
+/// document depends on the current one (merging a tool catalogue).
+///
+/// The document is read, transformed, and written only if it is still
+/// the one that was read; otherwise the whole step is done again on the
+/// fresh document. A change made by someone else is therefore never
+/// overwritten by a document computed from a stale copy.
+pub async fn update_connection_config_with(
+    conn: &mut diesel_async::AsyncPgConnection,
+    asset_id: i32,
+    next: impl Fn(&serde_json::Value) -> Option<serde_json::Value>,
+) -> QueryResult<ConfigUpdate> {
+    for _ in 0..CONFIG_CAS_ATTEMPTS {
+        let read = assets::table
+            .filter(assets::id.eq(asset_id))
+            .select(assets::connection_config);
+        let current: serde_json::Value = diesel_async::RunQueryDsl::first(read, conn).await?;
+        let Some(updated) = next(&current) else {
+            return Ok(ConfigUpdate::Unchanged);
+        };
+        let write = diesel::update(
+            assets::table
+                .filter(assets::id.eq(asset_id))
+                .filter(assets::connection_config.eq(&current)),
+        )
+        .set(assets::connection_config.eq(&updated));
+        let changed = diesel_async::RunQueryDsl::execute(write, conn).await?;
+        if changed == 1 {
+            return Ok(ConfigUpdate::Stored(updated));
+        }
+    }
+    Ok(ConfigUpdate::Conflict)
 }
 
 /// Fragments that mark a key as a secret whatever its exact name, so a

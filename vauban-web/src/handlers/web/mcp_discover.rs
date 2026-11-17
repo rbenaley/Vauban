@@ -105,18 +105,30 @@ pub async fn discover_mcp_tools_web(
         );
     }
 
-    let new_config = apply_discovered_instructions_at(
-        apply_discovered_catalog(asset.connection_config.clone(), &tools),
-        discovered.instructions.as_deref(),
-        &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-    );
-    if let Err(e) = diesel::update(assets::table.filter(assets::id.eq(asset.id)))
-        .set(assets::connection_config.eq(new_config))
-        .execute(&mut conn)
-        .await
-    {
-        tracing::error!(error = %e, "persist MCP catalogue failed");
-        return flash_redirect(flash.error("Failed to save discovered tools"), &edit_url);
+    // The catalogue is merged into the document as it is NOW, not into
+    // the copy read before the round trip to the upstream server: a
+    // change stored meanwhile (an approval, a drift notice) is kept.
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let merge = |current: &serde_json::Value| {
+        Some(apply_discovered_instructions_at(
+            apply_discovered_catalog(current.clone(), &tools),
+            discovered.instructions.as_deref(),
+            &now,
+        ))
+    };
+    match crate::models::asset::update_connection_config_with(&mut conn, asset.id, merge).await {
+        Ok(crate::models::asset::ConfigUpdate::Conflict) => {
+            tracing::warn!(asset = %uuid_str, "MCP catalogue changed concurrently; not saved");
+            return flash_redirect(
+                flash.error("The asset changed while tools were being discovered. Try again."),
+                &edit_url,
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::error!(error = %e, "persist MCP catalogue failed");
+            return flash_redirect(flash.error("Failed to save discovered tools"), &edit_url);
+        }
     }
     prune_after_asset_change(&state, &mut conn, asset.id, "mcp_discover").await;
 
@@ -215,23 +227,31 @@ pub async fn approve_mcp_tools_web(
         );
     }
 
-    let new_config = match form
+    // Approve in the document as it is now, not in the copy read above.
+    let tool_name = form
         .tool_name
         .as_deref()
         .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        Some(name) => approve_tool_in_catalog(asset.connection_config.clone(), name),
-        None => approve_pending_catalog(asset.connection_config.clone()),
+        .filter(|s| !s.is_empty());
+    let approve = |current: &serde_json::Value| {
+        Some(match tool_name {
+            Some(name) => approve_tool_in_catalog(current.clone(), name),
+            None => approve_pending_catalog(current.clone()),
+        })
     };
-
-    if let Err(e) = diesel::update(assets::table.filter(assets::id.eq(asset.id)))
-        .set(assets::connection_config.eq(new_config))
-        .execute(&mut conn)
-        .await
-    {
-        tracing::error!(error = %e, "persist MCP tool approval failed");
-        return flash_redirect(flash.error("Failed to save approvals"), &edit_url);
+    match crate::models::asset::update_connection_config_with(&mut conn, asset.id, approve).await {
+        Ok(crate::models::asset::ConfigUpdate::Conflict) => {
+            tracing::warn!(asset = %uuid_str, "MCP catalogue changed concurrently; approval not saved");
+            return flash_redirect(
+                flash.error("The asset changed while the approval was being saved. Try again."),
+                &edit_url,
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::error!(error = %e, "persist MCP tool approval failed");
+            return flash_redirect(flash.error("Failed to save approvals"), &edit_url);
+        }
     }
     prune_after_asset_change(&state, &mut conn, asset.id, "mcp_approve").await;
 

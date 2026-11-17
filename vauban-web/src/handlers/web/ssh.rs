@@ -1020,16 +1020,13 @@ pub async fn fetch_ssh_host_key(
         return axum::response::Html(html).into_response();
     }
 
-    // Update the asset's connection_config with the host key and clear
-    // any previous mismatch status.
-    let mut config = asset.connection_config.clone();
-    config["ssh_host_key"] = serde_json::Value::String(host_key.clone());
-    config["ssh_host_key_fingerprint"] = serde_json::Value::String(fingerprint.clone());
-    // Remove mismatch flag if it was set by a failed connection attempt
-    config
-        .as_object_mut()
-        .map(|m| m.remove("ssh_host_key_mismatch"));
-
+    // Pin the key and clear a previous mismatch, touching those three
+    // keys and nothing else, and only if the pin is still the one this
+    // decision was made on (none, or the one the administrator agreed
+    // to replace). The asset was read before the round trip to the
+    // target: writing the whole document back would undo anything
+    // stored since.
+    //
     // Issue #22 — re-stamp the audit actor: persisting a fetched
     // host key mutates `connection_config`, so the operator that
     // pressed "Fetch Host Key" must show up as the last
@@ -1037,23 +1034,29 @@ pub async fn fetch_ssh_host_key(
     // `None` collapses to the muted em-dash on render.
     let actor_id =
         crate::services::audit_authors::resolve_actor_id(&mut conn, &auth_user.uuid).await;
-
-    use chrono::Utc;
-    if let Err(e) = diesel::update(dsl::assets.filter(dsl::uuid.eq(asset_uuid)))
-        .set((
-            dsl::connection_config.eq(&config),
-            dsl::updated_at.eq(Utc::now()),
-            dsl::updated_by_id.eq(actor_id),
-        ))
-        .execute(&mut conn)
-        .await
-    {
-        tracing::error!(
-            asset_uuid = %asset_uuid,
-            error = %e,
-            "Failed to store SSH host key"
-        );
-        return htmx_error_response("Failed to store host key");
+    let patch = crate::models::asset::ConfigPatch::new()
+        .set("ssh_host_key", host_key.clone())
+        .set("ssh_host_key_fingerprint", fingerprint.clone())
+        .remove("ssh_host_key_mismatch")
+        .expecting("ssh_host_key", stored_host_key.as_deref())
+        .stamped_by(actor_id);
+    match crate::models::asset::patch_connection_config(&mut conn, asset_uuid, &patch).await {
+        Ok(1) => {}
+        Ok(_) => {
+            tracing::warn!(
+                asset_uuid = %asset_uuid,
+                "SSH host key not stored: the pin changed while it was being fetched"
+            );
+            return htmx_error_response(crate::models::asset::PIN_CHANGED_MESSAGE);
+        }
+        Err(e) => {
+            tracing::error!(
+                asset_uuid = %asset_uuid,
+                error = %e,
+                "Failed to store SSH host key"
+            );
+            return htmx_error_response("Failed to store host key");
+        }
     }
 
     tracing::info!(
@@ -1259,25 +1262,16 @@ pub async fn push_ssh_public_key(
         return htmx_error_response(&format!("Failed to push public key: {}", e));
     }
 
-    // Mark the key as pushed so the UI can reflect the new state.
-    let mut config = asset.connection_config.clone();
-    if let Some(obj) = config.as_object_mut() {
-        obj.insert(
-            "ssh_pubkey_pushed".to_string(),
-            serde_json::Value::Bool(true),
-        );
-    }
+    // Mark the key as pushed so the UI can reflect the new state. One
+    // key, set in place: the asset was read before the round trip to the
+    // target.
     let actor_id =
         crate::services::audit_authors::resolve_actor_id(&mut conn, &auth_user.uuid).await;
-    use chrono::Utc;
-    if let Err(e) = diesel::update(dsl::assets.filter(dsl::uuid.eq(asset_uuid)))
-        .set((
-            dsl::connection_config.eq(&config),
-            dsl::updated_at.eq(Utc::now()),
-            dsl::updated_by_id.eq(actor_id),
-        ))
-        .execute(&mut conn)
-        .await
+    let patch = crate::models::asset::ConfigPatch::new()
+        .set("ssh_pubkey_pushed", true)
+        .stamped_by(actor_id);
+    if let Err(e) =
+        crate::models::asset::patch_connection_config(&mut conn, asset_uuid, &patch).await
     {
         tracing::error!(asset_uuid = %asset_uuid, error = %e, "Failed to persist ssh_pubkey_pushed");
         // The key was pushed; surface success but note the flag did not persist.

@@ -119,6 +119,8 @@ mod tests {
                 arg.starts_with('"')
                     || arg.starts_with("crate::services::rdp_open_failure::")
                     || arg.starts_with("crate::services::rdp_auth_failure::")
+                    // The one constant sentence of the conditional pin.
+                    || arg.starts_with("crate::models::asset::PIN_CHANGED_MESSAGE)")
                     // An ALL_CAPS constant of the parent module.
                     || arg.strip_prefix("super::").is_some_and(|rest| {
                         rest.chars()

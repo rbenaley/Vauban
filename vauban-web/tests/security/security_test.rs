@@ -4101,11 +4101,11 @@ async fn test_host_key_stored_in_connection_config() {
 
     // The handler must store ssh_host_key and ssh_host_key_fingerprint
     assert!(
-        web_source.contains(r#"config["ssh_host_key"]"#),
+        web_source.contains(r#".set("ssh_host_key", host_key.clone())"#),
         "fetch handler must store ssh_host_key in connection_config"
     );
     assert!(
-        web_source.contains(r#"config["ssh_host_key_fingerprint"]"#),
+        web_source.contains(r#".set("ssh_host_key_fingerprint", fingerprint.clone())"#),
         "fetch handler must store ssh_host_key_fingerprint in connection_config"
     );
 }
@@ -4250,11 +4250,11 @@ async fn test_fetch_rdp_cert_rejects_non_rdp_and_detects_change() {
         "fetch_rdp_server_cert must return the mismatch fragment when SPKIs differ"
     );
     assert!(
-        web_source.contains(r#"config["rdp_server_cert_fingerprint"]"#),
+        web_source.contains(r#".set("rdp_server_cert_fingerprint", fingerprint.clone())"#),
         "fetch handler must store rdp_server_cert_fingerprint in connection_config"
     );
     assert!(
-        web_source.contains(r#"config["rdp_server_cert_spki"]"#),
+        web_source.contains(r#".set("rdp_server_cert_spki", server_spki.clone())"#),
         "fetch handler must store rdp_server_cert_spki in connection_config"
     );
 }
@@ -4477,14 +4477,14 @@ async fn test_fetch_handler_clears_mismatch_flag() {
     let web_source = include_str!("../../src/handlers/web/ssh.rs");
 
     assert!(
-        web_source.contains(r#"m.remove("ssh_host_key_mismatch")"#),
+        web_source.contains(r#".remove("ssh_host_key_mismatch")"#),
         "fetch handler must remove the mismatch flag when storing a new key"
     );
 
     // Issue #27: API fetch handler moved to manage_assets.rs.
     let api_source = include_str!("../../src/handlers/api/manage_assets.rs");
     assert!(
-        api_source.contains(r#"m.remove("ssh_host_key_mismatch")"#),
+        api_source.contains(r#".remove("ssh_host_key_mismatch")"#),
         "API fetch handler must remove the mismatch flag when storing a new key"
     );
 }
