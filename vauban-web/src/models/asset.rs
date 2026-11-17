@@ -778,6 +778,10 @@ impl TrustAnchorFlag {
 ///
 /// The key is a closed set and is bound as a parameter, never formatted
 /// into the statement.
+///
+/// A document that is not an object (SQL `NULL`, JSON `null`, a scalar)
+/// is replaced by an object holding the flag: `jsonb_set` would fail on
+/// it and the flag would silently not be raised.
 pub async fn raise_trust_anchor_flag(
     conn: &mut diesel_async::AsyncPgConnection,
     asset_uuid: Uuid,
@@ -786,7 +790,9 @@ pub async fn raise_trust_anchor_flag(
     let statement = diesel::sql_query(
         "UPDATE assets \
          SET connection_config = jsonb_set(\
-             COALESCE(connection_config, '{}'::jsonb), ARRAY[$1], 'true'::jsonb, true) \
+             CASE WHEN jsonb_typeof(connection_config) = 'object' \
+                  THEN connection_config ELSE '{}'::jsonb END, \
+             ARRAY[$1], 'true'::jsonb, true) \
          WHERE uuid = $2",
     )
     .bind::<diesel::sql_types::Text, _>(flag.key())

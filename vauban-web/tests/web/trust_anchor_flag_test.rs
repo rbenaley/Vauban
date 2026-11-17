@@ -109,6 +109,32 @@ async fn attack_flag_raised_from_a_stale_copy_does_not_undo_a_new_pin() {
     assert_eq!(stored["ssh_host_key_mismatch"], true);
 }
 
+/// `jsonb_set` fails on a document that is not an object; the flag
+/// must still be raised.
+#[tokio::test]
+#[serial]
+async fn test_raising_a_flag_on_a_document_that_is_not_an_object() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let asset = new_asset(app, &mut conn).await;
+    for document in [
+        serde_json::Value::Null,
+        serde_json::json!("text"),
+        serde_json::json!([1]),
+    ] {
+        store_config(&mut conn, asset, &document).await;
+        let rows = raise_trust_anchor_flag(&mut conn, asset, TrustAnchorFlag::SshHostKeyMismatch)
+            .await
+            .expect("raise flag");
+        assert_eq!(rows, 1, "{document}");
+        assert_eq!(
+            stored_config(&mut conn, asset).await,
+            serde_json::json!({"ssh_host_key_mismatch": true}),
+            "{document}"
+        );
+    }
+}
+
 #[tokio::test]
 #[serial]
 async fn test_raising_a_flag_on_an_unknown_asset_changes_no_row() {

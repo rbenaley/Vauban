@@ -1,5 +1,7 @@
 # Rust
 **/target/
+# Out-of-tree target directories (`--target-dir target-rdp`).
+/target-*/
 **/*.rs.bk
 Cargo.lock
 

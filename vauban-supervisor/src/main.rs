@@ -5836,6 +5836,188 @@ mod tests {
         )
     }
 
+    /// Present a session token to the real TCP broker, as vauban-web
+    /// does, and return what the requester reads back.
+    fn present_token(session_id: &str, target: Service, token: Vec<u8>) -> Vec<Message> {
+        let (web, web_channel) = broker_test_child("web");
+        let mut children = HashMap::new();
+        for proxy in ["proxy_ssh", "proxy_rdp", "proxy_mcp", "proxy_iacs"] {
+            children.insert(proxy.to_string(), broker_test_child(proxy).0);
+        }
+        handle_tcp_connect_request(
+            TcpConnectPayload {
+                request_id: 21,
+                session_id: session_id.to_string(),
+                host: "192.0.2.1".to_string(),
+                port: 22,
+                target_service: target,
+                session_token: token,
+            },
+            &web.channel,
+            "web",
+            &children,
+            &crate::config::MailerConfig::default(),
+            &crate::config::LdapConfig::default(),
+            &IacsTunnelGuards::from_config(&crate::config::IacsTunnelSupervisorConfig::default()),
+            &McpConnectGuards::from_config(&crate::config::McpConfig::default(), 443),
+        );
+        let mut replies = Vec::new();
+        while let Ok(reply) = web_channel.try_recv() {
+            replies.push(reply);
+        }
+        replies
+    }
+
+    fn token_for(session_id: &str, target: Service, protocol: &str) -> Vec<u8> {
+        let key = SESSION_TOKEN_KEY.get_or_init(TokenKey::generate);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        SessionToken::mint(
+            key,
+            now,
+            shared::session_token::SessionTokenParams {
+                session_id: session_id.to_string(),
+                user_uuid: "11111111-1111-1111-1111-111111111111".to_string(),
+                asset_uuid: "22222222-2222-2222-2222-222222222222".to_string(),
+                protocol: protocol.to_string(),
+                host: "192.0.2.1".to_string(),
+                port: 22,
+                target_service: target,
+            },
+        )
+        .to_bytes()
+        .unwrap()
+    }
+
+    /// The wiring, end to end: the owner table is written by the TCP
+    /// broker when it accepts a token, and by nothing else. The broker
+    /// has no fd-passing socket here, so the connect itself fails after
+    /// the token is accepted; the owner is recorded before that.
+    #[test]
+    fn test_accepted_token_makes_its_service_the_owner_of_the_session() {
+        let sid = unowned_session();
+        assert_eq!(session_owner::owner(&sid), None);
+
+        present_token(
+            &sid,
+            Service::ProxySsh,
+            token_for(&sid, Service::ProxySsh, "ssh"),
+        );
+        assert_eq!(session_owner::owner(&sid).as_deref(), Some("proxy_ssh"));
+
+        // And the lease follows the token: granted to proxy_ssh, refused
+        // to another proxy.
+        let dir = tempfile::tempdir().unwrap();
+        let relative = format!("2026/11/{sid}/session.cast");
+        let (replies, _) =
+            dispatch_with_fd_socket("proxy_rdp", write_request(&sid, &relative), dir.path());
+        assert_eq!(
+            recording_refusal(&replies).as_deref(),
+            Some(file_broker::PATH_NOT_ALLOWED)
+        );
+        let (replies, fd) =
+            dispatch_with_fd_socket("proxy_ssh", write_request(&sid, &relative), dir.path());
+        assert!(lease_granted(&replies), "{replies:?}");
+        assert!(fd.is_some());
+    }
+
+    #[test]
+    fn attack_rejected_token_records_no_owner() {
+        let sid = unowned_session();
+        // Garbage, a token for another session, and a token for another
+        // target than the one requested.
+        let other = unowned_session();
+        for token in [
+            vec![0u8; 64],
+            Vec::new(),
+            token_for(&other, Service::ProxySsh, "ssh"),
+            token_for(&sid, Service::ProxyRdp, "rdp"),
+        ] {
+            let replies = present_token(&sid, Service::ProxySsh, token);
+            assert!(
+                matches!(
+                    replies.as_slice(),
+                    [Message::TcpConnectResponse { success: false, .. }]
+                ),
+                "{replies:?}"
+            );
+            assert_eq!(
+                session_owner::owner(&sid),
+                None,
+                "a refused token records nothing"
+            );
+        }
+        assert_eq!(session_owner::owner(&other), None);
+    }
+
+    /// INV-1 at the broker: a second service presenting a valid token for
+    /// a session that is already served is refused, and the owner stays.
+    #[test]
+    fn attack_token_for_a_session_another_service_serves_is_refused() {
+        let sid = unowned_session();
+        present_token(
+            &sid,
+            Service::ProxyRdp,
+            token_for(&sid, Service::ProxyRdp, "rdp"),
+        );
+        assert_eq!(session_owner::owner(&sid).as_deref(), Some("proxy_rdp"));
+
+        let replies = present_token(
+            &sid,
+            Service::ProxySsh,
+            token_for(&sid, Service::ProxySsh, "ssh"),
+        );
+        match replies.as_slice() {
+            [
+                Message::TcpConnectResponse {
+                    success: false,
+                    error,
+                    ..
+                },
+            ] => assert_eq!(error.as_deref(), Some("Access denied")),
+            other => panic!("expected one refusal, got {other:?}"),
+        }
+        assert_eq!(session_owner::owner(&sid).as_deref(), Some("proxy_rdp"));
+    }
+
+    /// Only the TCP broker writes the owner table, and the renewal bound
+    /// sits between authorization and the renewal.
+    #[test]
+    fn test_owner_table_and_renewal_bound_are_wired() {
+        let source = supervisor_prod_source();
+        assert_eq!(
+            source.matches("session_owner::record(").count(),
+            1,
+            "exactly one production writer of the owner table"
+        );
+        let broker = source
+            .split("fn handle_tcp_connect_request(")
+            .nth(1)
+            .expect("the TCP broker");
+        let verify = broker.find("SessionToken::verify_bytes(").expect("verify");
+        let record = broker
+            .find("session_owner::record(&token.session_id, target_key)")
+            .expect("the broker records the token's session for its target");
+        let resolve = broker.find("resolve_tcp_targets(").expect("resolve");
+        assert!(
+            verify < record && record < resolve,
+            "verify, record, then DNS"
+        );
+
+        let arm = source
+            .split("Message::AcmeRenewRequest {")
+            .nth(1)
+            .expect("the ACME arm");
+        let authorize = arm.find("acme::authorize_renewal(").expect("authorize");
+        let admit = arm
+            .find("acme::admit_renewal()")
+            .expect("the renewal bound");
+        let renew = arm.find("acme::handle_acme_renew(").expect("renew");
+        assert!(authorize < admit && admit < renew);
+    }
+
     fn write_request(session_id: &str, relative_path: &str) -> Message {
         Message::RecordingFileRequest {
             request_id: 9,

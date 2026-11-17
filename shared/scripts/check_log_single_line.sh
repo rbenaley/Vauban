@@ -51,6 +51,18 @@ done < <(find "${REPO_DIR}" \
        -o -path "${REPO_DIR}/.cursor" -o -path "${REPO_DIR}/.claude" -o -path '*/tests' \) -prune \
     -o -name '*.rs' -path '*/src/*' -print | sort)
 
+# Other ways to build a subscriber or swap its writer. None is used; one
+# appearing would not be seen by the rule above.
+while IFS= read -r hit; do
+    case "${hit}" in
+        */shared/src/log_line.rs:*) continue ;;
+    esac
+    echo "ERROR: ${hit#"${REPO_DIR}/"}: build the subscriber with tracing_subscriber::fmt() or fmt::layer() and shared::log_line::SingleLine"
+    status=1
+done < <(grep -rn -E 'tracing_subscriber::fmt::(init|try_init|Subscriber|SubscriberBuilder|Layer|format)\b|use tracing_subscriber::fmt\b|\.map_writer\(|set_global_default\(' \
+    --include='*.rs' "${REPO_DIR}" 2>/dev/null \
+    | grep -v -E '/(target|target-[^/]*|\.git|\.cursor|\.claude|tests)/' || true)
+
 if [ "${found}" -eq 0 ]; then
     echo "ERROR: no tracing_subscriber::fmt() call found; the lint looks at nothing"
     status=1
