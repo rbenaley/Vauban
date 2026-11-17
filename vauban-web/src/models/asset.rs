@@ -651,7 +651,7 @@ impl AssetStatus {
 /// the target's credentials (as vault ciphertext). A response is built
 /// from [`AssetSummary`] or [`AssetDetail`], so what leaves the process is
 /// a decision, not a side effect of returning the row.
-#[derive(Debug, Clone, Queryable, Selectable, Identifiable)]
+#[derive(Clone, Queryable, Selectable, Identifiable)]
 #[diesel(table_name = assets)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct Asset {
@@ -673,11 +673,126 @@ pub struct Asset {
     pub connection_username: String,
 }
 
+/// `connection_config` as it may be printed: the names of its keys,
+/// never a value. The document holds the credentials of the target (as
+/// vault ciphertext once stored, in clear on the way in), the pinned
+/// host key and the account name.
+struct ConfigKeys<'a>(&'a serde_json::Value);
+
+impl std::fmt::Debug for ConfigKeys<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            serde_json::Value::Object(map) => {
+                let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
+                keys.sort_unstable();
+                write!(f, "<keys: {}>", keys.join(", "))
+            }
+            serde_json::Value::Null => f.write_str("<null>"),
+            _ => f.write_str("<not an object>"),
+        }
+    }
+}
+
+/// Written by hand, not derived: a `{:?}` of an asset in a log line must
+/// not print `connection_config`. See [`ConfigKeys`].
+impl std::fmt::Debug for Asset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Asset")
+            .field("id", &self.id)
+            .field("uuid", &self.uuid)
+            .field("name", &self.name)
+            .field("hostname", &self.hostname)
+            .field("port", &self.port)
+            .field("asset_type", &self.asset_type)
+            .field("status", &self.status)
+            .field("description", &self.description)
+            .field("connection_config", &ConfigKeys(&self.connection_config))
+            .field("created_by_id", &self.created_by_id)
+            .field("updated_by_id", &self.updated_by_id)
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .field("is_deleted", &self.is_deleted)
+            .field("deleted_at", &self.deleted_at)
+            .field("connection_username", &self.connection_username)
+            .finish()
+    }
+}
+
+/// Written by hand for the same reason as [`Asset`]: on insertion the
+/// credentials may still be in clear.
+impl std::fmt::Debug for NewAsset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NewAsset")
+            .field("uuid", &self.uuid)
+            .field("name", &self.name)
+            .field("hostname", &self.hostname)
+            .field("port", &self.port)
+            .field("asset_type", &self.asset_type)
+            .field("status", &self.status)
+            .field("description", &self.description)
+            .field("connection_config", &ConfigKeys(&self.connection_config))
+            .field("created_by_id", &self.created_by_id)
+            .field("updated_by_id", &self.updated_by_id)
+            .field("connection_username", &self.connection_username)
+            .finish()
+    }
+}
+
 /// The `connection_config` keys that hold a credential of the target.
 /// They are encrypted by the vault before they are stored
 /// (`encrypt_connection_config`) and never leave in a response
 /// ([`public_connection_config`]). One list for both.
 pub const CREDENTIAL_FIELDS: [&str; 3] = ["password", "private_key", "passphrase"];
+
+/// A boolean of `connection_config` that says the identity a target
+/// presented is not the pinned one. While it is set, the connect
+/// pre-flight refuses new sessions and the asset page shows the warning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustAnchorFlag {
+    SshHostKeyMismatch,
+    RdpServerCertMismatch,
+}
+
+impl TrustAnchorFlag {
+    pub const ALL: [TrustAnchorFlag; 2] = [
+        TrustAnchorFlag::SshHostKeyMismatch,
+        TrustAnchorFlag::RdpServerCertMismatch,
+    ];
+
+    /// The key in `connection_config`.
+    pub const fn key(self) -> &'static str {
+        match self {
+            TrustAnchorFlag::SshHostKeyMismatch => "ssh_host_key_mismatch",
+            TrustAnchorFlag::RdpServerCertMismatch => "rdp_server_cert_mismatch",
+        }
+    }
+}
+
+/// Set `flag` to `true` on an asset, in one statement.
+///
+/// The flag used to be raised by reading the whole `connection_config`,
+/// changing one key in memory and writing the document back, after a
+/// network round trip to the target. Anything written to the document in
+/// between (a new pin, another flag, an edit of the asset) was lost.
+/// `jsonb_set` changes the one key in place.
+///
+/// The key is a closed set and is bound as a parameter, never formatted
+/// into the statement.
+pub async fn raise_trust_anchor_flag(
+    conn: &mut diesel_async::AsyncPgConnection,
+    asset_uuid: Uuid,
+    flag: TrustAnchorFlag,
+) -> QueryResult<usize> {
+    let statement = diesel::sql_query(
+        "UPDATE assets \
+         SET connection_config = jsonb_set(\
+             COALESCE(connection_config, '{}'::jsonb), ARRAY[$1], 'true'::jsonb, true) \
+         WHERE uuid = $2",
+    )
+    .bind::<diesel::sql_types::Text, _>(flag.key())
+    .bind::<diesel::sql_types::Uuid, _>(asset_uuid);
+    diesel_async::RunQueryDsl::execute(statement, conn).await
+}
 
 /// Fragments that mark a key as a secret whatever its exact name, so a
 /// credential added later under a new key does not leak by default.
@@ -849,7 +964,7 @@ impl From<Asset> for AssetDetail {
 }
 
 /// New asset for insertion.
-#[derive(Debug, Clone, Insertable)]
+#[derive(Clone, Insertable)]
 #[diesel(table_name = assets)]
 pub struct NewAsset {
     pub uuid: Uuid,
@@ -1862,6 +1977,80 @@ mod tests {
             "svc-bastion",
         ] {
             assert!(!text.contains(leaked), "{leaked} leaked into the summary");
+        }
+    }
+
+    /// `{:?}` and `{:#?}` of an asset print the key names of
+    /// `connection_config` and none of its values.
+    #[test]
+    fn attack_debug_of_an_asset_prints_no_config_value() {
+        let secret_values = [
+            "hunter2-plain-password",
+            "v1:QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=",
+            "-----BEGIN OPENSSH PRIVATE KEY-----",
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPinnedHostKey",
+            "nested-secret",
+        ];
+        let config = serde_json::json!({
+            "password": secret_values[0],
+            "passphrase": secret_values[1],
+            "private_key": secret_values[2],
+            "ssh_host_key": secret_values[3],
+            "extra": {"deep": [secret_values[4]]},
+        });
+
+        let mut asset = create_test_asset();
+        asset.connection_config = config.clone();
+        let new_asset = NewAsset {
+            uuid: Uuid::new_v4(),
+            name: "n".to_string(),
+            hostname: "h".to_string(),
+            port: 22,
+            asset_type: AssetType::Ssh,
+            status: "online".to_string(),
+            description: None,
+            connection_config: config,
+            created_by_id: None,
+            updated_by_id: None,
+            connection_username: "root".to_string(),
+        };
+
+        for printed in [
+            format!("{asset:?}"),
+            format!("{asset:#?}"),
+            format!("{new_asset:?}"),
+            format!("{new_asset:#?}"),
+        ] {
+            for value in secret_values {
+                assert!(!printed.contains(value), "{value:?} in {printed}");
+            }
+            for key in [
+                "password",
+                "passphrase",
+                "private_key",
+                "ssh_host_key",
+                "extra",
+            ] {
+                assert!(printed.contains(key), "key {key} missing from {printed}");
+            }
+        }
+    }
+
+    /// The two row types carry `connection_config`: neither may derive
+    /// `Debug`.
+    #[test]
+    fn test_asset_rows_do_not_derive_debug() {
+        let src = include_str!("asset.rs");
+        for decl in ["pub struct Asset {", "pub struct NewAsset {"] {
+            let derive = src
+                .split(decl)
+                .next()
+                .and_then(|before| before.rsplit("#[derive(").next())
+                .unwrap_or_else(|| panic!("derive of {decl}"));
+            assert!(
+                !derive.contains("Debug"),
+                "{decl} must not derive Debug; it is written by hand to hide connection_config"
+            );
         }
     }
 

@@ -30,23 +30,34 @@
 fn connect_ssh_writes_mismatch_flag_on_failure() {
     let body = include_str!("../../src/handlers/web/ssh.rs");
 
-    // We require BOTH the assignment AND the surrounding
-    // `ssh_host_key_mismatch` write context appear in connect_ssh.
-    // Constructed via format! so this test cannot self-match if it
-    // is ever included in a future grep.
-    let needle = format!(
+    // The flag is raised through `flag_ssh_host_key_mismatch`, one
+    // atomic statement (`raise_trust_anchor_flag`), from the connect
+    // path (the proxy's typed mismatch code) and from the verify path
+    // (the fetched key differs from the pinned one).
+    let production = body.split("#[cfg(test)]").next().unwrap_or(body);
+    let calls = production
+        .matches("flag_ssh_host_key_mismatch(&mut conn, asset_uuid).await")
+        .count();
+    assert!(
+        calls >= 2,
+        "vauban-web/src/handlers/web/ssh.rs: the SSH host-key mismatch \
+         kill-switch (raise `ssh_host_key_mismatch` after a failed \
+         connection and after a failed verification) must be called at \
+         least twice. Found {calls} call(s). Removing it would silently \
+         re-allow a user to retry connecting to a suspected MITM target."
+    );
+    assert!(
+        production.contains("TrustAnchorFlag::SshHostKeyMismatch"),
+        "the helper must raise the SSH flag through raise_trust_anchor_flag"
+    );
+    // Constructed via format! so this test cannot self-match.
+    let stale_write = format!(
         "config[\"{}\"] = serde_json::Value::Bool(true)",
         "ssh_host_key_mismatch"
     );
-    let count = body.matches(needle.as_str()).count();
     assert!(
-        count >= 2,
-        "vauban-web/src/handlers/web/ssh.rs: the SSH host-key mismatch \
-         kill-switch (write `ssh_host_key_mismatch = true` after a \
-         failed connection) must appear at least twice (once in the \
-         password path, once in the key path). Found {count} \
-         occurrence(s). Removing this write would silently re-allow \
-         a user to retry connecting to a suspected MITM target."
+        !production.contains(stale_write.as_str()),
+        "the flag must not be raised by rewriting a copy of connection_config"
     );
 }
 

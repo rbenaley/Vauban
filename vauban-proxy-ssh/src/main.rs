@@ -899,7 +899,11 @@ async fn handle_web_message(
                     request_id,
                     session_id,
                     success: false,
-                    error: Some("Access denied".to_string()),
+                    error: Some(
+                        shared::messages::SshOpenFailure::AccessDenied
+                            .as_str()
+                            .to_string(),
+                    ),
                 };
                 let _ = response_tx.send(response);
                 return Ok(());
@@ -911,7 +915,11 @@ async fn handle_web_message(
                     request_id,
                     session_id,
                     success: false,
-                    error: Some("Service is draining, not accepting new sessions".to_string()),
+                    error: Some(
+                        shared::messages::SshOpenFailure::Draining
+                            .as_str()
+                            .to_string(),
+                    ),
                 };
                 let _ = response_tx.send(response);
                 return Ok(());
@@ -926,14 +934,20 @@ async fn handle_web_message(
                 _ => password_ciphertext.is_some(),
             };
             if !has_required_ciphertext {
+                warn!(
+                    session_id = %session_id,
+                    auth_type = %auth_type,
+                    "SSH session refused: no credential ciphertext for the selected authentication"
+                );
                 let response = Message::SshSessionOpened {
                     request_id,
                     session_id,
                     success: false,
-                    error: Some(format!(
-                        "{} authentication selected but no credential ciphertext provided",
-                        auth_type
-                    )),
+                    error: Some(
+                        shared::messages::SshOpenFailure::CredentialsUnavailable
+                            .as_str()
+                            .to_string(),
+                    ),
                 };
                 let _ = response_tx.send(response);
                 return Ok(());
@@ -1008,7 +1022,11 @@ async fn handle_web_message(
                         request_id,
                         session_id,
                         success: false,
-                        error: Some("Access denied".to_string()),
+                        error: Some(
+                            shared::messages::SshOpenFailure::AccessDenied
+                                .as_str()
+                                .to_string(),
+                        ),
                     });
                     return;
                 }
@@ -1043,7 +1061,11 @@ async fn handle_web_message(
                             request_id,
                             session_id,
                             success: false,
-                            error: Some("Failed to retrieve credentials".to_string()),
+                            error: Some(
+                                shared::messages::SshOpenFailure::CredentialsUnavailable
+                                    .as_str()
+                                    .to_string(),
+                            ),
                         });
                         return;
                     }
@@ -1079,11 +1101,19 @@ async fn handle_web_message(
                     }
                     Err(e) => {
                         state_clone.increment_failed();
+                        // The text stays here; vauban-web gets a code.
+                        let failure = e.open_failure();
+                        warn!(
+                            session_id = %session_id,
+                            reason = failure.as_str(),
+                            error = %e,
+                            "SSH session open failed"
+                        );
                         let response = Message::SshSessionOpened {
                             request_id,
                             session_id,
                             success: false,
-                            error: Some(e.to_string()),
+                            error: Some(failure.as_str().to_string()),
                         };
                         let _ = response_tx_clone.send(response);
                     }

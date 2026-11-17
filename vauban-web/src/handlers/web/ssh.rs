@@ -30,6 +30,33 @@ pub struct ConnectSshResponse {
 }
 
 /// Helper to create an HTMX error response (toast notification).
+/// Record that the target presented a host key other than the pinned
+/// one, so the asset page shows the warning and the connect pre-flight
+/// refuses new sessions until an administrator pins again. Best-effort:
+/// a database failure is logged, the connection has already failed.
+///
+/// One atomic statement (`raise_trust_anchor_flag`): nothing else in
+/// `connection_config` is rewritten.
+async fn flag_ssh_host_key_mismatch(
+    conn: &mut diesel_async::AsyncPgConnection,
+    asset_uuid: ::uuid::Uuid,
+) {
+    use crate::models::asset::{TrustAnchorFlag, raise_trust_anchor_flag};
+    tracing::warn!(
+        asset_uuid = %asset_uuid,
+        "Marking asset as host key mismatch"
+    );
+    if let Err(db_err) =
+        raise_trust_anchor_flag(conn, asset_uuid, TrustAnchorFlag::SshHostKeyMismatch).await
+    {
+        tracing::error!(
+            asset_uuid = %asset_uuid,
+            error = %db_err,
+            "Failed to persist host key mismatch flag"
+        );
+    }
+}
+
 fn htmx_error_response(message: &str) -> Response {
     // Return an HX-Trigger header that shows a toast notification
     // Escape message for JSON
@@ -783,35 +810,20 @@ pub async fn connect_ssh(
                 })
                 .into_response()
             } else {
-                let msg = response
-                    .error
-                    .unwrap_or_else(|| "Connection failed".to_string());
-
-                // Detect host key mismatch errors and persist the
-                // mismatch flag in connection_config so that the asset
-                // detail page can display the warning state.
-                let is_host_key_mismatch = msg.contains("host key")
-                    || msg.contains("MITM")
-                    || msg.contains("Host key verification failed");
-                if is_host_key_mismatch {
-                    tracing::warn!(
-                        asset_uuid = %asset_uuid,
-                        "Marking asset as host key mismatch after failed connection"
-                    );
-                    let mut config = asset.connection_config.clone();
-                    config["ssh_host_key_mismatch"] = serde_json::Value::Bool(true);
-                    if let Err(db_err) =
-                        diesel::update(dsl::assets.filter(dsl::uuid.eq(asset_uuid)))
-                            .set(dsl::connection_config.eq(&config))
-                            .execute(&mut conn)
-                            .await
-                    {
-                        tracing::error!(
-                            asset_uuid = %asset_uuid,
-                            error = %db_err,
-                            "Failed to persist host key mismatch flag"
-                        );
-                    }
+                // The proxy answers with a closed-set code. Its text never
+                // reaches the browser, and only the exact mismatch code
+                // marks the asset: an error that merely mentions a host
+                // key does not.
+                let code = response.error.as_deref();
+                let msg = crate::services::ssh_open_failure::message_from_wire(code).to_string();
+                tracing::warn!(
+                    user = %auth_user.username,
+                    asset = %asset.name,
+                    reason = ?code,
+                    "SSH session refused by the proxy"
+                );
+                if crate::services::ssh_open_failure::is_host_key_mismatch(code) {
+                    flag_ssh_host_key_mismatch(&mut conn, asset_uuid).await;
                 }
 
                 if is_htmx {
@@ -835,31 +847,10 @@ pub async fn connect_ssh(
                 "SSH session initiation failed"
             );
 
-            // Also detect mismatch in transport-level errors
-            let is_host_key_mismatch = error_str.contains("host key")
-                || error_str.contains("MITM")
-                || error_str.contains("Host key verification failed");
-            if is_host_key_mismatch {
-                tracing::warn!(
-                    asset_uuid = %asset_uuid,
-                    "Marking asset as host key mismatch after failed connection"
-                );
-                let mut config = asset.connection_config.clone();
-                config["ssh_host_key_mismatch"] = serde_json::Value::Bool(true);
-                if let Err(db_err) = diesel::update(dsl::assets.filter(dsl::uuid.eq(asset_uuid)))
-                    .set(dsl::connection_config.eq(&config))
-                    .execute(&mut conn)
-                    .await
-                {
-                    tracing::error!(
-                        asset_uuid = %asset_uuid,
-                        error = %db_err,
-                        "Failed to persist host key mismatch flag"
-                    );
-                }
-            }
-
-            let msg = format!("Failed to initiate SSH connection: {}", e);
+            // A transport error of the web tier itself (supervisor, IPC):
+            // no proxy verdict, so no flag, and no error text in the
+            // browser. The detail is in the log line above.
+            let msg = crate::services::ssh_open_failure::UNREACHABLE_MESSAGE.to_string();
             if is_htmx {
                 return htmx_error_response(&msg);
             }
@@ -1615,19 +1606,7 @@ pub async fn verify_ssh_host_key(
                     "SSH host key CHANGED on remote server (detected during page load verification)"
                 );
 
-                let mut config = asset.connection_config.clone();
-                config["ssh_host_key_mismatch"] = serde_json::Value::Bool(true);
-                if let Err(db_err) = diesel::update(dsl::assets.filter(dsl::uuid.eq(asset_uuid)))
-                    .set(dsl::connection_config.eq(&config))
-                    .execute(&mut conn)
-                    .await
-                {
-                    tracing::error!(
-                        asset_uuid = %asset_uuid,
-                        error = %db_err,
-                        "Failed to persist host key mismatch flag"
-                    );
-                }
+                flag_ssh_host_key_mismatch(&mut conn, asset_uuid).await;
 
                 // Return mismatch fragment with both fingerprints
                 let html =

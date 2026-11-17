@@ -4343,15 +4343,22 @@ async fn test_connect_ssh_marks_mismatch_on_failure() {
         "connect_ssh must set ssh_host_key_mismatch flag on key verification failure"
     );
     assert!(
-        web_source.contains("is_host_key_mismatch"),
-        "connect_ssh must detect host key mismatch from error messages"
+        web_source.contains("ssh_open_failure::is_host_key_mismatch(code)"),
+        "connect_ssh must detect a host key mismatch from the proxy's typed code"
     );
-    // Verify that the mismatch detection checks for relevant keywords
-    assert!(
-        web_source.contains(r#"msg.contains("MITM")"#)
-            || web_source.contains(r#"error_str.contains("MITM")"#),
-        "connect_ssh must detect MITM-related error messages"
-    );
+    // The detection must not read error text: a target or a proxy could
+    // write it, and a reworded error would stop setting the flag.
+    let production = web_source.split("#[cfg(test)]").next().unwrap();
+    for keyword in [
+        r#".contains("MITM")"#,
+        r#".contains("host key")"#,
+        r#".contains("Host key verification failed")"#,
+    ] {
+        assert!(
+            !production.contains(keyword),
+            "connect_ssh must not detect a mismatch from error text ({keyword})"
+        );
+    }
 }
 
 /// Verify that the SSH host-key fragments still encode the three
@@ -4531,14 +4538,24 @@ async fn test_api_get_ssh_host_key_route_registered() {
 async fn test_connect_ssh_detects_mismatch_in_both_error_branches() {
     let web_source = include_str!("../../src/handlers/web/ssh.rs");
 
-    // Count occurrences of is_host_key_mismatch - should appear at least
-    // twice (once in each error branch of the proxy call).
-    let mismatch_count = web_source.matches("is_host_key_mismatch").count();
+    // The proxy's answer is the only verdict: its typed code raises the
+    // flag. A transport error of the web tier carries no verdict, shows a
+    // constant sentence and raises nothing.
+    let production = web_source.split("#[cfg(test)]").next().unwrap();
+    assert_eq!(
+        production
+            .matches("ssh_open_failure::is_host_key_mismatch(code)")
+            .count(),
+        1,
+        "the proxy-answer branch must test the typed code, once"
+    );
     assert!(
-        mismatch_count >= 4,
-        "connect_ssh must check for host key mismatch in both error branches \
-         (found {} occurrences of is_host_key_mismatch, expected >= 4)",
-        mismatch_count
+        production.contains("ssh_open_failure::UNREACHABLE_MESSAGE"),
+        "the transport-error branch must answer with the constant sentence"
+    );
+    assert!(
+        !production.contains(r#"format!("Failed to initiate SSH connection: {}", e)"#),
+        "the transport-error branch must not show the error text"
     );
 }
 

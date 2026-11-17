@@ -44,6 +44,47 @@ pub enum SessionError {
     /// Failed to parse SSH key.
     #[error("Invalid SSH key: {0}")]
     InvalidKey(String),
+
+    /// The target presented a host key other than the pinned one.
+    #[error("SSH host key does not match the pinned key")]
+    HostKeyMismatch,
+
+    /// The asset has no pinned host key.
+    #[error("SSH host key is not pinned")]
+    NoPinnedHostKey,
+
+    /// The target presented a host certificate.
+    #[error("SSH host certificate refused")]
+    HostCertificateRefused,
+}
+
+impl SessionError {
+    /// The closed-set code sent to vauban-web for this error. The text
+    /// of the error stays in this service's log.
+    ///
+    /// EXHAUSTIVE match (no `_` arm): a new variant does not compile
+    /// until it has a code.
+    pub fn open_failure(&self) -> shared::messages::SshOpenFailure {
+        use shared::messages::SshOpenFailure;
+        match self {
+            SessionError::HostKeyMismatch => SshOpenFailure::HostKeyMismatch,
+            SessionError::NoPinnedHostKey => SshOpenFailure::NoPinnedHostKey,
+            SessionError::HostCertificateRefused => SshOpenFailure::HostCertificateRefused,
+            SessionError::AuthenticationFailed(_) | SessionError::InvalidKey(_) => {
+                SshOpenFailure::AuthenticationFailed
+            }
+            SessionError::ConnectionFailed(_) | SessionError::IoError(_) => {
+                SshOpenFailure::ConnectionFailed
+            }
+            SessionError::ChannelOpenFailed(_)
+            | SessionError::PtyRequestFailed(_)
+            | SessionError::ShellStartFailed(_)
+            | SessionError::SessionClosed => SshOpenFailure::SessionFailed,
+            SessionError::SessionNotFound(_) | SessionError::SessionAlreadyExists(_) => {
+                SshOpenFailure::Internal
+            }
+        }
+    }
 }
 
 /// Errors that can occur during IPC operations.
@@ -71,6 +112,44 @@ pub type IpcResult<T> = Result<T, IpcError>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every variant maps to a code, and only the three host-key
+    /// refusals map to the host-key codes: a connection failure whose
+    /// text mentions a host key is still a connection failure.
+    #[test]
+    fn attack_error_text_does_not_choose_the_code() {
+        use shared::messages::SshOpenFailure;
+        for text in ["host key mismatch", "MITM", "Host key verification failed"] {
+            for error in [
+                SessionError::ConnectionFailed(text.to_string()),
+                SessionError::AuthenticationFailed(text.to_string()),
+                SessionError::ChannelOpenFailed(text.to_string()),
+                SessionError::InvalidKey(text.to_string()),
+            ] {
+                assert!(
+                    !matches!(
+                        error.open_failure(),
+                        SshOpenFailure::HostKeyMismatch
+                            | SshOpenFailure::NoPinnedHostKey
+                            | SshOpenFailure::HostCertificateRefused
+                    ),
+                    "{error:?}"
+                );
+            }
+        }
+        assert_eq!(
+            SessionError::HostKeyMismatch.open_failure(),
+            SshOpenFailure::HostKeyMismatch
+        );
+        assert_eq!(
+            SessionError::NoPinnedHostKey.open_failure(),
+            SshOpenFailure::NoPinnedHostKey
+        );
+        assert_eq!(
+            SessionError::HostCertificateRefused.open_failure(),
+            SshOpenFailure::HostCertificateRefused
+        );
+    }
 
     // ==================== SessionError Tests ====================
 

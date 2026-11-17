@@ -180,6 +180,7 @@ pub mod terminate_session_test;
 pub mod timezone_e2e_test;
 pub mod timezone_lints_test;
 pub mod timezone_snippet_test;
+pub mod trust_anchor_flag_test;
 pub mod user_edit_test;
 pub mod user_status_e2e_test;
 pub mod user_status_invariants_test;

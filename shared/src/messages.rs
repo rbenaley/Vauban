@@ -298,6 +298,85 @@ impl RdpOpenFailure {
     }
 }
 
+/// Why the SSH proxy could not open a session, as a closed set.
+///
+/// The proxy answers a failed `SshSessionOpen` with `error: Some(code)`,
+/// where `code` is [`SshOpenFailure::as_str`]. The field is a string for
+/// wire compatibility, but only these codes are written to it. The text
+/// of the underlying error (a russh error, something the target sent)
+/// stays in the `vauban-proxy-ssh` log.
+///
+/// The receiver reads the field with [`SshOpenFailure::parse`]. A value
+/// that is not a code is not trusted as text: it is treated as
+/// [`SshOpenFailure::Internal`]. In particular a text that mentions a
+/// host key does not mark the asset as mismatching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SshOpenFailure {
+    /// The proxy's own access check refused the session.
+    AccessDenied,
+    /// The proxy is draining and takes no new session.
+    Draining,
+    /// The asset has no pinned host key.
+    NoPinnedHostKey,
+    /// The proxy could not obtain the credentials of the target.
+    CredentialsUnavailable,
+    /// The target presented a host key other than the pinned one.
+    HostKeyMismatch,
+    /// The target presented a host certificate, which is never accepted.
+    HostCertificateRefused,
+    /// The target refused the credentials.
+    AuthenticationFailed,
+    /// The connection to the target failed or was lost.
+    ConnectionFailed,
+    /// The SSH exchange failed after authentication (channel, PTY, shell).
+    SessionFailed,
+    /// Anything else, including a value that is not one of these codes.
+    Internal,
+}
+
+impl SshOpenFailure {
+    pub const ALL: [SshOpenFailure; 10] = [
+        SshOpenFailure::AccessDenied,
+        SshOpenFailure::Draining,
+        SshOpenFailure::NoPinnedHostKey,
+        SshOpenFailure::CredentialsUnavailable,
+        SshOpenFailure::HostKeyMismatch,
+        SshOpenFailure::HostCertificateRefused,
+        SshOpenFailure::AuthenticationFailed,
+        SshOpenFailure::ConnectionFailed,
+        SshOpenFailure::SessionFailed,
+        SshOpenFailure::Internal,
+    ];
+
+    /// The code written to the `error` field.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SshOpenFailure::AccessDenied => "access_denied",
+            SshOpenFailure::Draining => "draining",
+            SshOpenFailure::NoPinnedHostKey => "no_pinned_host_key",
+            SshOpenFailure::CredentialsUnavailable => "credentials_unavailable",
+            SshOpenFailure::HostKeyMismatch => "host_key_mismatch",
+            SshOpenFailure::HostCertificateRefused => "host_certificate_refused",
+            SshOpenFailure::AuthenticationFailed => "authentication_failed",
+            SshOpenFailure::ConnectionFailed => "connection_failed",
+            SshOpenFailure::SessionFailed => "session_failed",
+            SshOpenFailure::Internal => "internal",
+        }
+    }
+
+    /// Read an `error` field. Exact match only; `None` for anything else.
+    pub fn parse(code: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|f| f.as_str() == code)
+    }
+
+    /// Read an `error` field that came from the proxy: an absent value or
+    /// one that is not a code is [`SshOpenFailure::Internal`].
+    pub fn from_wire(code: Option<&str>) -> Self {
+        code.and_then(Self::parse)
+            .unwrap_or(SshOpenFailure::Internal)
+    }
+}
+
 /// Why the NLA leg of an RDP session failed, as a closed set.
 ///
 /// The proxy classifies a failure into one of these and sends it in

@@ -59,6 +59,7 @@ pub mod session_lifecycle;
 pub mod session_limits;
 pub mod session_revocation;
 pub mod session_termination;
+pub mod ssh_open_failure;
 pub mod status_vocab;
 pub mod system_health;
 pub mod user_status;

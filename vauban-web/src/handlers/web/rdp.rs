@@ -603,7 +603,7 @@ pub async fn connect_rdp(
             // asset detail page shows the red warning state and subsequent
             // connections are refused fail-closed (mirror web/ssh.rs).
             if crate::services::rdp_open_failure::is_certificate_mismatch(code) {
-                flag_rdp_cert_mismatch(&mut conn, asset_uuid, &config).await;
+                flag_rdp_cert_mismatch(&mut conn, asset_uuid).await;
             }
 
             htmx_error_response(crate::services::rdp_open_failure::message_from_wire(code))
@@ -633,20 +633,19 @@ pub async fn connect_rdp(
 async fn flag_rdp_cert_mismatch(
     conn: &mut diesel_async::AsyncPgConnection,
     asset_uuid: uuid::Uuid,
-    config: &serde_json::Value,
 ) {
-    use crate::schema::assets::dsl;
-
     tracing::warn!(
         asset_uuid = %asset_uuid,
         "Marking RDP asset as server-certificate mismatch after failed connection"
     );
-    let mut updated = config.clone();
-    updated["rdp_server_cert_mismatch"] = serde_json::Value::Bool(true);
-    if let Err(db_err) = diesel::update(dsl::assets.filter(dsl::uuid.eq(asset_uuid)))
-        .set(dsl::connection_config.eq(&updated))
-        .execute(conn)
-        .await
+    // One atomic statement: nothing else in `connection_config` is
+    // rewritten, so a pin stored meanwhile is not lost.
+    if let Err(db_err) = crate::models::asset::raise_trust_anchor_flag(
+        conn,
+        asset_uuid,
+        crate::models::asset::TrustAnchorFlag::RdpServerCertMismatch,
+    )
+    .await
     {
         tracing::error!(
             asset_uuid = %asset_uuid,
@@ -1083,19 +1082,7 @@ pub async fn verify_rdp_server_cert(
                     "RDP server certificate CHANGED on remote server (detected during page load verification)"
                 );
 
-                let mut config = asset.connection_config.clone();
-                config["rdp_server_cert_mismatch"] = serde_json::Value::Bool(true);
-                if let Err(db_err) = diesel::update(dsl::assets.filter(dsl::uuid.eq(asset_uuid)))
-                    .set(dsl::connection_config.eq(&config))
-                    .execute(&mut conn)
-                    .await
-                {
-                    tracing::error!(
-                        asset_uuid = %asset_uuid,
-                        error = %db_err,
-                        "Failed to persist RDP server-certificate mismatch flag"
-                    );
-                }
+                flag_rdp_cert_mismatch(&mut conn, asset_uuid).await;
 
                 let html = include_str!(
                     "../../../templates/assets/_rdp_server_cert_mismatch_fragment.html"

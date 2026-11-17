@@ -161,6 +161,7 @@ impl SshSession {
 
         // Create handler for SSH events (with host key verification)
         let handler = SshHandler::new(config.session_id.clone(), config.expected_host_key.clone());
+        let verdict = handler.verdict.clone();
 
         // Connect to the SSH server - use pre-established FD if provided (sandboxed mode)
         // or open a new connection (non-sandboxed mode, e.g., development on macOS)
@@ -180,13 +181,13 @@ impl SshSession {
 
             client::connect_stream(ssh_config, stream, handler)
                 .await
-                .map_err(|e| SessionError::ConnectionFailed(e.to_string()))?
+                .map_err(|e| verdict.connect_error(e))?
         } else {
             // Non-sandboxed mode: open connection directly (development/macOS)
             let addr = format!("{}:{}", config.host, config.port);
             client::connect(ssh_config, addr, handler)
                 .await
-                .map_err(|e| SessionError::ConnectionFailed(e.to_string()))?
+                .map_err(|e| verdict.connect_error(e))?
         };
 
         debug!(session_id = %config.session_id, "TCP connection established");
@@ -568,6 +569,7 @@ async fn connect_oneshot_handle(
 
     let ssh_config = make_ssh_config();
     let handler = SshHandler::new(label.to_string(), expected_host_key);
+    let verdict = handler.verdict.clone();
 
     if let Some(fd) = preconnected_fd {
         // SAFETY: the FD comes from the supervisor via SCM_RIGHTS and is a valid TCP socket.
@@ -580,12 +582,12 @@ async fn connect_oneshot_handle(
         })?;
         client::connect_stream(ssh_config, stream, handler)
             .await
-            .map_err(|e| SessionError::ConnectionFailed(e.to_string()))
+            .map_err(|e| verdict.connect_error(e))
     } else {
         let addr = format!("{}:{}", host, port);
         client::connect(ssh_config, addr, handler)
             .await
-            .map_err(|e| SessionError::ConnectionFailed(e.to_string()))
+            .map_err(|e| verdict.connect_error(e))
     }
 }
 
@@ -738,11 +740,49 @@ pub async fn test_key_auth(
     }
 }
 
+/// Why `check_server_key` refused the server. russh turns a refusal into
+/// one error whatever the reason; the handler notes the reason here so
+/// the caller can report it as a code instead of reading error text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum HostKeyRefusal {
+    Mismatch = 1,
+    NoPin = 2,
+    Certificate = 3,
+}
+
+/// Shared between the handler (moved into russh) and the caller.
+#[derive(Debug, Clone, Default)]
+struct HostKeyVerdict(Arc<std::sync::atomic::AtomicU8>);
+
+impl HostKeyVerdict {
+    fn refuse(&self, reason: HostKeyRefusal) {
+        self.0
+            .store(reason as u8, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The error for a failed connect: the refusal the handler noted, or
+    /// a plain connection failure carrying the transport error text.
+    fn connect_error(&self, transport: impl std::fmt::Display) -> SessionError {
+        const MISMATCH: u8 = HostKeyRefusal::Mismatch as u8;
+        const NO_PIN: u8 = HostKeyRefusal::NoPin as u8;
+        const CERTIFICATE: u8 = HostKeyRefusal::Certificate as u8;
+        // Zero, the initial value, means the handler refused nothing.
+        match self.0.load(std::sync::atomic::Ordering::SeqCst) {
+            MISMATCH => SessionError::HostKeyMismatch,
+            NO_PIN => SessionError::NoPinnedHostKey,
+            CERTIFICATE => SessionError::HostCertificateRefused,
+            _ => SessionError::ConnectionFailed(transport.to_string()),
+        }
+    }
+}
+
 /// Handler for SSH client events.
 struct SshHandler {
     session_id: String,
     /// Expected host key for verification (OpenSSH format).
     expected_host_key: Option<String>,
+    verdict: HostKeyVerdict,
 }
 
 impl SshHandler {
@@ -750,6 +790,7 @@ impl SshHandler {
         Self {
             session_id,
             expected_host_key,
+            verdict: HostKeyVerdict::default(),
         }
     }
 }
@@ -772,6 +813,7 @@ impl client::Handler for SshHandler {
                 session_id = %self.session_id,
                 "SSH session refused: server presented a host certificate"
             );
+            self.verdict.refuse(HostKeyRefusal::Certificate);
             return Ok(false);
         };
         let received_key = server_public_key
@@ -784,6 +826,7 @@ impl client::Handler for SshHandler {
                 key_type = ?server_public_key.algorithm(),
                 "SSH session refused: no pinned host key"
             );
+            self.verdict.refuse(HostKeyRefusal::NoPin);
             return Ok(false);
         }
 
@@ -806,6 +849,7 @@ impl client::Handler for SshHandler {
              Connection refused. Update the stored host key if \
              the server key was intentionally changed."
         );
+        self.verdict.refuse(HostKeyRefusal::Mismatch);
         Ok(false)
     }
 }
@@ -1318,18 +1362,23 @@ mod host_key_behavioural_tests {
                 "host key mismatch must refuse KEX, but SshSession::connect \
                  returned Ok -- this is the regression issue #34 was about"
             ),
-            Err(SessionError::ConnectionFailed(_)) => {
+            Err(error @ SessionError::HostKeyMismatch) => {
                 // Expected: check_server_key returned Ok(false), russh
-                // aborted the handshake before any auth packet.
+                // aborted the handshake before any auth packet, and the
+                // refusal is reported as its own variant, not as text.
+                assert_eq!(
+                    error.open_failure(),
+                    shared::messages::SshOpenFailure::HostKeyMismatch
+                );
             }
             Err(SessionError::AuthenticationFailed(_)) => {
                 panic!(
-                    "expected ConnectionFailed (KEX aborted by \
+                    "expected HostKeyMismatch (KEX aborted by \
                      check_server_key), got AuthenticationFailed -- \
                      this means the mismatched key was accepted"
                 )
             }
-            Err(other) => panic!("expected ConnectionFailed (KEX aborted), got {:?}", other),
+            Err(other) => panic!("expected HostKeyMismatch (KEX aborted), got {:?}", other),
         }
     }
 
@@ -1422,16 +1471,20 @@ mod host_key_behavioural_tests {
             let result = SshSession::connect(config).await;
 
             match result {
-                Err(SessionError::ConnectionFailed(_)) => {
+                Err(error @ SessionError::NoPinnedHostKey) => {
                     // KEX aborted by `check_server_key`: nothing was sent
                     // to authenticate.
+                    assert_eq!(
+                        error.open_failure(),
+                        shared::messages::SshOpenFailure::NoPinnedHostKey
+                    );
                 }
                 Err(SessionError::AuthenticationFailed(_)) => panic!(
                     "{expected_host_key:?}: the key exchange was accepted \
                      without a pinned host key"
                 ),
                 Err(other) => panic!(
-                    "{expected_host_key:?}: expected ConnectionFailed (KEX \
+                    "{expected_host_key:?}: expected NoPinnedHostKey (KEX \
                      aborted), got {other:?}"
                 ),
                 Ok(_) => panic!("{expected_host_key:?}: a session without a pin must not open"),
