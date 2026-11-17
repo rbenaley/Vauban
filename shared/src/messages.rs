@@ -4090,6 +4090,26 @@ pub enum Message {
         relative_path: String,
         source: Service,
     },
+
+    /// Web -> Supervisor: present the session token of a session before
+    /// any connection is brokered for it, so the supervisor knows which
+    /// service serves it.
+    ///
+    /// An IACS session records from the moment the operator
+    /// authenticates, before its first channel asks for a connection.
+    /// The token is verified exactly as for a `TcpConnectRequest`
+    /// (same host, port, target service and session), the session is
+    /// recorded for `target_service`, and no socket is opened. Answered
+    /// by [`Message::TcpConnectResponse`]. Caller = web only, target =
+    /// `ProxyIacs` only. Appended at END.
+    SessionClaimRequest {
+        request_id: u64,
+        session_id: String,
+        host: String,
+        port: u16,
+        target_service: Service,
+        session_token: Vec<u8>,
+    },
 }
 
 /// Largest payload of one [`Message::McpRelayBody`] or [`Message::McpTunnelData`].
@@ -4153,6 +4173,7 @@ impl Message {
             | Message::AuditLogFileRequest { request_id, .. }
             | Message::AuditLogFileResponse { request_id, .. }
             | Message::TcpConnectRequest { request_id, .. }
+            | Message::SessionClaimRequest { request_id, .. }
             | Message::TcpConnectResponse { request_id, .. }
             | Message::AccessRequest { request_id, .. }
             | Message::AccessResponse { request_id, .. }

@@ -3526,26 +3526,6 @@ fn recorder_service_key(source: Service) -> Option<&'static str> {
     }
 }
 
-/// Whether the session directory of an IACS lease already holds the
-/// media of another recorder (`file_broker::FOREIGN_TO_IACS`).
-///
-/// IACS writes `session.json` before any token names the session, so the
-/// owner table cannot vouch for it. The directory can: a session that
-/// has an SSH, RDP or MCP recording is not an IACS session.
-fn session_dir_holds_foreign_media(
-    storage_base: &str,
-    session_id: &str,
-    relative_path: &str,
-) -> bool {
-    let Some(dir) = file_broker::session_dir(session_id, relative_path) else {
-        return true;
-    };
-    let dir = std::path::Path::new(storage_base).join(dir);
-    file_broker::FOREIGN_TO_IACS
-        .iter()
-        .any(|media| dir.join(media).symlink_metadata().is_ok())
-}
-
 /// How `handle_recording_file_request` opens the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecordingOpen {
@@ -3709,6 +3689,96 @@ fn handle_recording_file_request(
             success: true,
             error: None,
         });
+}
+
+/// The one caller of a session claim.
+const SESSION_CLAIM_CALLER: &str = "web";
+
+/// Handle a `SessionClaimRequest`: record which service serves a session
+/// from its token, without brokering a connection.
+///
+/// An IACS session records from the moment the operator authenticates.
+/// Its first `TcpConnectRequest` comes later, with the first channel, or
+/// never. vauban-web presents the token when it opens the tunnel so that
+/// the file broker knows the session is `proxy_iacs`'s before audit asks
+/// for `session.json`.
+///
+/// - **caller**: `web` only. A proxy that could claim would claim the
+///   session of another.
+/// - **target**: `ProxyIacs` only. The other recorders are recorded by
+///   their connection.
+/// - **token**: verified as for a connection, bound to
+///   `(host, port, target_service, session_id)`. No sandboxed service
+///   can mint one.
+/// - **no socket**: nothing is resolved, nothing is connected.
+///
+/// Answered with `TcpConnectResponse`; a refusal carries the fixed text
+/// `Access denied`.
+fn handle_session_claim(
+    payload: TcpConnectPayload,
+    requesting_channel: &IpcChannel,
+    requesting_service_key: &str,
+) {
+    let TcpConnectPayload {
+        request_id,
+        session_id,
+        host,
+        port,
+        target_service,
+        session_token,
+    } = payload;
+    let answer = |success: bool| {
+        let _ = requesting_channel.send(&Message::TcpConnectResponse {
+            request_id,
+            session_id: session_id.clone(),
+            success,
+            error: (!success).then(|| "Access denied".to_string()),
+        });
+    };
+
+    if requesting_service_key != SESSION_CLAIM_CALLER || target_service != Service::ProxyIacs {
+        warn!(
+            service = requesting_service_key,
+            target = ?target_service,
+            "Refused session claim: caller or target not allowed"
+        );
+        answer(false);
+        return;
+    }
+    let Some(key) = SESSION_TOKEN_KEY.get() else {
+        error!("SessionClaimRequest received before SESSION_TOKEN_KEY init; fail-closed deny");
+        answer(false);
+        return;
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let verifier = Verifier::Supervisor {
+        host,
+        port,
+        target_service: target_service.as_token_discriminant(),
+        session_id: session_id.clone(),
+    };
+    // No replay check: an IACS token is presented again for every
+    // channel of the session, by design.
+    let token = match SessionToken::verify_bytes(&session_token, key, now, &verifier) {
+        Ok(token) => token,
+        Err(e) => {
+            warn!(session_id = ?session_id, "session claim token rejected: {e}; fail-closed deny");
+            answer(false);
+            return;
+        }
+    };
+    if !session_owner::record(&token.session_id, "proxy_iacs") {
+        warn!(
+            session_id = ?session_id,
+            "session claim refused: the session is served by another service"
+        );
+        answer(false);
+        return;
+    }
+    answer(true);
 }
 
 /// Validate a WORM audit segment name.
@@ -4194,6 +4264,27 @@ fn dispatch_service_message(
                 kerberos,
             );
         }
+        Message::SessionClaimRequest {
+            request_id,
+            session_id,
+            host,
+            port,
+            target_service,
+            session_token,
+        } => {
+            handle_session_claim(
+                TcpConnectPayload {
+                    request_id,
+                    session_id,
+                    host,
+                    port,
+                    target_service,
+                    session_token,
+                },
+                &state.channel,
+                service_key,
+            );
+        }
         // The paths, the email and the EAB credentials of the request are
         // not bound: `acme::authorize_renewal` takes them from `tls`, the
         // supervisor's own configuration. The supervisor writes as root.
@@ -4315,14 +4406,6 @@ fn dispatch_service_message(
             let owner = session_owner::owner(&session_id);
             let lease = recorder_service_key(source).and_then(|source_key| {
                 file_broker::audit_lease(source_key, &session_id, &relative_path, owner.as_deref())
-                    .filter(|_| {
-                        source_key != "proxy_iacs"
-                            || !session_dir_holds_foreign_media(
-                                recording_storage_path,
-                                &session_id,
-                                &relative_path,
-                            )
-                    })
             });
             let Some(lease) = lease else {
                 warn!(
@@ -4417,12 +4500,9 @@ fn dispatch_service_message(
                 });
                 return;
             }
-            // A capture belongs to an IACS session: one with no recorded
-            // owner yet, or served by proxy_iacs.
-            let iacs_session = matches!(
-                session_owner::owner(&session_id).as_deref(),
-                None | Some("proxy_iacs")
-            );
+            // A capture belongs to an IACS session: one served by
+            // proxy_iacs.
+            let iacs_session = session_owner::owner(&session_id).as_deref() == Some("proxy_iacs");
             if !iacs_session || !file_broker::is_raw_capture(&session_id, &relative_path) {
                 warn!(
                     service = service_key,
@@ -5989,9 +6069,25 @@ mod tests {
         let source = supervisor_prod_source();
         assert_eq!(
             source.matches("session_owner::record(").count(),
-            1,
-            "exactly one production writer of the owner table"
+            2,
+            "two production writers of the owner table: the TCP broker and the session claim"
         );
+        let claim = source
+            .split("fn handle_session_claim(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("the session claim");
+        let verify_claim = claim.find("SessionToken::verify_bytes(").expect("verify");
+        let record_claim = claim
+            .find(r#"session_owner::record(&token.session_id, "proxy_iacs")"#)
+            .expect("the claim records the token's session for proxy_iacs");
+        assert!(verify_claim < record_claim, "verify, then record");
+        for socket in ["resolve_tcp_targets(", "connect(", "send_fd("] {
+            assert!(
+                !claim.contains(socket),
+                "a claim opens no socket ({socket})"
+            );
+        }
         let broker = source
             .split("fn handle_tcp_connect_request(")
             .nth(1)
@@ -6166,30 +6262,177 @@ mod tests {
         assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
     }
 
-    /// IACS files are written before any token. A proxy_iacs that names
-    /// the session of another recorder is stopped by what is on disk.
+    /// An IACS file needs a session recorded for proxy_iacs. A session no
+    /// token was presented for, whatever its directory holds, is refused.
     #[test]
-    fn attack_iacs_files_in_a_directory_of_another_recorder_are_rejected() {
-        for media in file_broker::FOREIGN_TO_IACS {
-            let dir = tempfile::tempdir().unwrap();
-            let sid = unowned_session();
-            seed(dir.path(), &format!("2026/11/{sid}/{media}"), b"media");
-            for file in ["session.json", "meta.json", "channels/001.pcap"] {
-                let relative = format!("2026/11/{sid}/{file}");
-                let (replies, fd) = dispatch_with_fd_socket(
-                    "audit",
-                    audit_request(&sid, &relative, Service::ProxyIacs),
-                    dir.path(),
-                );
-                assert_eq!(
-                    recording_refusal(&replies).as_deref(),
-                    Some(file_broker::PATH_NOT_ALLOWED),
-                    "{media} {file}"
-                );
-                assert!(fd.is_none());
-                assert!(!dir.path().join(&relative).exists(), "{media} {file}");
-            }
+    fn attack_iacs_files_for_a_session_without_a_token_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let sid = unowned_session();
+        for file in ["session.json", "meta.json", "channels/001.pcap"] {
+            let relative = format!("2026/11/{sid}/{file}");
+            let (replies, fd) = dispatch_with_fd_socket(
+                "audit",
+                audit_request(&sid, &relative, Service::ProxyIacs),
+                dir.path(),
+            );
+            assert_eq!(
+                recording_refusal(&replies).as_deref(),
+                Some(file_broker::PATH_NOT_ALLOWED),
+                "{file}"
+            );
+            assert!(fd.is_none());
         }
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+    }
+
+    /// Present a session claim as `service_key` and return what it reads
+    /// back.
+    fn claim_as(
+        service_key: &str,
+        session_id: &str,
+        target: Service,
+        token: Vec<u8>,
+    ) -> Vec<Message> {
+        let (state, channel) = broker_test_child(service_key);
+        handle_session_claim(
+            TcpConnectPayload {
+                request_id: 31,
+                session_id: session_id.to_string(),
+                host: "192.0.2.1".to_string(),
+                port: 22,
+                target_service: target,
+                session_token: token,
+            },
+            &state.channel,
+            service_key,
+        );
+        let mut replies = Vec::new();
+        while let Ok(reply) = channel.try_recv() {
+            replies.push(reply);
+        }
+        replies
+    }
+
+    fn claim_accepted(replies: &[Message]) -> bool {
+        match replies {
+            [
+                Message::TcpConnectResponse {
+                    request_id: 31,
+                    success,
+                    error,
+                    ..
+                },
+            ] => {
+                assert_eq!(*success, error.is_none());
+                if let Some(text) = error {
+                    assert_eq!(text, "Access denied", "a refusal carries the fixed text");
+                }
+                *success
+            }
+            other => panic!("expected one TcpConnectResponse, got {other:?}"),
+        }
+    }
+
+    /// vauban-web presents the IACS token when it opens the tunnel: the
+    /// session is recorded for proxy_iacs, and audit then obtains
+    /// `session.json` before any channel exists.
+    #[test]
+    fn test_iacs_claim_records_the_session_and_opens_the_bundle() {
+        use std::io::Write;
+        let sid = unowned_session();
+        let replies = claim_as(
+            "web",
+            &sid,
+            Service::ProxyIacs,
+            token_for(&sid, Service::ProxyIacs, "iacs_tunnel"),
+        );
+        assert!(claim_accepted(&replies));
+        assert_eq!(session_owner::owner(&sid).as_deref(), Some("proxy_iacs"));
+
+        // The token is presented again by every channel: still accepted.
+        let again = claim_as(
+            "web",
+            &sid,
+            Service::ProxyIacs,
+            token_for(&sid, Service::ProxyIacs, "iacs_tunnel"),
+        );
+        assert!(claim_accepted(&again));
+
+        let dir = tempfile::tempdir().unwrap();
+        let relative = format!("2026/11/{sid}/session.json");
+        let (replies, fd) = dispatch_with_fd_socket(
+            "audit",
+            audit_request(&sid, &relative, Service::ProxyIacs),
+            dir.path(),
+        );
+        assert!(lease_granted(&replies), "{replies:?}");
+        fd.expect("descriptor").write_all(b"{}").unwrap();
+    }
+
+    /// A proxy that could claim would claim the session of another.
+    #[test]
+    fn attack_session_claim_from_a_proxy_is_rejected() {
+        for service in ["proxy_iacs", "proxy_ssh", "proxy_rdp", "proxy_mcp", "audit"] {
+            let sid = unowned_session();
+            let replies = claim_as(
+                service,
+                &sid,
+                Service::ProxyIacs,
+                token_for(&sid, Service::ProxyIacs, "iacs_tunnel"),
+            );
+            assert!(!claim_accepted(&replies), "{service}");
+            assert_eq!(session_owner::owner(&sid), None, "{service}");
+        }
+    }
+
+    /// The claim exists for IACS. The other recorders are recorded by
+    /// their connection; a claim for them is refused even with a token
+    /// that is valid for them.
+    #[test]
+    fn attack_session_claim_for_another_target_is_rejected() {
+        for (target, protocol) in [
+            (Service::ProxySsh, "ssh"),
+            (Service::ProxyRdp, "rdp"),
+            (Service::ProxyMcp, "mcp"),
+        ] {
+            let sid = unowned_session();
+            let replies = claim_as("web", &sid, target, token_for(&sid, target, protocol));
+            assert!(!claim_accepted(&replies), "{target:?}");
+            assert_eq!(session_owner::owner(&sid), None, "{target:?}");
+        }
+    }
+
+    #[test]
+    fn attack_session_claim_with_a_bad_token_records_nothing() {
+        let sid = unowned_session();
+        let other = unowned_session();
+        for token in [
+            Vec::new(),
+            vec![7u8; 96],
+            // A valid IACS token of another session.
+            token_for(&other, Service::ProxyIacs, "iacs_tunnel"),
+            // A valid token of this session for another service.
+            token_for(&sid, Service::ProxySsh, "ssh"),
+        ] {
+            let replies = claim_as("web", &sid, Service::ProxyIacs, token);
+            assert!(!claim_accepted(&replies));
+            assert_eq!(session_owner::owner(&sid), None);
+        }
+    }
+
+    /// INV-1 through the claim: a session another service serves stays
+    /// its own.
+    #[test]
+    fn attack_session_claim_for_a_session_another_service_serves_is_rejected() {
+        let sid = session_served_by("proxy_rdp");
+        let replies = claim_as(
+            "web",
+            &sid,
+            Service::ProxyIacs,
+            token_for(&sid, Service::ProxyIacs, "iacs_tunnel"),
+        );
+        assert!(!claim_accepted(&replies));
+        assert_eq!(session_owner::owner(&sid).as_deref(), Some("proxy_rdp"));
     }
 
     /// Only audit may send the on-behalf request.
@@ -6339,15 +6582,14 @@ mod tests {
     }
 
     /// Audit writes the seal of an SSH or RDP session for the proxy that
-    /// serves it, and the IACS bundle before and after the first token.
+    /// serves it, and the IACS bundle of a session proxy_iacs serves.
     #[test]
     fn test_audit_lease_creates_the_files_it_writes() {
         use std::io::Write;
-        let cases: [(Service, Option<&str>, &str); 7] = [
+        let cases: [(Service, Option<&str>, &str); 6] = [
             (Service::ProxySsh, Some("proxy_ssh"), "meta.json"),
             (Service::ProxyRdp, Some("proxy_rdp"), "meta.json"),
-            (Service::ProxyIacs, None, "session.json"),
-            (Service::ProxyIacs, None, "meta.json"),
+            (Service::ProxyIacs, Some("proxy_iacs"), "session.json"),
             (Service::ProxyIacs, Some("proxy_iacs"), "channels/001.pcap"),
             (
                 Service::ProxyIacs,

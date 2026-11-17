@@ -267,6 +267,44 @@ impl SupervisorClient {
         }
     }
 
+    /// Present the session token of a session to the supervisor before
+    /// any connection is brokered for it, so the supervisor knows which
+    /// service serves it. No socket is opened.
+    ///
+    /// Used for IACS: the session records from the moment the operator
+    /// authenticates, before its first channel asks for a connection.
+    /// Answered like a TCP connect.
+    pub async fn claim_session(
+        &self,
+        session_id: &str,
+        host: &str,
+        port: u16,
+        target_service: Service,
+        session_token: Vec<u8>,
+    ) -> Result<TcpConnectResult, String> {
+        let request_id = self.inner.next_request_id.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = oneshot::channel();
+        let _guard =
+            CorrelatedIpcCore::insert_pending(&self.inner.pending_tcp_connects, request_id, tx);
+
+        let msg = Message::SessionClaimRequest {
+            request_id,
+            session_id: session_id.to_string(),
+            host: host.to_string(),
+            port,
+            target_service,
+            session_token,
+        };
+        if let Err(e) = self.inner.channel.send(&msg) {
+            return Err(format!("Failed to send SessionClaimRequest: {}", e));
+        }
+        match tokio::time::timeout(Duration::from_secs(10), rx).await {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(_)) => Err("Response channel dropped".to_string()),
+            Err(_) => Err("Session claim timeout".to_string()),
+        }
+    }
+
     /// Request the supervisor to open a recording file (read-only) and pass
     /// the FD via SCM_RIGHTS. Returns the opened file on success.
     pub async fn request_recording_file(

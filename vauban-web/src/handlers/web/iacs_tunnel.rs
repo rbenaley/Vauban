@@ -485,6 +485,42 @@ pub async fn connect_iacs(
         }
     };
 
+    // Tell the supervisor which service serves this session before the
+    // proxy knows about it. An IACS session records from the moment the
+    // operator authenticates (`session.json`), before its first channel
+    // asks for a connection: without this, the file broker could not
+    // tell that the session is proxy-iacs's and would refuse its files.
+    // The supervisor verifies the token; nothing is connected. Without
+    // a supervisor (unsandboxed development) there is no file broker.
+    if let Some(supervisor) = state.supervisor.as_deref() {
+        let claimed = supervisor
+            .claim_session(
+                &session_uuid.to_string(),
+                &asset.hostname,
+                asset.port as u16,
+                shared::messages::Service::ProxyIacs,
+                session_token.clone(),
+            )
+            .await;
+        if !matches!(&claimed, Ok(result) if result.success) {
+            tracing::warn!(
+                user = %auth_user.username,
+                session_uuid = %session_uuid,
+                outcome = ?claimed.as_ref().map(|result| result.success),
+                "iacs_tunnel: supervisor refused the session claim -- rolling back"
+            );
+            let _ =
+                diesel::delete(proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)))
+                    .execute(&mut conn)
+                    .await;
+            return iacs_tunnel_error_response(
+                &headers,
+                StatusCode::BAD_GATEWAY,
+                "The bastion could not register this session. See the server logs.",
+            );
+        }
+    }
+
     let open_req = crate::ipc::IacsTunnelOpenRequest {
         session_id: session_uuid.to_string(),
         user_uuid: auth_user.uuid.clone(),

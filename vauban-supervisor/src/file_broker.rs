@@ -34,11 +34,11 @@
 //! A raw capture is unlinked under the same shape rule
 //! ([`is_raw_capture`]).
 //!
-//! IACS is the one case the token does not cover: `session.json` is
-//! written when the operator authenticates, before any channel presents
-//! the token. An IACS file is therefore granted while the session has no
-//! recorded owner, and refused in a directory that already holds the
-//! media of another recorder ([`FOREIGN_TO_IACS`]).
+//! An IACS session records from the moment the operator authenticates,
+//! before its first channel asks for a connection. vauban-web therefore
+//! presents the session token when it opens the tunnel
+//! (`SessionClaimRequest`), so the session is recorded for `proxy_iacs`
+//! before audit asks for `session.json`.
 
 /// A file operation a service can request from the supervisor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,10 +181,6 @@ pub fn is_raw_capture(session_id: &str, relative_path: &str) -> bool {
     )
 }
 
-/// Media files whose presence in a session directory shows that the
-/// session is not an IACS one. Checked before an IACS file is created.
-pub const FOREIGN_TO_IACS: [&str; 3] = ["session.cast", "session.mcp.jsonl", "001.mp4"];
-
 /// Decide whether proxy `service_key` may obtain a write lease on
 /// `relative_path` for `session_id`, and how the file is opened.
 ///
@@ -224,9 +220,9 @@ pub fn write_lease(
 ///
 /// - `proxy_ssh`, `proxy_rdp`: the seal `meta.json`, and only when that
 ///   proxy serves the session.
-/// - `proxy_iacs`: the IACS bundle. The session must have no recorded
-///   owner or be an IACS one; the caller must also check
-///   [`FOREIGN_TO_IACS`] on disk.
+/// - `proxy_iacs`: the IACS bundle, and only when `proxy_iacs` serves
+///   the session (vauban-web presents the token when it opens the
+///   tunnel).
 /// - anything else: refused (`proxy_mcp` writes its own files).
 pub fn audit_lease(
     source: &str,
@@ -239,7 +235,7 @@ pub fn audit_lease(
         ("proxy_ssh" | "proxy_rdp", ["meta.json"]) if owner == Some(source) => {
             Some(WriteLease::CreateNew)
         }
-        ("proxy_iacs", file) if owner.is_none() || owner == Some("proxy_iacs") => match file {
+        ("proxy_iacs", file) if owner == Some("proxy_iacs") => match file {
             ["session.json"] => Some(WriteLease::Rewrite),
             ["meta.json"] => Some(WriteLease::CreateNew),
             ["channels", capture]
@@ -251,19 +247,6 @@ pub fn audit_lease(
         },
         _ => None,
     }
-}
-
-/// The session directory of a well-formed lease path
-/// (`YYYY/MM/<session_id>`), for the on-disk IACS check.
-pub fn session_dir(session_id: &str, relative_path: &str) -> Option<String> {
-    session_file(session_id, relative_path)?;
-    let mut parts = relative_path.splitn(4, '/');
-    Some(format!(
-        "{}/{}/{}",
-        parts.next()?,
-        parts.next()?,
-        parts.next()?
-    ))
 }
 
 #[cfg(test)]
@@ -550,12 +533,14 @@ mod tests {
         }
     }
 
-    /// IACS writes `session.json` before any token is presented.
+    /// An IACS file needs the session to be recorded for proxy_iacs: a
+    /// session no token was presented for is refused.
     #[test]
-    fn test_iacs_files_are_granted_before_the_first_token() {
-        for file in ["session.json", "meta.json", "channels/001.pcap"] {
-            assert!(
-                audit_lease("proxy_iacs", SID, &format!("2026/11/{SID}/{file}"), None).is_some(),
+    fn attack_iacs_files_for_a_session_without_a_token_are_rejected() {
+        for file in FILES {
+            assert_eq!(
+                audit_lease("proxy_iacs", SID, &format!("2026/11/{SID}/{file}"), None),
+                None,
                 "{file}"
             );
         }
@@ -621,7 +606,7 @@ mod tests {
                 "{forged:?}"
             );
             assert_eq!(
-                audit_lease("proxy_iacs", forged, &victim, None),
+                audit_lease("proxy_iacs", forged, &victim, Some("proxy_iacs")),
                 None,
                 "{forged:?}"
             );
@@ -672,14 +657,6 @@ mod tests {
         ] {
             assert_eq!(on_behalf("proxy_iacs", file), None, "{file}");
         }
-    }
-
-    #[test]
-    fn test_session_dir_is_the_first_three_components() {
-        assert_eq!(
-            session_dir(SID, &format!("2026/11/{SID}/channels/001.pcap")).as_deref(),
-            Some(format!("2026/11/{SID}").as_str())
-        );
     }
 
     #[test]
