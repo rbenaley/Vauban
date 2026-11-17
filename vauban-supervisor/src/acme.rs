@@ -55,16 +55,19 @@ pub enum AcmeRefusal {
     DirectoryMismatch,
     /// The request names a domain that is not in the configured list.
     DomainNotConfigured,
+    /// Too many renewals were started recently ([`RenewThrottle`]).
+    TooSoon,
 }
 
 impl AcmeRefusal {
     #[cfg(test)]
-    pub const ALL: [AcmeRefusal; 5] = [
+    pub const ALL: [AcmeRefusal; 6] = [
         AcmeRefusal::CallerNotAllowed,
         AcmeRefusal::Disabled,
         AcmeRefusal::NotConfigured,
         AcmeRefusal::DirectoryMismatch,
         AcmeRefusal::DomainNotConfigured,
+        AcmeRefusal::TooSoon,
     ];
 
     pub fn code(self) -> &'static str {
@@ -74,6 +77,7 @@ impl AcmeRefusal {
             AcmeRefusal::NotConfigured => "acme_not_configured",
             AcmeRefusal::DirectoryMismatch => "acme_directory_mismatch",
             AcmeRefusal::DomainNotConfigured => "acme_domain_not_configured",
+            AcmeRefusal::TooSoon => "acme_too_soon",
         }
     }
 }
@@ -131,12 +135,80 @@ pub fn authorize_renewal(
         directory_url: directory_url.to_string(),
         domains: acme.domains.clone(),
         email: acme.email.clone(),
-        account_key_path: acme.account_key_path.clone(),
-        cert_path: tls.cert_path.clone(),
-        key_path: tls.key_path.clone(),
+        account_key_path: absolute_path(&acme.account_key_path)?,
+        cert_path: absolute_path(&tls.cert_path)?,
+        key_path: absolute_path(&tls.key_path)?,
         eab_kid,
         eab_hmac_key,
     })
+}
+
+/// A configured path as an absolute one.
+///
+/// The supervisor writes these files as root. A relative path is
+/// resolved here, once, against the directory the supervisor runs in, so
+/// what is written, and what the log says was written, is an absolute
+/// path rather than whatever the working directory is at write time.
+fn absolute_path(configured: &str) -> Result<String, AcmeRefusal> {
+    std::path::absolute(configured)
+        .ok()
+        .and_then(|path| path.to_str().map(str::to_string))
+        .ok_or(AcmeRefusal::NotConfigured)
+}
+
+/// Renewals started in any [`RENEW_WINDOW`].
+pub const RENEW_BURST: usize = 3;
+/// See [`RENEW_BURST`].
+pub const RENEW_WINDOW: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// Bound on how often a renewal runs.
+///
+/// A renewal talks to the certificate authority and runs on the
+/// supervisor's own loop. vauban-web asks once per renewal window, so a
+/// legitimate caller never comes near the bound; a caller that asks in a
+/// loop would stall the supervisor and exhaust the authority's rate
+/// limits. Three starts per fifteen minutes leaves an operator room to
+/// correct a configuration and try again.
+#[derive(Debug, Default)]
+pub struct RenewThrottle {
+    starts: std::collections::VecDeque<std::time::Instant>,
+}
+
+impl RenewThrottle {
+    /// Whether a renewal may start at `now`. An admitted start counts
+    /// against the bound; a refused one does not.
+    pub fn admit(&mut self, now: std::time::Instant) -> bool {
+        while let Some(oldest) = self.starts.front() {
+            if now.duration_since(*oldest) >= RENEW_WINDOW {
+                self.starts.pop_front();
+            } else {
+                break;
+            }
+        }
+        if self.starts.len() >= RENEW_BURST {
+            return false;
+        }
+        self.starts.push_back(now);
+        true
+    }
+}
+
+static RENEW_THROTTLE: std::sync::OnceLock<std::sync::Mutex<RenewThrottle>> =
+    std::sync::OnceLock::new();
+
+/// Count a renewal that is about to start. `Err(TooSoon)` when the bound
+/// is reached, or when the throttle cannot be locked (fail closed).
+pub fn admit_renewal() -> Result<(), AcmeRefusal> {
+    let admitted = RENEW_THROTTLE
+        .get_or_init(Default::default)
+        .lock()
+        .map(|mut throttle| throttle.admit(std::time::Instant::now()))
+        .unwrap_or(false);
+    if admitted {
+        Ok(())
+    } else {
+        Err(AcmeRefusal::TooSoon)
+    }
 }
 
 /// Answer a refused renewal request with its code only.
@@ -519,25 +591,57 @@ fn atomic_write_pem(path: &str, data: &str) -> Result<(), Box<dyn std::error::Er
             .map_err(|e| format!("Failed to create directory {}: {}", parent.display(), e))?;
     }
 
-    let temp_path = path.with_extension("tmp");
-    let mut file = std::fs::File::create(&temp_path)
-        .map_err(|e| format!("Failed to create temp file: {}", e))?;
-
+    // A name nothing else uses, created exclusively and private from the
+    // first byte. The old `<file>.tmp` was opened with `File::create`: it
+    // followed a symlink left at that name, truncated whatever was
+    // there, and was readable under the umask until the chmod.
+    let temp_path = temp_sibling(path);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| format!("Failed to set file permissions: {}", e))?;
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&temp_path)
+        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+
+    let written = file
+        .write_all(data.as_bytes())
+        .map_err(|e| format!("Failed to write data: {}", e))
+        .and_then(|()| {
+            file.sync_all()
+                .map_err(|e| format!("Failed to sync file: {}", e))
+        })
+        .and_then(|()| {
+            std::fs::rename(&temp_path, path)
+                .map_err(|e| format!("Failed to atomically rename: {}", e))
+        });
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(e.into());
     }
 
-    file.write_all(data.as_bytes())
-        .map_err(|e| format!("Failed to write data: {}", e))?;
-    file.sync_all()
-        .map_err(|e| format!("Failed to sync file: {}", e))?;
-
-    std::fs::rename(&temp_path, path).map_err(|e| format!("Failed to atomically rename: {}", e))?;
-
     Ok(())
+}
+
+/// `<file>.<pid>.<nanoseconds>.<counter>.tmp`, next to `path`.
+fn temp_sibling(path: &Path) -> std::path::PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let suffix = format!(
+        ".{}.{}.{}.tmp",
+        std::process::id(),
+        nanos,
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
+    std::path::PathBuf::from(name)
 }
 
 /// Send an `AcmeRenewResponse` back to vauban-web.
@@ -898,5 +1002,119 @@ mod tests {
             .windows(oid_encoded.len())
             .any(|w| w == oid_encoded);
         assert!(found, "Certificate must contain acmeIdentifier OID");
+    }
+
+    #[test]
+    fn test_renew_throttle_admits_a_burst_then_refuses() {
+        let mut throttle = RenewThrottle::default();
+        let t0 = std::time::Instant::now();
+        for i in 0..RENEW_BURST {
+            assert!(throttle.admit(t0 + std::time::Duration::from_secs(i as u64)));
+        }
+        assert!(!throttle.admit(t0 + std::time::Duration::from_secs(10)));
+    }
+
+    /// A caller asking in a loop: however often it asks, no more than the
+    /// bound is admitted in any window.
+    #[test]
+    fn attack_renewal_requested_in_a_loop_is_bounded() {
+        let mut throttle = RenewThrottle::default();
+        let t0 = std::time::Instant::now();
+        let mut admitted = Vec::new();
+        for second in 0..(3 * RENEW_WINDOW.as_secs()) {
+            let now = t0 + std::time::Duration::from_secs(second);
+            if throttle.admit(now) {
+                admitted.push(now);
+            }
+        }
+        assert_eq!(admitted.len(), 3 * RENEW_BURST);
+        for window in admitted.windows(RENEW_BURST + 1) {
+            assert!(
+                window[RENEW_BURST].duration_since(window[0]) >= RENEW_WINDOW,
+                "more than {RENEW_BURST} renewals inside one window"
+            );
+        }
+    }
+
+    #[test]
+    fn test_refused_start_does_not_count() {
+        let mut throttle = RenewThrottle::default();
+        let t0 = std::time::Instant::now();
+        for _ in 0..RENEW_BURST {
+            assert!(throttle.admit(t0));
+        }
+        for second in 1..100 {
+            assert!(!throttle.admit(t0 + std::time::Duration::from_secs(second)));
+        }
+        // The window is counted from the admitted starts only.
+        assert!(throttle.admit(t0 + RENEW_WINDOW));
+    }
+
+    #[test]
+    fn test_renewal_paths_are_made_absolute() {
+        let mut tls = configured();
+        tls.cert_path = "certs/server.crt".to_string();
+        tls.key_path = "certs/server.key".to_string();
+        tls.acme.account_key_path = "acme/account.pem".to_string();
+        let directory = tls.acme.resolved_directory_url().unwrap().to_string();
+        let domains = tls.acme.domains.clone();
+        let params = authorize_renewal(RENEW_CALLER, &tls, 1, &directory, &domains).unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        for (path, relative) in [
+            (&params.cert_path, "certs/server.crt"),
+            (&params.key_path, "certs/server.key"),
+            (&params.account_key_path, "acme/account.pem"),
+        ] {
+            assert!(Path::new(path).is_absolute(), "{path}");
+            assert_eq!(Path::new(path), cwd.join(relative));
+        }
+    }
+
+    #[test]
+    fn test_atomic_write_creates_a_private_file_and_leaves_no_temp() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("server.key");
+        atomic_write_pem(target.to_str().unwrap(), "first").unwrap();
+        atomic_write_pem(target.to_str().unwrap(), "second").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "second");
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["server.key"], "no temporary file may remain");
+    }
+
+    /// The old temporary name was `<file>.tmp`, opened with
+    /// `File::create`: a symlink left there was followed and its target
+    /// truncated.
+    #[test]
+    fn attack_symlink_at_the_old_temp_name_is_not_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, "untouched").unwrap();
+        let target = dir.path().join("server.key");
+        std::os::unix::fs::symlink(&victim, target.with_extension("tmp")).unwrap();
+
+        atomic_write_pem(target.to_str().unwrap(), "secret key").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "secret key");
+    }
+
+    #[test]
+    fn test_temp_names_differ_between_calls() {
+        let path = Path::new("/x/server.key");
+        let first = temp_sibling(path);
+        let second = temp_sibling(path);
+        assert_ne!(first, second);
+        for name in [first, second] {
+            assert_eq!(name.parent(), path.parent());
+            assert!(name.to_str().unwrap().starts_with("/x/server.key."));
+        }
     }
 }

@@ -4203,7 +4203,11 @@ fn dispatch_service_message(
             domains,
             ..
         } => {
-            match acme::authorize_renewal(service_key, tls, request_id, &directory_url, &domains) {
+            // Authorized first, counted second: a refused request does not
+            // use up the renewal bound.
+            match acme::authorize_renewal(service_key, tls, request_id, &directory_url, &domains)
+                .and_then(|params| acme::admit_renewal().map(|()| params))
+            {
                 Ok(params) => {
                     info!(
                         request_id = request_id,
