@@ -1430,6 +1430,32 @@ Forms use the Alpine.js double-submit cookie pattern for CSRF protection:
 2. Alpine.js reads the cookie and includes the token in the form submission
 3. Server validates that the form token matches the cookie token
 
+### 9.5.1 Trust-anchor mismatch flags
+
+`connection_config.ssh_host_key_mismatch` and
+`connection_config.rdp_server_cert_mismatch` say that the identity a
+target presented is not the pinned one. While one is set, the connect
+pre-flight refuses new sessions and the asset page shows the warning.
+
+Since 0.9.53:
+
+- The SSH proxy answers a failed session open with a closed-set code
+  (`shared::messages::SshOpenFailure`, ten codes), as the RDP proxy
+  does. The SSH flag is raised on the exact code `host_key_mismatch`
+  and on nothing else. It used to be raised when the proxy's error text
+  contained "host key" or "MITM"; the proxy never wrote those words for
+  a mismatch, so a mismatch seen while connecting did not mark the
+  asset. The browser is shown one constant sentence per code
+  (`services::ssh_open_failure`); the text of the error stays in the
+  `vauban-proxy-ssh` log.
+- Both flags are raised by one statement
+  (`models::asset::raise_trust_anchor_flag`, a `jsonb_set` on the one
+  key). They used to be raised by writing back a copy of the whole
+  document read before a network round trip to the target, which
+  could undo a pin stored in the meantime.
+- `Asset` and `NewAsset` do not derive `Debug`. It is written by hand
+  and prints the key names of `connection_config`, never a value.
+
 ### 9.6 PermissionContext (Casbin-backed UI gating)
 
 To eliminate hardcoded `is_staff || is_superuser` shortcuts (issue #1) that

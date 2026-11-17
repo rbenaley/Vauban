@@ -551,41 +551,82 @@ reason to ask. The second check is a single table in
 | Delete a recording | `RecordingDeleteRequest` | `web` |
 | Compress a capture (retired) | `RecordingFileGzipRequest` | none |
 
-A write lease passes a third check, by file
-(`file_broker::write_lease`). The path must be
+A write lease passes a third check, by session and by file
+(`vauban-supervisor/src/file_broker.rs`, since 0.9.53).
+
+**Which service serves the session.** The supervisor verifies a signed
+session token before it brokers the TCP connection of a session to its
+proxy. The token names the session and the service it was minted for,
+and no sandboxed service can forge one. `session_owner` keeps that
+fact: once the token of session S has been accepted for service X, S is
+served by X. An entry never changes service (a token for the same
+session and another service is refused), the table is bounded, and a
+lease on a session it does not know is refused. The table lives in
+memory: the services, and every session with them, do not outlive the
+supervisor.
+
+**What a proxy may ask for.** The path must be
 `YYYY/MM/<session_id>/<file>`, with the session identifier as a whole
-directory name, and each service may only name the files of its own
-format:
+directory name. A proxy obtains a lease only on a session recorded
+under its own name, and only on a file of its own format:
 
-| Caller | Files | Open mode |
+| Caller | Files |
+|--------|-------|
+| `proxy_ssh` | `session.cast` |
+| `proxy_rdp` | `NNN.mp4` |
+| `proxy_mcp` | `session.mcp.jsonl`, `session.cast`, `meta.json` |
+
+**What audit may ask for.** The audit service writes the seal
+(`meta.json`) of an SSH or RDP session and the whole IACS bundle. It
+asks with `AuditRecordingFileRequest`, which names `source`: the proxy
+whose pipe carried the message that made audit ask. The pipe is the
+identity; each audit handler sets the value, none reads it from a
+message. The plain `RecordingFileRequest` no longer grants anything to
+audit.
+
+| Source | Files | Condition |
 |--------|-------|-----------|
-| `proxy_ssh` | `session.cast` | create only |
-| `proxy_rdp` | `NNN.mp4` | create only |
-| `proxy_mcp` | `session.mcp.jsonl`, `session.cast`, `meta.json` | create only |
-| `audit` | `channels/NNN.pcap`, `channels/NNN.pcap.gz`, `meta.json` | create only |
-| `audit` | `session.json` | rewrite |
+| `proxy_ssh`, `proxy_rdp` | `meta.json` | that proxy serves the session |
+| `proxy_iacs` | `session.json`, `meta.json`, `channels/NNN.pcap`, `channels/NNN.pcap.gz` | the session has no recorded owner or is served by `proxy_iacs`, and its directory holds no media of another recorder |
 
-"Create only" is `O_CREAT | O_EXCL`: the lease fails with
-`recording_file_exists` when the file is already there. No service can
-therefore obtain a descriptor on an existing recording, so none can
-truncate it or read what is appended to it, whichever session it
-belongs to. Any other path is answered with
-`recording_path_not_allowed` and creates nothing. Only the audit service
-may rewrite a file, and only IACS `session.json`, which is written at
-session start and again at session end. The audit service in turn
-refuses a recording-end message whose metadata path is not a
-`meta.json`. The unlink broker applies the same shape rule: it removes
-`YYYY/MM/<session_id>/channels/NNN.pcap` and nothing else.
+IACS is the one case the token does not cover: `session.json` is
+written when the operator authenticates, before any channel presents
+the token. The directory vouches for it instead: a session that has
+`session.cast`, `session.mcp.jsonl` or `001.mp4` is not an IACS
+session.
 
-Three limits remain. The supervisor does not know which service serves
-which session: a proxy that learns a session identifier before the
-recording starts can create that session's file first, and the real
-lease is then refused (the recording fails closed; nothing is
-disclosed). The audit service writes `meta.json` on a message from a
-proxy without knowing which proxy serves the session, so a proxy can
-have the `meta.json` of a session that has none yet created with
-content of its choosing; an existing one cannot be replaced. And a
-recorder whose lease reply is lost cannot ask again for the same file.
+**How the file is opened.** `shared::recording_open` descends from the
+storage base one component at a time with
+`openat(O_DIRECTORY | O_NOFOLLOW)` and opens the file `O_NOFOLLOW`: a
+symlink planted in `YYYY`, `MM` or the session directory stops the
+request instead of taking root outside the storage tree. Every file is
+created with `O_EXCL`, except IACS `session.json`, which audit writes
+at session start and again at session end and is the only file ever
+truncated. A lease on a file that holds data fails with
+`recording_file_exists`. A file that exists and is still empty is
+reopened: a lease whose reply was lost can be asked again, by the
+service that serves the session and by no other. Any other path is
+answered with `recording_path_not_allowed` and creates nothing.
+
+The unlink broker follows the same rules: it removes
+`YYYY/MM/<session_id>/channels/NNN.pcap` of an IACS session, without
+following a symlink, and nothing else. The audit service refuses a
+recording-end message whose metadata path is not a `meta.json`.
+
+What remains open:
+
+- A token for a session can be presented by the service it was minted
+  for only, so a proxy cannot claim another proxy's session. A
+  `proxy_iacs` that names a session identifier before that session's
+  recorder has created its first file can still have audit create
+  `session.json` and `meta.json` there. It must know the identifier in
+  advance, and it learns no identifier but its own.
+- The read and delete brokers (web only) keep canonical containment
+  rather than the no-follow walk: a deployment may link old months to
+  another volume.
+- A supervisor that opened more than 262 144 sessions since its last
+  start forgets the oldest; a session that old can no longer obtain a
+  new file.
 
 A TCP connection to a target that needs no session token has one caller
 as well: only `mailer` may ask for the SMTP relay and only `auth` for
@@ -615,6 +656,28 @@ pub fn send_fd(socket_fd: RawFd, fd_to_send: RawFd) -> Result<()>;
 // Receive a file descriptor
 pub fn recv_fd(socket_fd: RawFd) -> Result<OwnedFd>;
 ```
+
+### 4.5 One log event, one line
+
+Every service logs text that another process or the network supplied:
+an error string from a proxy, a path from a request, a server banner.
+With the plain text formatter a line feed in such a value starts a new
+line, and whoever chose the value writes the rest of it: a forged
+entry that reads like the service's own.
+
+Since 0.9.53 every service builds its log subscriber with
+`shared::log_line::SingleLine` (`SingleLineStderr` for the stdio MCP
+bridge, whose standard output is a protocol). The formatter writes
+each event with a single `write_all`; the writer under it escapes every
+carriage return and line feed of the event except the terminator. One
+place covers every call site of every service, whatever sigil (`%`,
+`?`) or format string the call uses. The JSON formatter already escapes
+them.
+
+`shared/scripts/check_log_single_line.sh` fails when a subscriber is
+built without it, or with a writer that replaces it. Text that does not
+go through `tracing` (a panic message, the standard error of a child
+before its subscriber exists) is not covered.
 
 ---
 

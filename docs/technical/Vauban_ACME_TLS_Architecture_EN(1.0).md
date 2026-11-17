@@ -556,10 +556,21 @@ request anything that decides what is written or where:
   that configuration. A request for another directory, or for a domain
   that is not configured, is refused.
 - A refusal is answered with `AcmeRenewResponse { success: false }` and
-  one of five fixed codes (`acme_caller_not_allowed`, `acme_disabled`,
+  one of six fixed codes (`acme_caller_not_allowed`, `acme_disabled`,
   `acme_not_configured`, `acme_directory_mismatch`,
-  `acme_domain_not_configured`). Nothing from the request is echoed, and
-  no file is touched.
+  `acme_domain_not_configured`, `acme_too_soon`). Nothing from the
+  request is echoed, and no file is touched.
+- Since 0.9.53 at most three renewals are started per fifteen minutes.
+  A renewal runs on the supervisor's own loop and talks to the
+  certificate authority; `vauban-web` asks once per renewal window and
+  never reaches the bound. A request refused for another reason does
+  not count. `vauban-web` does not ask again by itself after a refusal:
+  restart it once the cause is corrected, and no more than three times
+  in a quarter of an hour.
+- The certificate, key and account paths are made absolute when the
+  request is authorized, against the directory the supervisor runs in.
+  Each file is written to a temporary file created exclusively with
+  mode 0600 next to its destination, then renamed.
 
 Both processes read the same configuration files, so a refusal for a
 mismatch means the two disagree: the files changed and only one of the
