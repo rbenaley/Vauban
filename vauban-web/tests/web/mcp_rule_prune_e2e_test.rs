@@ -14,6 +14,7 @@ use vauban_web::models::asset::{Asset, AssetType, NewAsset, NewAssetAssetGroup};
 use vauban_web::schema::{access_rules, asset_asset_groups, asset_groups, assets, vauban_groups};
 use vauban_web::services::mcp_discover::{
     DiscoveredTool, apply_discovered_catalog, approve_pending_catalog, catalog_from_config,
+    pending_digest,
 };
 use vauban_web::services::mcp_tool_drift::{DriftReport, handle_drift};
 
@@ -178,6 +179,18 @@ async fn post(app: &TestApp, admin: &TestUser, path: &str, extra: &[(&str, &str)
         .as_u16()
 }
 
+/// What the asset page shows for "Approve pending" right now.
+async fn pending_shown(app: &TestApp, asset: Uuid) -> String {
+    let mut conn = app.get_conn().await;
+    let cfg: serde_json::Value = assets::table
+        .filter(assets::uuid.eq(asset))
+        .select(assets::connection_config)
+        .first(&mut conn)
+        .await
+        .unwrap();
+    pending_digest(&cfg)
+}
+
 async fn edit_page(app: &TestApp, admin: &TestUser, rule: Uuid) -> String {
     let csrf = app.generate_csrf_token();
     let r = app
@@ -219,11 +232,12 @@ async fn gwt_deleting_an_mcp_asset_erases_its_modes_and_a_new_asset_does_not_inh
         "pending tools of the new asset are not offered on the rule"
     );
 
+    let shown = pending_shown(app, new.uuid).await;
     let status = post(
         app,
         &f.admin,
         &format!("/assets/manage/{}/approve-mcp-tools", new.uuid),
-        &[],
+        &[("shown", shown.as_str())],
     )
     .await;
     assert!(matches!(status, 302 | 303), "approve: {status}");
@@ -305,11 +319,12 @@ async fn gwt_a_quarantined_tool_loses_its_mode_and_reapproval_keeps_it_off() {
         "only the quarantined tool leaves the rule"
     );
 
+    let shown = pending_shown(app, asset.uuid).await;
     let status = post(
         app,
         &f.admin,
         &format!("/assets/manage/{}/approve-mcp-tools", asset.uuid),
-        &[],
+        &[("shown", shown.as_str())],
     )
     .await;
     assert!(matches!(status, 302 | 303), "approve: {status}");

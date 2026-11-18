@@ -1018,6 +1018,19 @@ Approve pending, per-tool Approve, the pending reason, a "View change"
 before/after, the upstream instructions row, and the "Upstream TLS"
 SPKI pin field (required, ADR 010).
 
+An approval names what it approves. Each Approve form carries `shown`:
+the fingerprint of the definition (or of the instructions) the page
+displayed, or, for "Approve pending", one digest over every pending
+tool with its fingerprint and the pending instructions
+(`mcp_discover::pending_digest`). The approval is applied to the stored
+catalogue only if that value still matches
+(`mcp_discover::approval_is_current`); a definition replaced by a drift
+notice, or a tool that became pending after the page was rendered, is
+not approved unseen, and the administrator is asked to review again. A
+tombstone is never approved by name. A failed discovery shows one
+constant sentence; its cause, which can be text chosen by the upstream
+server, goes to the `vauban-web` log only.
+
 Mail kinds, drained by `vauban-mailer`: `mcp.hitl_pending`,
 `mcp.hitl_decided`, `mcp.contestation_opened`,
 `mcp.contestation_resolved`, `mcp.mandate_drift`,

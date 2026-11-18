@@ -156,6 +156,30 @@ fn absolute_path(configured: &str) -> Result<String, AcmeRefusal> {
         .ok_or(AcmeRefusal::NotConfigured)
 }
 
+/// How long one renewal may take, from the first request to the
+/// certificate authority to the certificate written to disk.
+///
+/// The renewal runs on the supervisor's only loop: while it runs, no
+/// connection is brokered, no recording file is granted and no heartbeat
+/// is sent. The ACME client puts no deadline on its HTTP requests, so an
+/// authority that accepts the connection and then says nothing would
+/// hold the loop for ever. A renewal that goes well takes a few seconds;
+/// its two polling phases are bounded at 30 seconds each by the client.
+pub const RENEWAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Sent to `vauban-web` when a renewal is abandoned at
+/// [`RENEWAL_DEADLINE`]. A constant, as the refusal codes are.
+pub const ACME_DEADLINE_EXCEEDED: &str = "acme_deadline_exceeded";
+
+/// Run `work` for at most `deadline`. `None` when it did not finish:
+/// the future is dropped, and with it the connection it was waiting on.
+async fn within_deadline<T>(
+    deadline: std::time::Duration,
+    work: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    tokio::time::timeout(deadline, work).await.ok()
+}
+
 /// Renewals started in any [`RENEW_WINDOW`].
 pub const RENEW_BURST: usize = 3;
 /// See [`RENEW_BURST`].
@@ -283,21 +307,51 @@ pub fn handle_acme_renew(params: AcmeRenewParams, web_channel: &IpcChannel) {
     };
 
     rt.block_on(async {
-        match acme_workflow(
-            request_id,
-            &directory_url,
-            &domains,
-            &email,
-            &account_key_path,
-            &cert_path,
-            &key_path,
-            eab_kid.as_deref(),
-            eab_hmac_key.as_ref().map(|s| s.as_str()),
-            web_channel,
+        let outcome = within_deadline(
+            RENEWAL_DEADLINE,
+            acme_workflow(
+                request_id,
+                &directory_url,
+                &domains,
+                &email,
+                &account_key_path,
+                &cert_path,
+                &key_path,
+                eab_kid.as_deref(),
+                eab_hmac_key.as_ref().map(|s| s.as_str()),
+                web_channel,
+            ),
         )
-        .await
-        {
-            Ok((cert_pem, key_pem)) => {
+        .await;
+        if !matches!(outcome, Some(Ok(_))) {
+            // The workflow removes the challenge certificates only once
+            // the order is ready. Abandoned or failed before that, it
+            // would leave them installed in vauban-web.
+            for domain in &domains {
+                let _ = web_channel.send(&Message::AcmeChallengeRemove {
+                    request_id,
+                    domain: domain.clone(),
+                });
+            }
+        }
+        match outcome {
+            None => {
+                error!(
+                    request_id = request_id,
+                    deadline_secs = RENEWAL_DEADLINE.as_secs(),
+                    reason = ACME_DEADLINE_EXCEEDED,
+                    "ACME renewal abandoned: the certificate authority did not answer in time"
+                );
+                send_renew_response(
+                    web_channel,
+                    request_id,
+                    false,
+                    Some(ACME_DEADLINE_EXCEEDED.to_string()),
+                    None,
+                    None,
+                );
+            }
+            Some(Ok((cert_pem, key_pem))) => {
                 info!(
                     request_id = request_id,
                     "ACME renewal completed successfully"
@@ -311,7 +365,7 @@ pub fn handle_acme_renew(params: AcmeRenewParams, web_channel: &IpcChannel) {
                     Some(SensitiveString::new(key_pem)),
                 );
             }
-            Err(e) => {
+            Some(Err(e)) => {
                 error!(request_id = request_id, error = %e, "ACME renewal failed");
                 send_renew_response(
                     web_channel,
@@ -1056,6 +1110,47 @@ mod tests {
             .windows(oid_encoded.len())
             .any(|w| w == oid_encoded);
         assert!(found, "Certificate must contain acmeIdentifier OID");
+    }
+
+    /// An authority that accepts the connection and never answers does
+    /// not hold the supervisor: the wait ends at the deadline.
+    #[test]
+    fn attack_silent_authority_does_not_hold_the_supervisor() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let outcome = rt.block_on(within_deadline(
+            std::time::Duration::from_millis(50),
+            std::future::pending::<()>(),
+        ));
+        assert_eq!(outcome, None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+
+        let done = rt.block_on(within_deadline(
+            std::time::Duration::from_secs(5),
+            std::future::ready(7),
+        ));
+        assert_eq!(done, Some(7));
+    }
+
+    /// The renewal is run under the deadline, the deadline leaves room
+    /// for the two polling phases of the client, and `vauban-web` waits
+    /// longer for the answer than the supervisor works on it.
+    #[test]
+    fn test_renewal_runs_under_a_deadline() {
+        let source = include_str!("acme.rs");
+        let handler = source
+            .split("pub fn handle_acme_renew(")
+            .nth(1)
+            .and_then(|rest| rest.split("\nasync fn acme_workflow(").next())
+            .expect("handle_acme_renew");
+        assert!(handler.contains("within_deadline(\n            RENEWAL_DEADLINE,"));
+        assert!(handler.contains("ACME_DEADLINE_EXCEEDED"));
+        assert!(handler.contains("Message::AcmeChallengeRemove"));
+        assert!(RENEWAL_DEADLINE >= std::time::Duration::from_secs(90));
+        assert!(RENEWAL_DEADLINE <= std::time::Duration::from_secs(300));
     }
 
     #[test]

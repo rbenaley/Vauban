@@ -1430,48 +1430,79 @@ async fn attack_api_pin_confirmation_must_name_the_change() {
 
     let admin_name = unique_name("admin_pin_confirm");
     let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
-    let asset = create_test_ssh_asset(&mut conn, &unique_name("pin-confirm")).await;
-    let pinned = serde_json::json!({
+    let ssh = create_test_ssh_asset(&mut conn, &unique_name("pin-confirm")).await;
+    let ssh_pinned = serde_json::json!({
         "ssh_host_key": "ssh-ed25519 OLD",
         "ssh_host_key_fingerprint": "SHA256:OLD",
     });
-    set_connection_config(&mut conn, asset.asset.uuid, pinned.clone()).await;
+    set_connection_config(&mut conn, ssh.asset.uuid, ssh_pinned.clone()).await;
+    let rdp = create_test_rdp_asset(&mut conn, &unique_name("pin-confirm-rdp")).await;
+    let rdp_pinned = serde_json::json!({
+        "rdp_server_cert_spki": "OLD-SPKI",
+        "rdp_server_cert_fingerprint": "SHA256:OLD",
+    });
+    set_connection_config(&mut conn, rdp.asset.uuid, rdp_pinned.clone()).await;
 
-    for query in [
-        "confirm=true",
-        "confirm=true&expected_old_fingerprint=SHA256:OLD",
-        "confirm=true&expected_new_fingerprint=SHA256:NEW",
+    for (route, asset_uuid, pinned) in [
+        ("ssh-host-key", ssh.asset.uuid, &ssh_pinned),
+        ("rdp-server-cert", rdp.asset.uuid, &rdp_pinned),
     ] {
-        // The RDP route is behind a gate of its own in this test
-        // configuration; that it carries the same rule is pinned by
-        // `test_api_pin_routes_bind_the_confirmation_to_the_fingerprints`.
-        let response = app
-            .server
-            .post(&format!(
-                "/api/v1/assets/manage/{}/ssh-host-key?{query}",
-                asset.asset.uuid
-            ))
-            .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
-            .await;
-        assert_status(&response, 400);
-        let body = response.text();
-        assert!(
-            body.contains("expected_old_fingerprint") && body.contains("expected_new_fingerprint"),
-            "{query}: the refusal names the two parameters: {body}"
+        for query in [
+            "confirm=true",
+            "confirm=true&expected_old_fingerprint=SHA256:OLD",
+            "confirm=true&expected_new_fingerprint=SHA256:NEW",
+        ] {
+            let response = app
+                .server
+                .post(&format!(
+                    "/api/v1/assets/manage/{asset_uuid}/{route}?{query}"
+                ))
+                .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
+                .await;
+            assert_status(&response, 400);
+            let body = response.text();
+            assert!(
+                body.contains("expected_old_fingerprint")
+                    && body.contains("expected_new_fingerprint"),
+                "{route} {query}: the refusal names the two parameters: {body}"
+            );
+        }
+
+        use vauban_web::schema::assets::dsl as a;
+        let stored: serde_json::Value = unwrap_ok!(
+            a::assets
+                .filter(a::uuid.eq(asset_uuid))
+                .select(a::connection_config)
+                .first(&mut conn)
+                .await
+        );
+        assert_eq!(
+            &stored, pinned,
+            "{route}: a refused confirmation pins nothing"
         );
     }
 
-    use vauban_web::schema::assets::dsl as a;
-    let stored: serde_json::Value = unwrap_ok!(
-        a::assets
-            .filter(a::uuid.eq(asset.asset.uuid))
-            .select(a::connection_config)
-            .first(&mut conn)
-            .await
-    );
-    assert_eq!(stored, pinned, "a refused confirmation pins nothing");
-
     test_db::cleanup(&mut conn).await;
+}
+
+/// The test router mounts the pin routes where production does: inside
+/// the `/api/v1/assets/manage` nest. Mounted elsewhere, a test reaches a
+/// path production does not serve and proves nothing about the real one.
+#[test]
+fn test_router_mounts_the_pin_routes_as_production_does() {
+    let test_router = include_str!("../common/mod.rs");
+    let production = include_str!("../../src/main.rs");
+    for flat in [
+        "\"/api/v1/assets/{uuid}/ssh-host-key\"",
+        "\"/api/v1/assets/{uuid}/rdp-server-cert\"",
+    ] {
+        assert!(!production.contains(flat), "production: {flat}");
+        assert!(!test_router.contains(flat), "test router: {flat}");
+    }
+    for nested in ["\"/{uuid}/ssh-host-key\"", "\"/{uuid}/rdp-server-cert\""] {
+        assert!(production.contains(nested), "production: {nested}");
+        assert!(test_router.contains(nested), "test router: {nested}");
+    }
 }
 
 /// Both API pin routes decide a replacement with the rule the web forms

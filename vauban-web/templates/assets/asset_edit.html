@@ -395,7 +395,9 @@
     {# TOFU catalogue (CIS MCP 4.1.1). Outside the edit form: its own
        POST forms. A tool whose upstream definition changed since approval
        is quarantined by proxy-mcp and shown here as pending with the
-       reason and a before/after view; Approve pins the new definition. #}
+       reason and a before/after view; Approve pins the new definition.
+       Each Approve form sends back what this page showed (`shown`): the
+       approval is refused if the catalogue changed since. #}
     <div class="mt-6 bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden" data-testid="mcp-tools-card">
         <div class="px-4 py-5 sm:px-6 border-b border-gray-200 dark:border-gray-700 flex flex-wrap items-center justify-between gap-4">
             <div>
@@ -415,6 +417,7 @@
                 </form>
                 <form method="post" action="/assets/manage/{{ asset.uuid }}/approve-mcp-tools" x-data="csrf">
                     <input type="hidden" name="csrf_token" x-model="token" />
+                    <input type="hidden" name="shown" value="{{ asset.mcp_pending_digest }}" />
                     <button type="submit" data-testid="mcp-approve-pending"
                             class="inline-flex items-center rounded-md bg-green-700 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-green-600">
                         Approve pending
@@ -448,6 +451,7 @@
                         <form method="post" action="/assets/manage/{{ asset.uuid }}/approve-mcp-tools" x-data="csrf" class="shrink-0">
                             <input type="hidden" name="csrf_token" x-model="token" />
                             <input type="hidden" name="tool_name" value="{{ tool.name }}" />
+                            <input type="hidden" name="shown" value="{{ tool.fingerprint }}" />
                             <button type="submit" class="text-sm text-green-700 hover:text-green-500 dark:text-green-400">Approve</button>
                         </form>
                         {% endif %}
@@ -496,6 +500,7 @@
                     <form method="post" action="/assets/manage/{{ asset.uuid }}/approve-mcp-tools" x-data="csrf" class="shrink-0">
                         <input type="hidden" name="csrf_token" x-model="token" />
                         <input type="hidden" name="tool_name" value="{{ ins.approve_key }}" />
+                        <input type="hidden" name="shown" value="{{ ins.fingerprint }}" />
                         <button type="submit" class="text-sm text-green-700 hover:text-green-500 dark:text-green-400">Approve</button>
                     </form>
                     {% endif %}

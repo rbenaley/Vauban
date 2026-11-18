@@ -217,9 +217,14 @@ async fn mcp_hitl_decide_with_the_proxy_gone_keeps_the_pending() {
         .get("/sessions/mcp")
         .add_header(COOKIE, format!("access_token={}; {flash}", approver.token))
         .await;
+    let page = page.text();
     assert!(
-        page.text().contains("HITL decision failed"),
+        page.contains("The decision could not be sent to vauban-proxy-mcp. It is still pending."),
         "the approver sees the failure"
+    );
+    assert!(
+        !page.contains("HITL decision failed"),
+        "the sentence is constant: the cause goes to the log"
     );
     assert!(
         client.get_hitl_pending(&pid).is_some(),

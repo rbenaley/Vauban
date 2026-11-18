@@ -565,6 +565,15 @@ request anything that decides what is written or where:
   certificate authority; `vauban-web` asks once per renewal window and
   never reaches the bound. A request refused for another reason does
   not count.
+- A renewal is abandoned after `RENEWAL_DEADLINE` (120 seconds) and
+  answered with `acme_deadline_exceeded`. The ACME client puts no
+  deadline on its HTTP requests, and the renewal holds the supervisor's
+  only loop: without the bound, a certificate authority that accepts
+  the connection and then stays silent stopped every brokered
+  connection and every recording lease for as long as it liked. With
+  the bound of three renewals per fifteen minutes, the loop is held at
+  most six minutes in fifteen. A renewal that fails or is abandoned
+  removes its challenge certificates from `vauban-web`.
 - `vauban-web` asks again by itself. A refusal, a failure at the
   certificate authority, a request that could not be sent, or no
   answer within thirty minutes is followed by a new request after

@@ -53,6 +53,14 @@ Read these before deploying. Each one is a behavior change.
 7. **Credential migration.** The supervisor's migration command skips
    an asset whose `connection_config` changed since its scan and says
    so. Run it again; it is idempotent.
+8. **MCP approvals.** An Approve button applies only to what its page
+   showed. If the catalogue changed since (a drift notice, another
+   discovery), nothing is approved and the page asks to review again.
+   An asset page left open across the upgrade must be reloaded before
+   approving.
+9. **ACME deadline.** A renewal that takes more than two minutes is
+   abandoned (`reason=acme_deadline_exceeded` in the supervisor log)
+   and asked again later by `vauban-web`.
 
 ## Automated prerequisites
 
@@ -150,3 +158,44 @@ Skip when `[server.tls.acme] enabled = false`.
    within 15 minutes, without restarting `vauban-web`, the renewal
    runs and the certificate is activated.
 3. **Expected in the certificate directory:** no `*.tmp` file.
+4. Optional, with a certificate authority you control: make it accept
+   the connection and not answer. **Expected:** after two minutes the
+   supervisor logs `reason=acme_deadline_exceeded` and brokers
+   connections again; `vauban-web` asks again later.
+
+## F -- The API pin routes name the change
+
+For an SSH asset and then an RDP asset, with an API key of an
+administrator. `<route>` is `ssh-host-key`, then `rdp-server-cert`.
+
+1. With a pin stored, change the identity of the target and `POST
+   /api/v1/assets/manage/<uuid>/<route>`. **Expected:** `key_changed:
+   true` with `old_fingerprint` and `new_fingerprint`; the pin is
+   unchanged.
+2. Repeat with `?confirm=true` only. **Expected:** 400, the pin is
+   unchanged.
+3. Repeat with `confirm=true`, `expected_old_fingerprint` and a wrong
+   `expected_new_fingerprint`. **Expected:** `key_changed: true` again;
+   the pin is unchanged.
+4. Repeat with the two fingerprints of step 1. **Expected:**
+   `success: true`; the new pin is stored.
+5. `PUT /api/v1/assets/manage/<uuid>` with a body read before step 4
+   was run, from a second client that sends its request while step 4
+   runs. **Expected:** one of the two answers 409 or both are applied
+   in turn; the pin of step 4 is never lost.
+
+## G -- An MCP approval covers what was shown
+
+1. Open the edit page of an MCP asset with one pending tool in two
+   browsers. In the first, change the description of that tool on the
+   upstream server and use **Discover tools**.
+2. In the second, without reloading, click **Approve** on that tool.
+   **Expected:** the message that the catalogue changed; the tool is
+   still pending.
+3. Reload the second browser, review the change, approve.
+   **Expected:** approved.
+4. Repeat with **Approve pending** after a discovery that adds a tool.
+   **Expected:** refused until the page is reloaded.
+5. Stop the upstream server and use **Discover tools**. **Expected:**
+   one sentence that discovery failed, quoting nothing; the cause is
+   in the `vauban-web` log.

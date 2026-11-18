@@ -297,7 +297,11 @@ async fn decide_web(
         &auth_user.uuid,
     ) {
         proxy.restore_hitl_pending(pending);
-        return flash_redirect(flash.error(format!("HITL decision failed: {e}")), list_url);
+        tracing::warn!(session_id = %session_id, error = %e, "MCP HITL decision not sent");
+        return flash_redirect(
+            flash.error("The decision could not be sent to vauban-proxy-mcp. It is still pending."),
+            list_url,
+        );
     }
 
     let _ = state

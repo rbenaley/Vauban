@@ -16,7 +16,7 @@ use vauban_web::schema::{assets, email_outbox, users};
 use vauban_web::services::mcp_discover::{
     DiscoveredTool, PendingReason, ToolCatalogStatus, apply_discovered_catalog,
     apply_discovered_instructions_at, approve_pending_catalog, catalog_from_config,
-    instructions_from_config, tool_constraints_json_for_asset,
+    instructions_from_config, pending_digest, tool_constraints_json_for_asset,
 };
 use vauban_web::services::mcp_tool_drift::{DriftReport, USER_NOTICE, handle_drift};
 
@@ -205,13 +205,56 @@ async fn tool_drift_goes_pending_mails_approvers_notifies_owner_and_reapproves()
     assert!(html.contains(OLD_DESC));
     assert!(html.contains("Input schema unchanged."));
 
+    // The page carries the fingerprint of the definition it shows.
+    let shown = catalog_from_config(&config_of(&mut conn, asset.id).await)[0].fingerprint();
+    assert!(
+        html.contains(&format!("name=\"shown\" value=\"{shown}\"")),
+        "the Approve form sends back the fingerprint shown"
+    );
+
+    // An approval for a definition that is not the stored one (the page
+    // was rendered before the drift) approves nothing.
+    let stale = DiscoveredTool {
+        name: "update_task".into(),
+        description: OLD_DESC.into(),
+        input_schema: Some(serde_json::json!({"type": "object"})),
+        ..Default::default()
+    }
+    .with_computed_fingerprint()
+    .fingerprint();
+    assert_ne!(stale, shown);
+    for form in [
+        vec![("tool_name", "update_task"), ("shown", stale.as_str())],
+        vec![("tool_name", "update_task")],
+        vec![("shown", stale.as_str())],
+        vec![],
+    ] {
+        let csrf = app.generate_csrf_token();
+        let mut fields = vec![("csrf_token", csrf.as_str())];
+        fields.extend(form.iter().copied());
+        let resp = app
+            .server
+            .post(&format!("/assets/manage/{}/approve-mcp-tools", asset.uuid))
+            .add_header(AUTHORIZATION, app.auth_header(&approver.token))
+            .add_header(COOKIE, auth_csrf_cookie(&approver.token, &csrf))
+            .form(&fields)
+            .await;
+        assert!(matches!(resp.status_code().as_u16(), 302 | 303));
+        let t = &catalog_from_config(&config_of(&mut conn, asset.id).await)[0];
+        assert!(!t.is_approved(), "{form:?}: nothing is approved");
+    }
+
     let csrf = app.generate_csrf_token();
     let resp = app
         .server
         .post(&format!("/assets/manage/{}/approve-mcp-tools", asset.uuid))
         .add_header(AUTHORIZATION, app.auth_header(&approver.token))
         .add_header(COOKIE, auth_csrf_cookie(&approver.token, &csrf))
-        .form(&[("csrf_token", csrf.as_str()), ("tool_name", "update_task")])
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("tool_name", "update_task"),
+            ("shown", shown.as_str()),
+        ])
         .await;
     assert!(matches!(resp.status_code().as_u16(), 302 | 303));
     let cfg = config_of(&mut conn, asset.id).await;
@@ -308,12 +351,14 @@ async fn instructions_drift_goes_pending_without_user_notice_and_pin_follows_app
     assert!(html.contains("data-testid=\"mcp-instructions-diff\""));
     assert!(html.contains("(instructions)"));
 
+    let shown = pending_digest(&config_of(&mut conn, asset.id).await);
+    assert!(html.contains(&format!("name=\"shown\" value=\"{shown}\"")));
     let csrf = app.generate_csrf_token();
     app.server
         .post(&format!("/assets/manage/{}/approve-mcp-tools", asset.uuid))
         .add_header(AUTHORIZATION, app.auth_header(&approver.token))
         .add_header(COOKIE, auth_csrf_cookie(&approver.token, &csrf))
-        .form(&[("csrf_token", csrf.as_str())])
+        .form(&[("csrf_token", csrf.as_str()), ("shown", shown.as_str())])
         .await;
     let cfg = config_of(&mut conn, asset.id).await;
     let repinned: serde_json::Value =

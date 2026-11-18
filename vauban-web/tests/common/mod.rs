@@ -899,6 +899,15 @@ pub fn build_test_router(state: AppState) -> Router {
                     get(handlers::api::get_ssh_host_key_status)
                         .post(handlers::api::fetch_ssh_host_key_api),
                 )
+                // VAU-001: RDP server-certificate status + fetch/pin, in
+                // the nest as in production. It used to be mounted
+                // outside it, at a path production does not have, so no
+                // test reached the handler on its real route.
+                .route(
+                    "/{uuid}/rdp-server-cert",
+                    get(handlers::api::get_rdp_server_cert_status)
+                        .post(handlers::api::fetch_rdp_server_cert_api),
+                )
                 .route_layer(axum::middleware::from_fn(
                     middleware::require_assets_manage::require_assets_manage,
                 )),
@@ -923,17 +932,6 @@ pub fn build_test_router(state: AppState) -> Router {
         .route(
             "/api/v1/groups/{uuid}/members",
             get(handlers::api::list_group_members),
-        )
-        .route(
-            "/api/v1/assets/{uuid}/ssh-host-key",
-            get(handlers::api::get_ssh_host_key_status).post(handlers::api::fetch_ssh_host_key_api),
-        )
-        // VAU-001: RDP server-certificate management (mirror of SSH
-        // host-key).
-        .route(
-            "/api/v1/assets/{uuid}/rdp-server-cert",
-            get(handlers::api::get_rdp_server_cert_status)
-                .post(handlers::api::fetch_rdp_server_cert_api),
         )
         // VAU-007: mirror production -- the API key scope enforcement
         // lives on the API branch (inside every global layer, so it

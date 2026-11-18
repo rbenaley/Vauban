@@ -115,7 +115,8 @@ impl DiscoveredTool {
         self
     }
 
-    fn fingerprint(&self) -> String {
+    /// Fingerprint of the stored definition: what an approval pins.
+    pub fn fingerprint(&self) -> String {
         self.schema_fingerprint.clone().unwrap_or_else(|| {
             schema_fingerprint(&self.name, &self.description, self.input_schema.as_ref())
         })
@@ -757,7 +758,10 @@ pub fn approve_pending_catalog(mut config: Value) -> Value {
     store_catalog(config, catalog)
 }
 
-/// Approve one tool, or the upstream instructions for [`INSTRUCTIONS_KEY`].
+/// Approve one pending tool, or the upstream instructions for
+/// [`INSTRUCTIONS_KEY`]. A tombstone is not approved: the upstream no
+/// longer serves that tool, and only a discovery brings it back, as
+/// pending.
 pub fn approve_tool_in_catalog(mut config: Value, tool_name: &str) -> Value {
     if tool_name == INSTRUCTIONS_KEY {
         approve_instructions(&mut config);
@@ -765,11 +769,64 @@ pub fn approve_tool_in_catalog(mut config: Value, tool_name: &str) -> Value {
     }
     let mut catalog = catalog_from_config(&config);
     for t in &mut catalog {
-        if t.name == tool_name {
+        if t.name == tool_name && t.status_or_legacy_approved() == ToolCatalogStatus::Pending {
             approve_tool(t);
         }
     }
     store_catalog(config, catalog)
+}
+
+/// One value for everything "Approve pending" would approve: the pending
+/// tools with their fingerprints, and the pending instructions. The page
+/// carries it; the approval is applied only if it is still the same.
+pub fn pending_digest(config: &Value) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"vauban-mcp-pending\0");
+    let mut pending: Vec<(String, String)> = catalog_from_config(config)
+        .into_iter()
+        .filter(|t| t.status_or_legacy_approved() == ToolCatalogStatus::Pending)
+        .map(|t| {
+            let fp = t.fingerprint();
+            (t.name, fp)
+        })
+        .collect();
+    pending.sort();
+    for (name, fp) in &pending {
+        hasher.update(&(name.len() as u64).to_le_bytes());
+        hasher.update(name.as_bytes());
+        hasher.update(fp.as_bytes());
+        hasher.update(&[0]);
+    }
+    hasher.update(b"instructions\0");
+    if let Some(e) =
+        instructions_from_config(config).filter(|e| e.status == ToolCatalogStatus::Pending)
+    {
+        hasher.update(e.fingerprint.as_bytes());
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+/// Whether an approval decided on a page still applies to `config`.
+///
+/// `shown` is what that page displayed: the fingerprint of the one tool
+/// (or of the instructions) for `tool_name`, [`pending_digest`] without
+/// it. An approval names what it approves, as a pin confirmation names
+/// its two fingerprints: between the page and the click a drift notice
+/// or a discovery can replace a definition, or add a pending tool, that
+/// nobody reviewed.
+pub fn approval_is_current(config: &Value, tool_name: Option<&str>, shown: &str) -> bool {
+    let current = match tool_name {
+        Some(INSTRUCTIONS_KEY) => instructions_from_config(config)
+            .filter(|e| e.status == ToolCatalogStatus::Pending)
+            .map(|e| e.fingerprint),
+        Some(name) => catalog_from_config(config)
+            .into_iter()
+            .find(|t| t.name == name)
+            .filter(|t| t.status_or_legacy_approved() == ToolCatalogStatus::Pending)
+            .map(|t| t.fingerprint()),
+        None => Some(pending_digest(config)),
+    };
+    current.is_some_and(|c| c == shown)
 }
 
 pub fn catalog_from_config(connection_config: &serde_json::Value) -> Vec<DiscoveredTool> {
@@ -1317,5 +1374,92 @@ mod tests {
         let merged = merge_approved_group_catalog(&[("A".into(), tools)]);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].name, "legacy");
+    }
+
+    /// An approval is applied only to what the page showed. Between the
+    /// page and the click a drift notice replaces the stored definition:
+    /// the fingerprint the form carries no longer matches.
+    #[test]
+    fn attack_approval_of_a_definition_that_was_not_shown_is_refused() {
+        let cfg = apply_discovered_catalog_at(json!({}), &[tool("t", "v1", json!({}))], T0);
+        let shown = catalog_from_config(&cfg)[0].fingerprint();
+        assert!(approval_is_current(&cfg, Some("t"), &shown));
+
+        // The upstream now serves another definition under the same name.
+        let cfg = apply_discovered_catalog_at(cfg, &[tool("t", "v2 evil", json!({}))], T1);
+        assert!(!approval_is_current(&cfg, Some("t"), &shown));
+        assert!(!approval_is_current(&cfg, Some("t"), ""));
+        assert!(!approval_is_current(&cfg, Some("unknown"), &shown));
+        let now = catalog_from_config(&cfg)[0].fingerprint();
+        assert!(approval_is_current(&cfg, Some("t"), &now));
+
+        // Once approved there is nothing left to approve under that value.
+        let cfg = approve_tool_in_catalog(cfg, "t");
+        assert!(!approval_is_current(&cfg, Some("t"), &now));
+    }
+
+    /// "Approve pending" covers the pending set of the page, not a tool
+    /// that became pending afterwards, nor a changed one.
+    #[test]
+    fn attack_approve_pending_does_not_cover_what_appeared_since() {
+        let cfg = apply_discovered_catalog_at(json!({}), &[tool("a", "v1", json!({}))], T0);
+        let shown = pending_digest(&cfg);
+        assert!(approval_is_current(&cfg, None, &shown));
+
+        let more = apply_discovered_catalog_at(
+            cfg.clone(),
+            &[tool("a", "v1", json!({})), tool("b", "new", json!({}))],
+            T1,
+        );
+        assert!(
+            !approval_is_current(&more, None, &shown),
+            "a new pending tool"
+        );
+
+        let changed = apply_discovered_catalog_at(cfg.clone(), &[tool("a", "v2", json!({}))], T1);
+        assert!(
+            !approval_is_current(&changed, None, &shown),
+            "a changed one"
+        );
+
+        let with_ins = apply_discovered_instructions_at(cfg.clone(), Some("do this"), T1);
+        assert!(
+            !approval_is_current(&with_ins, None, &shown),
+            "new instructions"
+        );
+        assert!(!approval_is_current(&cfg, None, ""));
+
+        // Approved tools are not part of the value: approving elsewhere
+        // an already shown set does not move it.
+        let approved = approve_pending_catalog(cfg);
+        assert_ne!(pending_digest(&approved), shown);
+        assert_eq!(pending_digest(&approved), pending_digest(&json!({})));
+    }
+
+    #[test]
+    fn approval_of_instructions_names_their_fingerprint() {
+        let cfg = apply_discovered_instructions_at(json!({}), Some("first"), T0);
+        let shown = instructions_from_config(&cfg).unwrap().fingerprint;
+        assert!(approval_is_current(&cfg, Some(INSTRUCTIONS_KEY), &shown));
+        let cfg = apply_discovered_instructions_at(cfg, Some("second"), T1);
+        assert!(!approval_is_current(&cfg, Some(INSTRUCTIONS_KEY), &shown));
+        assert!(!approval_is_current(
+            &json!({}),
+            Some(INSTRUCTIONS_KEY),
+            &shown
+        ));
+    }
+
+    /// A tool the upstream no longer serves is not approved by its name.
+    #[test]
+    fn attack_tombstone_is_not_approved_by_name() {
+        let cfg = apply_discovered_catalog_at(json!({}), &[tool("t", "v1", json!({}))], T0);
+        let cfg = approve_pending_catalog(cfg);
+        let gone = apply_discovered_catalog_at(cfg, &[], T1);
+        let fp = catalog_from_config(&gone)[0].fingerprint();
+        assert!(!approval_is_current(&gone, Some("t"), &fp));
+        let after = approve_tool_in_catalog(gone.clone(), "t");
+        assert_eq!(after, gone);
+        assert_eq!(after["allowed_tools"], json!([]));
     }
 }

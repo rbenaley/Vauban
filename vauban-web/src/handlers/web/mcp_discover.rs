@@ -10,8 +10,9 @@ use crate::models::asset::{Asset, AssetType};
 use crate::schema::{asset_asset_groups, asset_groups, assets};
 use crate::services::mcp_discover::{
     DiscoveredTool, GroupCatalogTool, ToolCatalogStatus, apply_discovered_catalog,
-    apply_discovered_instructions_at, approve_pending_catalog, approve_tool_in_catalog,
-    catalog_from_asset, discover_tools_from_upstream, merge_approved_group_catalog,
+    apply_discovered_instructions_at, approval_is_current, approve_pending_catalog,
+    approve_tool_in_catalog, catalog_from_asset, discover_tools_from_upstream,
+    merge_approved_group_catalog,
 };
 use crate::services::mcp_rule_prune::prune_after_asset_change;
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
@@ -92,8 +93,11 @@ pub async fn discover_mcp_tools_web(
         match discover_tools_from_upstream(&state, &asset, &auth_user.uuid.to_string()).await {
             Ok(t) => t,
             Err(e) => {
+                // The cause can be text chosen by the upstream server
+                // (a JSON-RPC error message) or by another service: it
+                // goes to the log, the browser gets a constant sentence.
                 tracing::warn!(asset = %uuid_str, error = %e, "MCP tool discovery failed");
-                return flash_redirect(flash.error(format!("Discovery failed: {e}")), &edit_url);
+                return flash_redirect(flash.error(DISCOVERY_FAILED_MESSAGE), &edit_url);
             }
         };
 
@@ -136,21 +140,22 @@ pub async fn discover_mcp_tools_web(
         &state,
         crate::ipc::AuditEvent::new(
             shared::messages::AuditEventType::AssetUpdated,
-            format!(
-                r#"{{"asset":"{}","action":"mcp_discover","tools":{}}}"#,
-                uuid_str,
-                tools.len()
-            ),
+            serde_json::json!({
+                "asset": uuid_str,
+                "action": "mcp_discover",
+                "tools": tools.len(),
+            })
+            .to_string(),
         )
         .user(auth_user.uuid.clone()),
     );
 
-    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-    let pending = tools.len();
+    // The names are upstream text and there can be hundreds: the flash
+    // is a cookie. The panel below lists them.
+    let found = tools.len();
     flash_redirect(
         flash.success(format!(
-            "Discovered {pending} tool(s) as pending (TOFU): {}. Approve them before sessions can use them.",
-            names.join(", ")
+            "Discovery found {found} tool(s). New or changed tools are pending: review and approve them before sessions can use them."
         )),
         &edit_url,
     )
@@ -161,7 +166,18 @@ pub struct ApproveMcpToolsForm {
     pub csrf_token: String,
     /// When set, approve only this tool; otherwise approve all pending.
     pub tool_name: Option<String>,
+    /// What the page showed for this approval: the fingerprint of the
+    /// tool (or of the instructions), or the pending digest for
+    /// "Approve pending" (`mcp_discover::approval_is_current`).
+    pub shown: Option<String>,
 }
+
+/// Shown when a discovery fails, whatever the cause.
+pub const DISCOVERY_FAILED_MESSAGE: &str =
+    "Tool discovery failed. The cause is in the vauban-web log.";
+
+/// Shown when an approval no longer matches the catalogue.
+pub const APPROVAL_STALE_MESSAGE: &str = "The catalogue changed since this page was shown. Nothing was approved: review it and approve again.";
 
 /// POST `/assets/manage/{uuid}/approve-mcp-tools`
 pub async fn approve_mcp_tools_web(
@@ -233,7 +249,12 @@ pub async fn approve_mcp_tools_web(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
+    let shown = form.shown.as_deref().unwrap_or_default();
     let approve = |current: &serde_json::Value| {
+        // An approval counts only for what the page showed.
+        if !approval_is_current(current, tool_name, shown) {
+            return None;
+        }
         Some(match tool_name {
             Some(name) => approve_tool_in_catalog(current.clone(), name),
             None => approve_pending_catalog(current.clone()),
@@ -247,6 +268,10 @@ pub async fn approve_mcp_tools_web(
                 &edit_url,
             );
         }
+        Ok(crate::models::asset::ConfigUpdate::Unchanged) => {
+            tracing::warn!(asset = %uuid_str, "MCP approval does not match the catalogue; not saved");
+            return flash_redirect(flash.error(APPROVAL_STALE_MESSAGE), &edit_url);
+        }
         Ok(_) => {}
         Err(e) => {
             tracing::error!(error = %e, "persist MCP tool approval failed");
@@ -259,14 +284,13 @@ pub async fn approve_mcp_tools_web(
         &state,
         crate::ipc::AuditEvent::new(
             shared::messages::AuditEventType::AssetUpdated,
-            format!(
-                r#"{{"asset":"{}","action":"mcp_approve_tools","tool":{}}}"#,
-                uuid_str,
-                form.tool_name
-                    .as_deref()
-                    .map(|s| format!("\"{s}\""))
-                    .unwrap_or_else(|| "\"*\"".to_string())
-            ),
+            // Built as JSON, not by format: the tool name is form input.
+            serde_json::json!({
+                "asset": uuid_str,
+                "action": "mcp_approve_tools",
+                "tool": tool_name.unwrap_or("*"),
+            })
+            .to_string(),
         )
         .user(auth_user.uuid.clone()),
     );

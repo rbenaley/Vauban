@@ -40,6 +40,8 @@ fn pending_message(
 #[derive(Debug, Clone, Default)]
 pub struct McpToolRow {
     pub name: String,
+    /// Fingerprint of the definition shown; the Approve form sends it back.
+    pub fingerprint: String,
     pub description: String,
     pub status: String,
     pub hitl: bool,
@@ -72,6 +74,7 @@ impl McpToolRow {
         };
         Self {
             name: t.name.clone(),
+            fingerprint: t.fingerprint(),
             description: t.description.clone(),
             status,
             hitl: t.hitl,
@@ -97,6 +100,8 @@ impl McpToolRow {
 pub struct McpInstructionsRow {
     /// `approve-mcp-tools` `tool_name` value for this row.
     pub approve_key: String,
+    /// Fingerprint of the text shown; the Approve form sends it back.
+    pub fingerprint: String,
     pub status: String,
     pub text: String,
     pub pending_message: Option<String>,
@@ -110,6 +115,7 @@ impl McpInstructionsRow {
         let changed = pending && e.pending_reason == Some(PendingReason::DefinitionChanged);
         Self {
             approve_key: INSTRUCTIONS_KEY.to_string(),
+            fingerprint: e.fingerprint.clone(),
             status,
             text: e.text.clone(),
             pending_message: pending.then(|| {
@@ -183,6 +189,9 @@ pub struct AssetEdit {
     pub mcp_tools: Vec<McpToolRow>,
     /// Pinned upstream instructions (MCP only, when the upstream sends any).
     pub mcp_instructions: Option<McpInstructionsRow>,
+    /// What "Approve pending" would approve on this page
+    /// (`mcp_discover::pending_digest`); that form sends it back.
+    pub mcp_pending_digest: String,
 }
 
 #[derive(Template)]
@@ -235,6 +244,7 @@ mod tests {
             mcp_transport: "direct".to_string(),
             mcp_tools: Vec::new(),
             mcp_instructions: None,
+            mcp_pending_digest: String::new(),
         }
     }
 

@@ -1403,6 +1403,7 @@ pub async fn asset_edit(
         },
         mcp_tools,
         mcp_instructions,
+        mcp_pending_digest: crate::services::mcp_discover::pending_digest(&asset_connection_config),
     };
 
     let base = BaseTemplate::new(
