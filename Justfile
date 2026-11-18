@@ -25,9 +25,24 @@ check *ARGS:
 # the test root (`mcp-mandate`, `session-token`, `json-redact`, and the
 # rest). Without it, Cargo skips every `required-features` suite. A filter
 # is `just test gwt_`.
-test *ARGS:
+# Nothing else applies a new migration to the test database, and a test
+# then fails far from the cause: `migrate-test` runs first.
+# Run all tests, after migrating the test database.
+test *ARGS: migrate-test
     cargo test --workspace --all-features --exclude vauban-web --exclude vauban-access --exclude vauban-supervisor {{ARGS}}
     cargo test --all-features -p vauban-web -p vauban-access -p vauban-supervisor {{ARGS}} -- --test-threads=1
+
+# Uses the supervisor's own runner (`vauban-supervisor migrate`, the
+# embedded migrations of vauban-db). In production the supervisor does
+# this at boot; the test database has no supervisor. The database is the
+# one the tests use: DATABASE_URL, else the URL of config/testing.toml.
+# Idempotent: with nothing pending it changes nothing.
+# Apply the pending schema migrations to the test database.
+migrate-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    url="${DATABASE_URL:-postgresql://vauban_test:vauban_test@localhost/vauban_test}"
+    cargo run --quiet -p vauban-supervisor -- migrate --database-url "${url}"
 
 # Coverage gate for the MCP security fixes (MCP Arch §13.1):
 # 100 % on the fix modules, diff coverage on every other changed line.
