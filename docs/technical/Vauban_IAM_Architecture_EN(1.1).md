@@ -1475,10 +1475,39 @@ edit stored in between was lost.
 
 A pin is also conditional on the pin the handler read
 (`ConfigPatch::expecting`). "No pin yet, so no confirmation is needed"
-and "the administrator confirmed replacing this pin" are decisions
-about a particular stored value. If another request pinned something
-else meanwhile, nothing is written: the web zone asks to reload, the
-API answers 409.
+is a decision about a particular stored value. If another request
+pinned something else between that read and the write, nothing is
+written: the web zone asks to reload, the API answers 409.
+
+In the web zone a confirmation is bound to what the administrator was
+shown. The warning displays the stored fingerprint and the one the
+target presents, and sends both back with the confirmation
+(`PinTrustAnchorForm::confirms_change`). The confirming request reads
+the pin and asks the target again; if either differs from what was
+displayed (another administrator pinned something else, or the target
+now presents a third identity), the warning is shown again with what
+was found, and nothing is pinned. The API's `?confirm=true` is not
+bound this way: it accepts whatever the target presents at that
+moment.
+
+A mismatch flag is raised only if the pin is still the one the check
+ran against (`raise_trust_anchor_flag_for_pin`): a mismatch found
+against a pin that an administrator has replaced meanwhile says
+nothing about the new one, and would block an asset just repaired.
+
+Known limits of writing key by key:
+
+- An edit validates a combination of keys against the copy it read
+  (an RDP mode against the stored domain and the hostname). Two edits
+  that each change one half can together store a combination neither
+  would have been allowed to.
+- A pin write removes the mismatch flag. A flag raised by a failed
+  connection between the handler's read and its write is removed with
+  it; the proxy still refuses the connection, only the warning is
+  lost until the next attempt.
+- The update API takes the columns it is not given (hostname, port,
+  status) from the row it read, so it can still revert a concurrent
+  change of those.
 
 `vauban-web/scripts/check_connection_config_writes.sh` fails on an
 `UPDATE` in `handlers/` or `ipc/` that writes the column without a

@@ -603,7 +603,7 @@ pub async fn connect_rdp(
             // asset detail page shows the red warning state and subsequent
             // connections are refused fail-closed (mirror web/ssh.rs).
             if crate::services::rdp_open_failure::is_certificate_mismatch(code) {
-                flag_rdp_cert_mismatch(&mut conn, asset_uuid).await;
+                flag_rdp_cert_mismatch(&mut conn, asset_uuid, &config).await;
             }
 
             htmx_error_response(crate::services::rdp_open_failure::message_from_wire(code))
@@ -633,25 +633,27 @@ pub async fn connect_rdp(
 async fn flag_rdp_cert_mismatch(
     conn: &mut diesel_async::AsyncPgConnection,
     asset_uuid: uuid::Uuid,
+    seen_config: &serde_json::Value,
 ) {
-    tracing::warn!(
-        asset_uuid = %asset_uuid,
-        "Marking RDP asset as server-certificate mismatch after failed connection"
-    );
-    // One atomic statement: nothing else in `connection_config` is
-    // rewritten, so a pin stored meanwhile is not lost.
-    if let Err(db_err) = crate::models::asset::raise_trust_anchor_flag(
-        conn,
-        asset_uuid,
-        crate::models::asset::TrustAnchorFlag::RdpServerCertMismatch,
-    )
-    .await
-    {
-        tracing::error!(
+    use crate::models::asset::{TrustAnchorFlag, raise_trust_anchor_flag_for_pin};
+    // One atomic statement, and only if the pin is still the one the
+    // check ran against (`seen_config`): a mismatch against a pin that
+    // has been replaced meanwhile says nothing about the new one.
+    let flag = TrustAnchorFlag::RdpServerCertMismatch;
+    match raise_trust_anchor_flag_for_pin(conn, asset_uuid, flag, flag.pin_in(seen_config)).await {
+        Ok(0) => tracing::info!(
+            asset_uuid = %asset_uuid,
+            "RDP certificate mismatch not recorded: the pin changed since the check"
+        ),
+        Ok(_) => tracing::warn!(
+            asset_uuid = %asset_uuid,
+            "Marking RDP asset as server-certificate mismatch"
+        ),
+        Err(db_err) => tracing::error!(
             asset_uuid = %asset_uuid,
             error = %db_err,
             "Failed to persist RDP server-certificate mismatch flag"
-        );
+        ),
     }
 }
 
@@ -864,12 +866,12 @@ pub async fn fetch_rdp_server_cert(
 
     // Detect certificate change: if a SPKI was previously pinned and the
     // newly fetched SPKI differs, warn unless the admin explicitly confirmed.
+    let old_fp = stored_fingerprint.as_deref().unwrap_or("unknown");
     if let Some(ref old_spki) = stored_spki
         && old_spki != &server_spki
-        && !confirm
+        // A confirmation counts only for the change the warning showed.
+        && !(confirm && form.confirms_change(old_fp, &fingerprint))
     {
-        let old_fp = stored_fingerprint.as_deref().unwrap_or("unknown");
-
         tracing::warn!(
             asset_uuid = %asset_uuid,
             old_fingerprint = %old_fp,
@@ -1084,7 +1086,7 @@ pub async fn verify_rdp_server_cert(
                     "RDP server certificate CHANGED on remote server (detected during page load verification)"
                 );
 
-                flag_rdp_cert_mismatch(&mut conn, asset_uuid).await;
+                flag_rdp_cert_mismatch(&mut conn, asset_uuid, &asset.connection_config).await;
 
                 let html = include_str!(
                     "../../../templates/assets/_rdp_server_cert_mismatch_fragment.html"

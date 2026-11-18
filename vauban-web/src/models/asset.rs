@@ -766,6 +766,21 @@ impl TrustAnchorFlag {
             TrustAnchorFlag::RdpServerCertMismatch => "rdp_server_cert_mismatch",
         }
     }
+
+    /// The key of the pin this flag is about.
+    pub const fn pin_key(self) -> &'static str {
+        match self {
+            TrustAnchorFlag::SshHostKeyMismatch => "ssh_host_key",
+            TrustAnchorFlag::RdpServerCertMismatch => "rdp_server_cert_spki",
+        }
+    }
+
+    /// The pin this flag is about, as a document read earlier holds it.
+    pub fn pin_in(self, connection_config: &serde_json::Value) -> Option<&str> {
+        connection_config
+            .get(self.pin_key())
+            .and_then(serde_json::Value::as_str)
+    }
 }
 
 /// A change to named keys of `connection_config`, applied in one
@@ -858,10 +873,13 @@ impl ConfigPatch {
     /// Apply only if `key` still holds the string `value` (`None`: the
     /// key is absent). Otherwise no row is changed.
     ///
-    /// A pin is decided on the pin the handler read: "there was none" or
-    /// "it is the one the administrator confirmed replacing". If another
-    /// request pinned something else meanwhile, the decision no longer
-    /// holds and the write must not happen.
+    /// A pin is decided on the pin the handler read in this request:
+    /// "there was none", "it is the one the target still presents", or
+    /// "it is the one whose replacement was confirmed". If another
+    /// request pinned something else between that read and the write,
+    /// the decision no longer holds and the write must not happen.
+    /// (That the confirmation is about what the administrator was shown
+    /// is a separate check: `PinTrustAnchorForm::confirms_change`.)
     pub fn expecting(mut self, key: &'static str, value: Option<&str>) -> Self {
         self.expect = Some((key, value.map(str::to_string)));
         self
@@ -936,6 +954,27 @@ pub async fn raise_trust_anchor_flag(
     flag: TrustAnchorFlag,
 ) -> QueryResult<usize> {
     patch_connection_config(conn, asset_uuid, &ConfigPatch::new().set(flag.key(), true)).await
+}
+
+/// Set `flag` to `true`, but only if the pin is still `pin`: the one
+/// the mismatch was observed against.
+///
+/// A mismatch is a statement about a particular pin: "the target did
+/// not present THIS identity". The check that found it ran against a
+/// copy of the asset read before a round trip to the target. If an
+/// administrator pinned the new identity meanwhile, the statement no
+/// longer holds, and raising the flag would block an asset that was
+/// just repaired. Returns `0` in that case.
+pub async fn raise_trust_anchor_flag_for_pin(
+    conn: &mut diesel_async::AsyncPgConnection,
+    asset_uuid: Uuid,
+    flag: TrustAnchorFlag,
+    pin: Option<&str>,
+) -> QueryResult<usize> {
+    let patch = ConfigPatch::new()
+        .set(flag.key(), true)
+        .expecting(flag.pin_key(), pin);
+    patch_connection_config(conn, asset_uuid, &patch).await
 }
 
 /// Attempts of [`update_connection_config_with`] before it gives up.

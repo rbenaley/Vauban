@@ -84,7 +84,11 @@ pub struct CertExpiry {
     waker: Notify,
     /// Woken when the supervisor answers a renewal with a failure.
     failure_waker: Notify,
-    /// Whether that failure was the supervisor's renewal bound.
+    /// How many failed answers arrived. The scheduler notes the count
+    /// before it asks and waits for a higher one, so an answer to an
+    /// earlier request is not taken for the answer to this one.
+    failure_count: std::sync::atomic::AtomicU64,
+    /// Whether the latest failure was the supervisor's renewal bound.
     failure_too_soon: AtomicBool,
 }
 
@@ -95,6 +99,7 @@ impl CertExpiry {
             self_signed: AtomicBool::new(info.self_signed),
             waker: Notify::new(),
             failure_waker: Notify::new(),
+            failure_count: std::sync::atomic::AtomicU64::new(0),
             failure_too_soon: AtomicBool::new(false),
         }
     }
@@ -150,15 +155,32 @@ impl CertExpiry {
     /// `acme_too_soon` is told apart, the text is not kept.
     pub fn renewal_failed(&self, code: Option<&str>) {
         self.failure_too_soon
-            .store(code == Some(ACME_TOO_SOON), Ordering::Relaxed);
+            .store(code == Some(ACME_TOO_SOON), Ordering::SeqCst);
+        self.failure_count.fetch_add(1, Ordering::SeqCst);
         self.failure_waker.notify_one();
     }
 
-    /// Wait until a renewal fails. Returns whether the failure was the
-    /// supervisor's renewal bound.
-    pub async fn renewal_failure(&self) -> bool {
-        self.failure_waker.notified().await;
-        self.failure_too_soon.load(Ordering::Relaxed)
+    /// How many failed answers have arrived so far. Read before a
+    /// request is sent, and passed to [`CertExpiry::renewal_failure_after`].
+    pub fn failures_seen(&self) -> u64 {
+        self.failure_count.load(Ordering::SeqCst)
+    }
+
+    /// Wait until a failed answer arrives that was not counted in
+    /// `seen`. Returns whether it was the supervisor's renewal bound.
+    ///
+    /// An answer can arrive late: after the scheduler gave up waiting
+    /// for it and went on to its retry. It is counted before the next
+    /// request reads `failures_seen`, so it does not make that request
+    /// look failed.
+    pub async fn renewal_failure_after(&self, seen: u64) -> bool {
+        loop {
+            let woken = self.failure_waker.notified();
+            if self.failure_count.load(Ordering::SeqCst) > seen {
+                return self.failure_too_soon.load(Ordering::SeqCst);
+            }
+            woken.await;
+        }
     }
 }
 
@@ -254,6 +276,7 @@ async fn renewal_scheduler(
                 &cert_expiry,
             )
             .await;
+            rest_if_still_due(acme_config.renew_before_hours, &cert_expiry).await;
             continue;
         }
 
@@ -296,6 +319,40 @@ async fn renewal_scheduler(
             &cert_expiry,
         )
         .await;
+        rest_if_still_due(acme_config.renew_before_hours, &cert_expiry).await;
+    }
+}
+
+/// Whether the current certificate must be renewed now: it is
+/// self-signed, or inside the renewal window.
+fn renewal_due(renew_before_hours: u32, cert_expiry: &CertExpiry) -> bool {
+    cert_expiry.is_self_signed()
+        || cert_expiry.seconds_remaining() <= i64::from(renew_before_hours) * 3600
+}
+
+/// After a certificate was activated: if it must already be renewed,
+/// wait before asking again.
+///
+/// A certificate whose lifetime is shorter than `renew_before_hours`,
+/// or one that still reads as self-signed, is due the moment it is
+/// activated. Without this wait the scheduler would ask at once, be
+/// issued another such certificate, and go on as fast as the
+/// supervisor's bound allows: three issuances every quarter of an hour,
+/// for ever.
+async fn rest_if_still_due(renew_before_hours: u32, cert_expiry: &CertExpiry) {
+    if !renewal_due(renew_before_hours, cert_expiry) {
+        return;
+    }
+    warn!(
+        days_remaining = cert_expiry.days_remaining(),
+        renew_before_hours,
+        wait_hours = RETRY_MAX.as_secs() / 3600,
+        "The certificate just activated is already due for renewal; \
+         check renew_before_hours against the lifetime the authority issues"
+    );
+    tokio::select! {
+        () = tokio::time::sleep(RETRY_MAX) => {}
+        () = cert_expiry.notified() => {}
     }
 }
 
@@ -315,11 +372,14 @@ async fn renew_until_activated(
 ) {
     let mut failures: u32 = 0;
     loop {
+        // Counted before the request: a failed answer that belongs to an
+        // earlier request does not count for this one.
+        let seen = cert_expiry.failures_seen();
         let sent = request_renewal(acme_config, cert_path, key_path, supervisor).await;
         let outcome = if sent {
             tokio::select! {
                 () = cert_expiry.notified() => RenewalOutcome::Activated,
-                too_soon = cert_expiry.renewal_failure() => {
+                too_soon = cert_expiry.renewal_failure_after(seen) => {
                     if too_soon { RenewalOutcome::TooSoon } else { RenewalOutcome::Failed }
                 }
                 () = tokio::time::sleep(RENEWAL_ANSWER_TIMEOUT) => {
@@ -650,10 +710,12 @@ mod tests {
     #[tokio::test]
     async fn attack_failed_renewal_wakes_the_scheduler() {
         let expiry = expiry();
+        let seen = expiry.failures_seen();
         expiry.renewal_failed(Some("acme_directory_mismatch"));
-        let too_soon = tokio::time::timeout(Duration::from_secs(1), expiry.renewal_failure())
-            .await
-            .expect("a failure recorded before the wait still wakes it");
+        let too_soon =
+            tokio::time::timeout(Duration::from_secs(1), expiry.renewal_failure_after(seen))
+                .await
+                .expect("a failure that arrives before the wait starts still ends it");
         assert!(!too_soon);
     }
 
@@ -667,12 +729,97 @@ mod tests {
             (Some("the CA said acme_too_soon"), false),
             (None, false),
         ] {
+            let seen = expiry.failures_seen();
             expiry.renewal_failed(code);
-            let too_soon = tokio::time::timeout(Duration::from_secs(1), expiry.renewal_failure())
-                .await
-                .expect("woken");
+            let too_soon =
+                tokio::time::timeout(Duration::from_secs(1), expiry.renewal_failure_after(seen))
+                    .await
+                    .expect("woken");
             assert_eq!(too_soon, expected, "{code:?}");
         }
+    }
+
+    /// The answer to an earlier request arrives late, while the
+    /// scheduler is already waiting to retry. It must not make the next
+    /// request look failed the moment it is sent.
+    #[tokio::test]
+    async fn attack_late_answer_to_an_earlier_request_does_not_fail_the_next_one() {
+        let expiry = expiry();
+        // The late answer, and a second one for good measure.
+        expiry.renewal_failed(Some("acme_too_soon"));
+        expiry.renewal_failed(None);
+
+        // The next request notes what was already answered...
+        let seen = expiry.failures_seen();
+        // ...and is not woken by it.
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                expiry.renewal_failure_after(seen)
+            )
+            .await
+            .is_err(),
+            "a failure counted before the request was sent is not its answer"
+        );
+
+        // Its own answer does wake it.
+        let waiting = tokio::spawn({
+            let expiry = std::sync::Arc::new(expiry);
+            let waiter = std::sync::Arc::clone(&expiry);
+            async move {
+                let handle = tokio::spawn(async move { waiter.renewal_failure_after(seen).await });
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                expiry.renewal_failed(Some("acme_too_soon"));
+                handle.await.unwrap()
+            }
+        });
+        let too_soon = tokio::time::timeout(Duration::from_secs(2), waiting)
+            .await
+            .expect("woken by its own answer")
+            .unwrap();
+        assert!(too_soon);
+    }
+
+    /// A certificate that is due the moment it is activated must not be
+    /// asked for again at once.
+    #[test]
+    fn test_certificate_due_on_activation_is_detected() {
+        let now = chrono::Utc::now().timestamp();
+        let lifetime_10h = CertExpiry::new(CertInfo {
+            not_after_epoch: now + 10 * 3600,
+            self_signed: false,
+        });
+        let self_signed = CertExpiry::new(CertInfo {
+            not_after_epoch: now + 90 * 86400,
+            self_signed: true,
+        });
+        let healthy = CertExpiry::new(CertInfo {
+            not_after_epoch: now + 90 * 86400,
+            self_signed: false,
+        });
+        assert!(renewal_due(24, &lifetime_10h));
+        assert!(renewal_due(24, &self_signed));
+        assert!(!renewal_due(24, &healthy));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn attack_certificate_due_on_activation_is_not_reissued_at_once() {
+        let now = chrono::Utc::now().timestamp();
+        let short = CertExpiry::new(CertInfo {
+            not_after_epoch: now + 3600,
+            self_signed: false,
+        });
+        let started = tokio::time::Instant::now();
+        rest_if_still_due(24, &short).await;
+        assert!(started.elapsed() >= RETRY_MAX, "{:?}", started.elapsed());
+
+        let healthy = CertExpiry::new(CertInfo {
+            not_after_epoch: now + 90 * 86400,
+            self_signed: false,
+        });
+        let started = tokio::time::Instant::now();
+        rest_if_still_due(24, &healthy).await;
+        assert_eq!(started.elapsed(), Duration::ZERO);
     }
 
     /// A failure does not look like a new certificate, and the reverse.
@@ -704,6 +851,11 @@ mod tests {
             "the scheduler asks through renew_until_activated"
         );
         assert_eq!(scheduler.matches("renew_until_activated(").count(), 2);
+        assert_eq!(
+            scheduler.matches("rest_if_still_due(").count(),
+            2,
+            "each activation is followed by the check that stops a re-issuance loop"
+        );
 
         let retry = production
             .split("async fn renew_until_activated(")
@@ -712,7 +864,7 @@ mod tests {
             .expect("renew_until_activated");
         for arm in [
             "cert_expiry.notified()",
-            "cert_expiry.renewal_failure()",
+            "cert_expiry.renewal_failure_after(seen)",
             "tokio::time::sleep(RENEWAL_ANSWER_TIMEOUT)",
         ] {
             assert!(retry.contains(arm), "missing wait: {arm}");

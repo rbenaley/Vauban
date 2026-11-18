@@ -381,9 +381,14 @@ async fn handle_update_asset_connection_config(
         return AdminResponse::Error(format!("Refused connection config: {e}"));
     }
 
-    // The command carries a whole document computed from the one that
-    // was read. Its difference with that one is applied to the document
-    // as it is now, so a flag or a pin stored in between is kept.
+    // The command carries a whole document. What differs from the
+    // document read just above is applied, not the whole document, so
+    // nothing stored between that read and this write is lost. It does
+    // NOT protect what was stored between the moment the sender read
+    // the asset and now: the sender computed its document from its own,
+    // older copy, and a pin or a flag added since then looks like a key
+    // the command removes. No sender of this command exists today; one
+    // that appears should send the keys it changes, not a document.
     let stored = existing
         .as_ref()
         .map(|(_, _, stored)| stored.clone())

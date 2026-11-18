@@ -36,7 +36,7 @@ fn connect_ssh_writes_mismatch_flag_on_failure() {
     // (the fetched key differs from the pinned one).
     let production = body.split("#[cfg(test)]").next().unwrap_or(body);
     let calls = production
-        .matches("flag_ssh_host_key_mismatch(&mut conn, asset_uuid).await")
+        .matches("flag_ssh_host_key_mismatch(&mut conn, asset_uuid, &asset.connection_config)")
         .count();
     assert!(
         calls >= 2,

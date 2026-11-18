@@ -163,12 +163,35 @@ pub struct PinTrustAnchorForm {
     pub csrf_token: String,
     #[serde(default)]
     pub confirm: Option<String>,
+    /// The fingerprint of the stored pin, as the warning showed it.
+    #[serde(default)]
+    pub shown_old: Option<String>,
+    /// The fingerprint the target presented, as the warning showed it.
+    #[serde(default)]
+    pub shown_new: Option<String>,
 }
 
 impl PinTrustAnchorForm {
     /// Whether the operator confirmed the replacement of a changed pin.
     pub fn confirmed(&self) -> bool {
         self.confirm.as_deref() == Some("true")
+    }
+
+    /// Whether the operator confirmed THIS replacement: the stored pin
+    /// `old_fingerprint` by the identity `new_fingerprint`.
+    ///
+    /// The confirming request reads the pin and asks the target again.
+    /// What it finds may not be what the warning showed: another
+    /// administrator may have pinned something else, or the target (or
+    /// whoever answers in its place) may now present a third identity.
+    /// A bare `confirm=true` would accept that unseen. The warning
+    /// therefore sends back the two fingerprints it displayed, and a
+    /// confirmation counts only for exactly that pair; otherwise the
+    /// handler shows the warning again, with what it found.
+    pub fn confirms_change(&self, old_fingerprint: &str, new_fingerprint: &str) -> bool {
+        self.confirmed()
+            && self.shown_old.as_deref() == Some(old_fingerprint)
+            && self.shown_new.as_deref() == Some(new_fingerprint)
     }
 }
 

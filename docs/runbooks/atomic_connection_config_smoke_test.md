@@ -68,6 +68,10 @@ rtk cargo test -p vauban-proxy-ssh --all-features
 3. In the second, without reloading, change the host key of the
    target, then use **Fetch Host Key**. **Expected:** the red fragment
    asking to confirm the change, not a silent replacement.
+3a. Leave that red fragment open. Change the host key of the target
+   once more, then click **Accept New Key**. **Expected:** the red
+   fragment again, now showing the newest fingerprint; nothing is
+   pinned until that one is accepted.
 4. Still without reloading the second browser, edit the asset there
    (change the description only) and save. Reload the first browser.
    **Expected:** the pinned key is still the one of step 2.

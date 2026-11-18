@@ -562,9 +562,11 @@ fact: once the token of session S has been accepted for service X, S is
 served by X. An entry never changes service (a token for the same
 session and another service is refused), the table is bounded, and a
 lease on a session it does not know is refused. When the table is
-full the least recently used session goes first: a token presented
-again and a lease both count as a use, so a long session that keeps
-asking for files is not the one forgotten. The table lives in memory:
+full the least recently used session goes first: an accepted token
+and a granted lease count as a use, so a long session that keeps
+obtaining files is not the one forgotten. A request that is refused
+is not a use: a service cannot keep its sessions in the table by
+naming them. The table lives in memory:
 the services, and every session with them, do not outlive the
 supervisor.
 
@@ -601,6 +603,11 @@ connection, records the session for `proxy_iacs`, and opens no socket.
 Only `web` may claim, and only for `ProxyIacs`; a proxy that could
 claim would claim the session of another. If the claim is refused the
 tunnel is not opened.
+
+The table is in memory, so the identifier of a closed SSH, RDP or MCP
+session can be recorded again after a restart or an eviction. The
+session directory is the second guard: an IACS file is refused where
+`session.cast`, `session.mcp.jsonl` or `001.mp4` already is.
 
 **How the file is opened.** `shared::recording_open` descends from the
 storage base one component at a time with

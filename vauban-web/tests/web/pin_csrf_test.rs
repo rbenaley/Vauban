@@ -386,3 +386,81 @@ fn test_every_web_mutation_route_checks_csrf() {
     }
     assert!(checked >= 60, "inventory looks too small: {checked} routes");
 }
+
+/// A confirmation counts for the change the warning displayed, and for
+/// no other. The confirming request reads the pin and asks the target
+/// again; what it finds may be something the administrator never saw.
+#[test]
+fn attack_confirmation_is_bound_to_the_fingerprints_that_were_shown() {
+    use vauban_web::handlers::web::PinTrustAnchorForm;
+    let form = |confirm: Option<&str>, old: Option<&str>, new: Option<&str>| PinTrustAnchorForm {
+        csrf_token: "t".to_string(),
+        confirm: confirm.map(str::to_string),
+        shown_old: old.map(str::to_string),
+        shown_new: new.map(str::to_string),
+    };
+    let shown = form(Some("true"), Some("SHA256:old"), Some("SHA256:new"));
+    assert!(shown.confirms_change("SHA256:old", "SHA256:new"));
+    // The target now presents a third identity.
+    assert!(!shown.confirms_change("SHA256:old", "SHA256:other"));
+    // Another administrator replaced the pin meanwhile.
+    assert!(!shown.confirms_change("SHA256:repinned", "SHA256:new"));
+    // A bare confirmation, as a script or an older page would send.
+    assert!(!form(Some("true"), None, None).confirms_change("SHA256:old", "SHA256:new"));
+    assert!(
+        !form(Some("true"), Some("SHA256:old"), None).confirms_change("SHA256:old", "SHA256:new")
+    );
+    // The right fingerprints without the confirmation.
+    assert!(
+        !form(None, Some("SHA256:old"), Some("SHA256:new"))
+            .confirms_change("SHA256:old", "SHA256:new")
+    );
+    assert!(
+        !form(Some("yes"), Some("SHA256:old"), Some("SHA256:new"))
+            .confirms_change("SHA256:old", "SHA256:new")
+    );
+}
+
+/// Both pin handlers decide on `confirms_change`, and both warnings send
+/// back the fingerprints they display, read from data attributes rather
+/// than written into the script.
+#[test]
+fn test_pin_handlers_and_warnings_carry_the_shown_fingerprints() {
+    for (name, source) in [
+        ("ssh.rs", include_str!("../../src/handlers/web/ssh.rs")),
+        ("rdp.rs", include_str!("../../src/handlers/web/rdp.rs")),
+    ] {
+        assert!(
+            source.contains("&& !(confirm && form.confirms_change(old_fp, &fingerprint))"),
+            "{name}: the replacement must be confirmed for the change that was shown"
+        );
+    }
+    for (name, fragment) in [
+        (
+            "_ssh_host_key_mismatch_fragment.html",
+            include_str!("../../templates/assets/_ssh_host_key_mismatch_fragment.html"),
+        ),
+        (
+            "_rdp_server_cert_mismatch_fragment.html",
+            include_str!("../../templates/assets/_rdp_server_cert_mismatch_fragment.html"),
+        ),
+    ] {
+        for needle in [
+            r#"data-shown-old="__OLD_FINGERPRINT__""#,
+            r#"data-shown-new="__NEW_FINGERPRINT__""#,
+            "shown_old: $el.dataset.shownOld",
+            "shown_new: $el.dataset.shownNew",
+        ] {
+            assert!(fragment.contains(needle), "{name}: missing {needle}");
+        }
+        let script = fragment
+            .split("x-bind:hx-vals=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .unwrap_or_else(|| panic!("{name}: hx-vals"));
+        assert!(
+            !script.contains("__"),
+            "{name}: no placeholder may be substituted inside the script"
+        );
+    }
+}

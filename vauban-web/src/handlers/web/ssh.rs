@@ -37,23 +37,32 @@ pub struct ConnectSshResponse {
 ///
 /// One atomic statement (`raise_trust_anchor_flag`): nothing else in
 /// `connection_config` is rewritten.
+///
+/// `seen_config` is the document the check ran against. The flag is
+/// raised only if its pin is still the stored one: a mismatch against a
+/// pin that an administrator has replaced meanwhile says nothing about
+/// the new one.
 async fn flag_ssh_host_key_mismatch(
     conn: &mut diesel_async::AsyncPgConnection,
     asset_uuid: ::uuid::Uuid,
+    seen_config: &serde_json::Value,
 ) {
-    use crate::models::asset::{TrustAnchorFlag, raise_trust_anchor_flag};
-    tracing::warn!(
-        asset_uuid = %asset_uuid,
-        "Marking asset as host key mismatch"
-    );
-    if let Err(db_err) =
-        raise_trust_anchor_flag(conn, asset_uuid, TrustAnchorFlag::SshHostKeyMismatch).await
-    {
-        tracing::error!(
+    use crate::models::asset::{TrustAnchorFlag, raise_trust_anchor_flag_for_pin};
+    let flag = TrustAnchorFlag::SshHostKeyMismatch;
+    match raise_trust_anchor_flag_for_pin(conn, asset_uuid, flag, flag.pin_in(seen_config)).await {
+        Ok(0) => tracing::info!(
+            asset_uuid = %asset_uuid,
+            "Host key mismatch not recorded: the pin changed since the check"
+        ),
+        Ok(_) => tracing::warn!(
+            asset_uuid = %asset_uuid,
+            "Marking asset as host key mismatch"
+        ),
+        Err(db_err) => tracing::error!(
             asset_uuid = %asset_uuid,
             error = %db_err,
             "Failed to persist host key mismatch flag"
-        );
+        ),
     }
 }
 
@@ -824,7 +833,8 @@ pub async fn connect_ssh(
                     "SSH session refused by the proxy"
                 );
                 if crate::services::ssh_open_failure::is_host_key_mismatch(code) {
-                    flag_ssh_host_key_mismatch(&mut conn, asset_uuid).await;
+                    flag_ssh_host_key_mismatch(&mut conn, asset_uuid, &asset.connection_config)
+                        .await;
                 }
 
                 if is_htmx {
@@ -999,12 +1009,12 @@ pub async fn fetch_ssh_host_key(
     // Detect host key change: if a key was previously stored and the
     // newly fetched key differs, warn the user unless they explicitly
     // confirmed acceptance of the new key.
+    let old_fp = stored_fingerprint.as_deref().unwrap_or("unknown");
     if let Some(ref old_key) = stored_host_key
         && old_key != &host_key
-        && !confirm
+        // A confirmation counts only for the change the warning showed.
+        && !(confirm && form.confirms_change(old_fp, &fingerprint))
     {
-        let old_fp = stored_fingerprint.as_deref().unwrap_or("unknown");
-
         tracing::warn!(
             asset_uuid = %asset_uuid,
             old_fingerprint = %old_fp,
@@ -1265,7 +1275,7 @@ pub async fn push_ssh_public_key(
         if crate::services::ssh_open_failure::of_error(&e)
             == Some(shared::messages::SshOpenFailure::HostKeyMismatch)
         {
-            flag_ssh_host_key_mismatch(&mut conn, asset_uuid).await;
+            flag_ssh_host_key_mismatch(&mut conn, asset_uuid, &asset.connection_config).await;
         }
         return htmx_error_response(crate::services::ssh_open_failure::operation_message(&e));
     }
@@ -1422,7 +1432,7 @@ pub async fn test_ssh_key_auth(
         if crate::services::ssh_open_failure::of_error(&e)
             == Some(shared::messages::SshOpenFailure::HostKeyMismatch)
         {
-            flag_ssh_host_key_mismatch(&mut conn, asset_uuid).await;
+            flag_ssh_host_key_mismatch(&mut conn, asset_uuid, &asset.connection_config).await;
         }
         return htmx_error_response(crate::services::ssh_open_failure::operation_message(&e));
     }
@@ -1613,7 +1623,7 @@ pub async fn verify_ssh_host_key(
                     "SSH host key CHANGED on remote server (detected during page load verification)"
                 );
 
-                flag_ssh_host_key_mismatch(&mut conn, asset_uuid).await;
+                flag_ssh_host_key_mismatch(&mut conn, asset_uuid, &asset.connection_config).await;
 
                 // Return mismatch fragment with both fingerprints
                 let html =

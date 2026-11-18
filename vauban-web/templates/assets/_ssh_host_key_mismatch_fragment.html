@@ -31,7 +31,9 @@
         <button
           hx-post="/assets/manage/__ASSET_UUID__/fetch-host-key"
           x-data="csrf"
-          x-bind:hx-vals="JSON.stringify({csrf_token: token, confirm: 'true'})"
+          data-shown-old="__OLD_FINGERPRINT__"
+          data-shown-new="__NEW_FINGERPRINT__"
+          x-bind:hx-vals="JSON.stringify({csrf_token: token, confirm: 'true', shown_old: $el.dataset.shownOld, shown_new: $el.dataset.shownNew})"
           hx-target="#ssh-host-key-section"
           hx-swap="outerHTML"
           hx-confirm="The SSH host key has changed. Are you sure you want to trust the new key? Only accept if you have verified this change with the server administrator."

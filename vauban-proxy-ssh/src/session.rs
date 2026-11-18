@@ -589,6 +589,9 @@ async fn connect_oneshot_handle(
     }
 }
 
+/// Bytes of the target's error output kept when a key push fails.
+const PUSH_STDERR_LIMIT: usize = 4096;
+
 /// Push an OpenSSH public key onto the target's
 /// `~/.ssh/authorized_keys` over a one-shot password-authenticated
 /// session, then disconnect. Idempotent server-side (the key is only
@@ -666,7 +669,13 @@ pub async fn push_public_key(
     loop {
         match channel.wait().await {
             Some(ChannelMsg::ExitStatus { exit_status: code }) => exit_status = Some(code),
-            Some(ChannelMsg::ExtendedData { data, .. }) => stderr.extend_from_slice(&data),
+            // What the target writes ends up in this service's log.
+            // Keep the first few kilobytes; a target cannot grow the
+            // buffer, or the log line, without bound.
+            Some(ChannelMsg::ExtendedData { data, .. }) => {
+                let room = PUSH_STDERR_LIMIT.saturating_sub(stderr.len());
+                stderr.extend_from_slice(&data[..data.len().min(room)]);
+            }
             Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
             Some(_) => {}
         }

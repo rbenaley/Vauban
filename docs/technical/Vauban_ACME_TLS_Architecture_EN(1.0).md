@@ -572,7 +572,11 @@ request anything that decides what is written or where:
   `acme_too_soon` waits fifteen minutes without lengthening the next
   waits. The first wait is the window of the supervisor's bound, so a
   retry is never the request that trips it. A certificate activated
-  meanwhile ends the retries.
+  meanwhile ends the retries. A failed answer is matched to the
+  request it follows by count, so one that arrives late does not make
+  the next request look failed. A certificate that is already due
+  when it is activated (a lifetime shorter than `renew_before_hours`)
+  is not asked for again before six hours.
 - A write interrupted between create and rename leaves a temporary
   file next to its destination; the next write of the same file
   removes it.

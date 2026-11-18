@@ -21,7 +21,8 @@ use serde_json::{Value, json};
 use serial_test::serial;
 use uuid::Uuid;
 use vauban_web::models::asset::{
-    ConfigPatch, ConfigUpdate, patch_connection_config, update_connection_config_with,
+    ConfigPatch, ConfigUpdate, TrustAnchorFlag, patch_connection_config,
+    raise_trust_anchor_flag_for_pin, update_connection_config_with,
 };
 
 struct Row {
@@ -240,6 +241,93 @@ async fn attack_flag_set_after_a_round_trip_does_not_undo_what_was_stored_meanwh
         row(&mut conn, asset).await.config,
         json!({"ssh_host_key": "new", "ssh_host_key_mismatch": true, "ssh_pubkey_pushed": true})
     );
+}
+
+/// A check ran against pin A and found a mismatch. Meanwhile an
+/// administrator pinned the new identity B. Raising the flag now would
+/// block an asset that was just repaired.
+#[tokio::test]
+#[serial]
+async fn attack_mismatch_found_against_a_replaced_pin_does_not_block_the_asset() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let (asset, _) = new_asset(app, &mut conn).await;
+    for (flag, pin_key) in [
+        (TrustAnchorFlag::SshHostKeyMismatch, "ssh_host_key"),
+        (
+            TrustAnchorFlag::RdpServerCertMismatch,
+            "rdp_server_cert_spki",
+        ),
+    ] {
+        assert_eq!(flag.pin_key(), pin_key);
+        store(&mut conn, asset, &json!({pin_key: "pin-a"})).await;
+        // The document the check ran against.
+        let seen = row(&mut conn, asset).await.config;
+        assert_eq!(flag.pin_in(&seen), Some("pin-a"));
+
+        // Meanwhile the administrator pins the new identity.
+        store(&mut conn, asset, &json!({pin_key: "pin-b"})).await;
+
+        let rows = raise_trust_anchor_flag_for_pin(&mut conn, asset, flag, flag.pin_in(&seen))
+            .await
+            .expect("statement runs");
+        assert_eq!(
+            rows, 0,
+            "{flag:?}: the mismatch was about a pin that is gone"
+        );
+        assert_eq!(
+            row(&mut conn, asset).await.config,
+            json!({pin_key: "pin-b"})
+        );
+
+        // Against the current pin, the flag is raised.
+        let current = row(&mut conn, asset).await.config;
+        let rows = raise_trust_anchor_flag_for_pin(&mut conn, asset, flag, flag.pin_in(&current))
+            .await
+            .expect("statement runs");
+        assert_eq!(rows, 1, "{flag:?}");
+        assert_eq!(row(&mut conn, asset).await.config[flag.key()], true);
+    }
+}
+
+/// Every handler that raises a flag says which document its check ran
+/// against.
+#[test]
+fn test_flags_are_raised_for_the_pin_the_check_ran_against() {
+    for (file, source, helper) in [
+        (
+            "web/ssh.rs",
+            include_str!("../../src/handlers/web/ssh.rs"),
+            "flag_ssh_host_key_mismatch(",
+        ),
+        (
+            "web/rdp.rs",
+            include_str!("../../src/handlers/web/rdp.rs"),
+            "flag_rdp_cert_mismatch(",
+        ),
+    ] {
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+        assert!(
+            production.contains("raise_trust_anchor_flag_for_pin("),
+            "{file}: the flag helper must be conditional on the pin"
+        );
+        assert!(
+            !production.contains(" raise_trust_anchor_flag(conn"),
+            "{file}: no unconditional flag"
+        );
+        let calls: Vec<&str> = production
+            .match_indices(helper)
+            .map(|(at, _)| &production[at..(at + 120).min(production.len())])
+            .filter(|call| !call.contains("conn: &mut"))
+            .collect();
+        assert!(calls.len() >= 2, "{file}: {} call(s)", calls.len());
+        for call in calls {
+            assert!(
+                call.contains("&asset.connection_config") || call.contains("&config)"),
+                "{file}: a flag is raised without the document the check ran against: {call}"
+            );
+        }
+    }
 }
 
 #[tokio::test]

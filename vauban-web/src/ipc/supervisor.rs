@@ -298,7 +298,9 @@ impl SupervisorClient {
         if let Err(e) = self.inner.channel.send(&msg) {
             return Err(format!("Failed to send SessionClaimRequest: {}", e));
         }
-        match tokio::time::timeout(Duration::from_secs(10), rx).await {
+        // As long as a TCP connect: the supervisor answers both from the
+        // same loop, which a certificate renewal can hold for a while.
+        match tokio::time::timeout(Duration::from_secs(30), rx).await {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(_)) => Err("Response channel dropped".to_string()),
             Err(_) => Err("Session claim timeout".to_string()),
