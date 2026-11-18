@@ -551,6 +551,32 @@ Edge cases:
   rewritten by `derive_local_forward_port`. Example: an asset on
   port 23 (Telnet) renders as `-L 50023:host:23`.
 
+### What the sshd announces, and what a client needs
+
+Before any authentication the IACS sshd sends `SSH-2.0-Vauban`, which
+names neither the SSH library nor a version, and offers a short, fixed
+list (`SSH_SERVER_*` in `vauban-proxy-iacs/src/server.rs`):
+
+| | Offered |
+|---|---|
+| Key exchange | `mlkem768x25519-sha256`, `curve25519-sha256` |
+| Host key | `ssh-ed25519` |
+| Cipher | `aes256-gcm@openssh.com` |
+| MAC | `hmac-sha2-512-etm@openssh.com`, `hmac-sha2-256-etm@openssh.com` (unused with AES-GCM) |
+| Compression | `none` |
+
+Supported clients: the OpenSSH shipped with Windows 11, and recent
+OpenSSH on Linux and macOS. A client needs `curve25519-sha256` and
+AES-256-GCM. There is no ChaCha20-Poly1305 and no AES-CTR on purpose:
+an OpenSSH older than 9.6 has no strict key exchange and would choose
+one of them, which the Terrapin attack concerns; AES-GCM is not
+concerned. There is no finite-field Diffie-Hellman and no compression.
+
+**Symptom of a client that is too old or not OpenSSH:** `no matching
+cipher found` or `no matching key exchange method found` on the EWS,
+before any authentication. `ssh -Q cipher` and `ssh -Q kex` on the EWS
+list what its client knows.
+
 ### Capsicum / FreeBSD-only sandbox notes
 
 `vauban-proxy-iacs` runs under Capsicum on FreeBSD (production). On

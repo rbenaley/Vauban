@@ -1075,9 +1075,67 @@ fn clamp_port(port: u32) -> u16 {
     }
 }
 
+/// Identification string the IACS sshd sends before anything else, to
+/// anyone who connects, authenticated or not (RFC 4253, section 4.2).
+///
+/// The library's default is `SSH-2.0-russh_<version>`: it names the
+/// library and its exact release, which tells a scanner which published
+/// advisories to try. This one names neither the library nor a version,
+/// of it or of Vauban.
+pub const SSH_SERVER_ID: &str = "SSH-2.0-Vauban";
+
+/// Key exchanges the IACS sshd offers, and the four extension markers
+/// the library carries in the same list (`ext-info`, strict key
+/// exchange: without the last one the Terrapin countermeasure is off).
+///
+/// The clients are the OpenSSH of Windows 11 and recent OpenSSH on Linux
+/// and macOS: all of them know `curve25519-sha256`, the recent ones the
+/// post-quantum hybrid. The library's default also offered six
+/// finite-field Diffie-Hellman groups, down to 2048 bits.
+pub const SSH_SERVER_KEX: &[russh::kex::Name] = &[
+    russh::kex::MLKEM768X25519_SHA256,
+    russh::kex::CURVE25519,
+    russh::kex::EXTENSION_SUPPORT_AS_CLIENT,
+    russh::kex::EXTENSION_SUPPORT_AS_SERVER,
+    russh::kex::EXTENSION_OPENSSH_STRICT_KEX_AS_CLIENT,
+    russh::kex::EXTENSION_OPENSSH_STRICT_KEX_AS_SERVER,
+];
+
+/// The one cipher offered. The client's order decides among what the
+/// server accepts, and OpenSSH prefers ChaCha20-Poly1305, then (8.x)
+/// AES-CTR: both are exposed to the Terrapin prefix truncation when the
+/// client has no strict key exchange, which OpenSSH has only since 9.6
+/// and Windows 11 does not guarantee. AES-GCM is not. Offering nothing
+/// else is the only way to have it chosen.
+pub const SSH_SERVER_CIPHER: &[russh::cipher::Name] = &[russh::cipher::AES_256_GCM];
+
+/// The protocol wants a MAC list; AES-GCM authenticates by itself and
+/// uses none of them. Encrypt-then-MAC only.
+pub const SSH_SERVER_MAC: &[russh::mac::Name] =
+    &[russh::mac::HMAC_SHA512_ETM, russh::mac::HMAC_SHA256_ETM];
+
+/// No compression: `zlib` starts before authentication and would expose
+/// a decompressor to anyone who connects. A tunnel does not need it.
+pub const SSH_SERVER_COMPRESSION: &[russh::compression::Name] = &[russh::compression::NONE];
+
+/// The host key is Ed25519 (`shared::iacs_host_key`).
+pub const SSH_SERVER_KEY: &[russh::keys::Algorithm] = &[russh::keys::Algorithm::Ed25519];
+
 /// Build the russh server config (host key, methods, timeouts).
 pub fn build_server_config(host_key: PrivateKey) -> Arc<ServerConfig> {
+    use std::borrow::Cow;
     Arc::new(ServerConfig {
+        server_id: russh::SshId::Standard(Cow::Borrowed(SSH_SERVER_ID)),
+        // An explicit list, not the library's default: what is offered
+        // is decided here and does not change with a library upgrade.
+        preferred: russh::Preferred {
+            kex: Cow::Borrowed(SSH_SERVER_KEX),
+            key: Cow::Borrowed(SSH_SERVER_KEY),
+            cipher: Cow::Borrowed(SSH_SERVER_CIPHER),
+            mac: Cow::Borrowed(SSH_SERVER_MAC),
+            compression: Cow::Borrowed(SSH_SERVER_COMPRESSION),
+            ..russh::Preferred::default()
+        },
         methods: MethodSet::from(&[MethodKind::PublicKey][..]),
         auth_rejection_time: std::time::Duration::from_secs(1),
         keys: vec![host_key],

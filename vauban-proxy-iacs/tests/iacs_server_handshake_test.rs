@@ -269,6 +269,231 @@ async fn happy_path_real_handshake_relays_bytes() {
 // Auth-method refusals
 // ===================================================================
 
+/// The first line the sshd sends, to anyone who connects and before any
+/// authentication, names neither the SSH library nor a version. It used
+/// to be `SSH-2.0-russh_<version>`.
+#[tokio::test]
+async fn attack_banner_discloses_no_library_or_version() {
+    use tokio::io::AsyncReadExt;
+
+    let target = spawn_echo_target().await;
+    let (addr, _registry) = spawn_test_sshd(PendingSessions::new(), target, 4).await;
+
+    let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    while !line.ends_with(b"\r\n") && line.len() < 255 {
+        let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut byte))
+            .await
+            .expect("the sshd speaks first")
+            .expect("read");
+        assert_eq!(n, 1, "connection closed before the identification");
+        line.push(byte[0]);
+    }
+    let banner = String::from_utf8(line).expect("ASCII");
+    assert_eq!(banner, "SSH-2.0-Vauban\r\n");
+    assert_eq!(banner.trim_end(), vauban_proxy_iacs::server::SSH_SERVER_ID);
+    assert!(!banner.to_ascii_lowercase().contains("russh"));
+    assert!(
+        !banner["SSH-2.0-".len()..]
+            .bytes()
+            .any(|b| b.is_ascii_digit()),
+        "no version after the protocol version: {banner:?}"
+    );
+}
+
+/// Read the `SSH_MSG_KEXINIT` the sshd sends in clear right after the
+/// identification strings, and return its ten name-lists (RFC 4253,
+/// section 7.1). This is what a scanner sees, not what the code says.
+async fn server_kexinit(addr: std::net::SocketAddr) -> Vec<Vec<String>> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+    stream.write_all(b"SSH-2.0-probe\r\n").await.expect("id");
+    let read = async {
+        let mut byte = [0u8; 1];
+        let mut line = Vec::new();
+        while !line.ends_with(b"\r\n") {
+            stream.read_exact(&mut byte).await.expect("banner");
+            line.push(byte[0]);
+        }
+        let mut header = [0u8; 5];
+        stream.read_exact(&mut header).await.expect("packet header");
+        let length = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
+        assert!(length < 35_000, "packet length {length}");
+        let mut body = vec![0u8; length - 1];
+        stream.read_exact(&mut body).await.expect("packet body");
+        body
+    };
+    let body = tokio::time::timeout(Duration::from_secs(5), read)
+        .await
+        .expect("the sshd sends its KEXINIT");
+    assert_eq!(body[0], 20, "SSH_MSG_KEXINIT");
+    let mut at = 1 + 16; // message number, cookie
+    let mut lists = Vec::new();
+    for _ in 0..10 {
+        let len = u32::from_be_bytes([body[at], body[at + 1], body[at + 2], body[at + 3]]) as usize;
+        at += 4;
+        let names = std::str::from_utf8(&body[at..at + len]).expect("ASCII");
+        at += len;
+        lists.push(
+            names
+                .split(',')
+                .filter(|n| !n.is_empty())
+                .map(str::to_string)
+                .collect(),
+        );
+    }
+    lists
+}
+
+/// What the sshd offers on the wire is the short list chosen for the
+/// OpenSSH of Windows 11 and recent OpenSSH elsewhere, not the library's
+/// default: no finite-field Diffie-Hellman, no ChaCha20 or CTR (Terrapin
+/// without strict key exchange), no plain MAC, no compression before
+/// authentication.
+#[tokio::test]
+async fn attack_only_the_chosen_algorithms_are_offered() {
+    let target = spawn_echo_target().await;
+    let (addr, _registry) = spawn_test_sshd(PendingSessions::new(), target, 4).await;
+    let lists = server_kexinit(addr).await;
+
+    assert_eq!(
+        lists[0],
+        [
+            "mlkem768x25519-sha256",
+            "curve25519-sha256",
+            "ext-info-s",
+            "kex-strict-s-v00@openssh.com"
+        ],
+        "key exchange, with strict key exchange still announced"
+    );
+    assert_eq!(lists[1], ["ssh-ed25519"], "host key");
+    for (what, i) in [("client to server", 2), ("server to client", 3)] {
+        assert_eq!(lists[i], ["aes256-gcm@openssh.com"], "cipher {what}");
+    }
+    for i in [4, 5] {
+        assert_eq!(
+            lists[i],
+            [
+                "hmac-sha2-512-etm@openssh.com",
+                "hmac-sha2-256-etm@openssh.com"
+            ],
+            "MAC"
+        );
+    }
+    for i in [6, 7] {
+        assert_eq!(lists[i], ["none"], "compression");
+    }
+    let all = lists.concat().join(",");
+    for gone in [
+        "diffie-hellman",
+        "chacha20",
+        "-ctr",
+        "-cbc",
+        "zlib",
+        "sha1",
+        "rsa",
+    ] {
+        assert!(!all.contains(gone), "{gone} is offered: {all}");
+    }
+}
+
+/// A client that only speaks what was removed does not get a session.
+#[tokio::test]
+async fn attack_client_with_removed_algorithms_only_is_refused() {
+    let target = spawn_echo_target().await;
+    let (addr, _registry) = spawn_test_sshd(PendingSessions::new(), target, 4).await;
+
+    for (what, preferred) in [
+        (
+            "ChaCha20 only",
+            russh::Preferred {
+                cipher: std::borrow::Cow::Borrowed(&[russh::cipher::CHACHA20_POLY1305]),
+                ..Default::default()
+            },
+        ),
+        (
+            "finite-field Diffie-Hellman only",
+            russh::Preferred {
+                kex: std::borrow::Cow::Borrowed(&[
+                    russh::kex::DH_G14_SHA256,
+                    russh::kex::DH_G16_SHA512,
+                ]),
+                ..Default::default()
+            },
+        ),
+    ] {
+        let config = Arc::new(client::Config {
+            inactivity_timeout: Some(Duration::from_secs(5)),
+            preferred,
+            ..Default::default()
+        });
+        let result = client::connect(config, addr, TestClient).await;
+        assert!(result.is_err(), "{what}: the key exchange must fail");
+    }
+}
+
+/// The OpenSSH client of this machine completes the key exchange with
+/// the short list and ends on AES-256-GCM. Needs `ssh` on the PATH, so
+/// it is run by hand: `cargo test -p vauban-proxy-iacs --test
+/// iacs_server_handshake_test -- --ignored openssh`.
+#[tokio::test]
+#[ignore = "needs the OpenSSH client; run by hand"]
+async fn openssh_client_negotiates_the_short_list() {
+    let target = spawn_echo_target().await;
+    let (addr, _registry) = spawn_test_sshd(PendingSessions::new(), target, 4).await;
+
+    // The second run is what an OpenSSH 8.x has: no post-quantum hybrid.
+    for (kex_option, expected_kex) in [
+        (None, "mlkem768x25519-sha256"),
+        (Some("KexAlgorithms=curve25519-sha256"), "curve25519-sha256"),
+    ] {
+        let port = addr.port().to_string();
+        // A blocking child on a blocking thread: the sshd keeps running
+        // on the runtime while `ssh` talks to it.
+        let output = tokio::task::spawn_blocking(move || {
+            let mut ssh = std::process::Command::new("ssh");
+            ssh.args(["-vv", "-F", "/dev/null", "-p", &port]);
+            for option in [
+                "BatchMode=yes",
+                "StrictHostKeyChecking=no",
+                "UserKnownHostsFile=/dev/null",
+                "PreferredAuthentications=none",
+                "ConnectTimeout=5",
+            ]
+            .into_iter()
+            .chain(kex_option)
+            {
+                ssh.args(["-o", option]);
+            }
+            ssh.arg("probe@127.0.0.1").output()
+        })
+        .await
+        .expect("join")
+        .expect("run ssh");
+        let log = String::from_utf8_lossy(&output.stderr);
+        assert!(log.contains("remote software version Vauban"), "{log}");
+        assert!(
+            log.contains("kex: server->client cipher: aes256-gcm@openssh.com")
+                && log.contains("kex: client->server cipher: aes256-gcm@openssh.com"),
+            "{log}"
+        );
+        assert!(log.contains("compression: none"), "{log}");
+        // The newest OpenSSH takes the hybrid; an older one would take
+        // Curve25519 in the first run too.
+        assert!(
+            log.contains(&format!("kex: algorithm: {expected_kex}"))
+                || (kex_option.is_none() && log.contains("kex: algorithm: curve25519-sha256")),
+            "{log}"
+        );
+        assert!(
+            log.contains("kex: host key algorithm: ssh-ed25519"),
+            "{log}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn refuses_password_auth() {
     let target = spawn_echo_target().await;

@@ -47,12 +47,21 @@ const PREFERRED_CIPHER: &[russh::cipher::Name] = &[
     russh::cipher::AES_128_CBC,
 ];
 
+/// Identification string sent to every target (RFC 4253, section 4.2).
+///
+/// The library's default is `SSH-2.0-russh_<version>`: every target, and
+/// anyone who can read its logs or the network in between, would learn
+/// which library the bastion runs and its exact release. This one names
+/// neither the library nor a version, of it or of Vauban.
+pub const SSH_CLIENT_ID: &str = "SSH-2.0-Vauban";
+
 /// Build an `Arc<client::Config>` with the project-wide algorithm preferences.
 ///
 /// Called by `SshSession::connect` and `fetch_host_key` so that every SSH
 /// handshake (session or host-key probe) uses the exact same configuration.
 fn make_ssh_config() -> Arc<client::Config> {
     Arc::new(client::Config {
+        client_id: russh::SshId::Standard(Cow::Borrowed(SSH_CLIENT_ID)),
         preferred: Preferred {
             kex: Cow::Borrowed(PREFERRED_KEX),
             cipher: Cow::Borrowed(PREFERRED_CIPHER),
@@ -1454,6 +1463,37 @@ mod host_key_behavioural_tests {
             (None, None),
             "nothing may be captured from a host certificate"
         );
+    }
+
+    /// What a target reads first names neither the SSH library nor a
+    /// version. The default was `SSH-2.0-russh_<version>`.
+    #[test]
+    fn attack_client_identification_discloses_no_library_or_version() {
+        let config = make_ssh_config();
+        let russh::SshId::Standard(id) = &config.client_id else {
+            panic!("the identification must be a standard one (CR LF appended)");
+        };
+        assert_eq!(id.as_ref(), SSH_CLIENT_ID);
+        assert_identification_is_neutral(SSH_CLIENT_ID);
+        // What is being replaced does disclose both.
+        let russh::SshId::Standard(default_id) = client::Config::default().client_id else {
+            panic!("default id");
+        };
+        assert!(default_id.contains("russh"));
+    }
+
+    /// RFC 4253 section 4.2: `SSH-2.0-softwareversion`, printable ASCII
+    /// without space or `-` in the software version, 255 bytes at most
+    /// with CR LF. And nothing that names the library or a release.
+    fn assert_identification_is_neutral(id: &str) {
+        let software = id.strip_prefix("SSH-2.0-").expect("SSH-2.0- prefix");
+        assert!(!software.is_empty() && id.len() <= 253);
+        assert!(
+            software.bytes().all(|b| b.is_ascii_graphic() && b != b'-'),
+            "{software}"
+        );
+        assert!(!id.to_ascii_lowercase().contains("russh"), "{id}");
+        assert!(!software.bytes().any(|b| b.is_ascii_digit()), "{id}");
     }
 
     /// The client never asks a server for a host certificate, so the
