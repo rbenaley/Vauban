@@ -485,6 +485,96 @@ async fn test_edit_that_leaves_a_key_alone_does_not_write_it() {
     );
 }
 
+/// An edit is written only over the row it read. The filter of the two
+/// edit handlers, against a pin stored meanwhile (it stamps
+/// `updated_at`) and against a flag raised meanwhile (it does not).
+#[tokio::test]
+#[serial]
+async fn attack_edit_is_not_written_over_a_row_changed_since_it_was_read() {
+    use vauban_web::schema::assets;
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let (asset, admin) = new_asset(app, &mut conn).await;
+    store(&mut conn, asset, &json!({"rdp_auth_mode": "ntlm"})).await;
+
+    let edit = |read_at: DateTime<Utc>| {
+        diesel::update(
+            assets::table
+                .filter(assets::uuid.eq(asset))
+                .filter(assets::updated_at.eq(read_at)),
+        )
+        .set((assets::port.eq(2222), assets::updated_at.eq(Utc::now())))
+    };
+
+    // A failed connection raises the flag between the read and the
+    // write: the edit still goes through.
+    let read = row(&mut conn, asset).await;
+    let raised = raise_trust_anchor_flag_for_pin(
+        &mut conn,
+        asset,
+        TrustAnchorFlag::RdpServerCertMismatch,
+        None,
+    )
+    .await
+    .expect("flag");
+    assert_eq!(raised, 1);
+    let rows = edit(read.updated_at)
+        .execute(&mut conn)
+        .await
+        .expect("edit");
+    assert_eq!(rows, 1, "a flag raised meanwhile does not refuse an edit");
+
+    // A pin is stored between the read and the write: the edit was
+    // validated against a row that is no longer the stored one.
+    let read = row(&mut conn, asset).await;
+    let pin = ConfigPatch::new()
+        .set("rdp_server_cert_spki", "pinned-meanwhile")
+        .stamped_by(Some(admin));
+    assert_eq!(
+        patch_connection_config(&mut conn, asset, &pin)
+            .await
+            .expect("pin"),
+        1
+    );
+    let rows = edit(read.updated_at)
+        .execute(&mut conn)
+        .await
+        .expect("edit");
+    assert_eq!(rows, 0, "the row changed since it was read");
+
+    // Read again, it is written.
+    let read = row(&mut conn, asset).await;
+    let rows = edit(read.updated_at)
+        .execute(&mut conn)
+        .await
+        .expect("edit");
+    assert_eq!(rows, 1);
+}
+
+/// Both edit handlers carry that filter and answer an unwritten edit
+/// with the constant sentence.
+#[test]
+fn test_edit_handlers_write_only_over_the_row_they_read() {
+    for (file, source, filter) in [
+        (
+            "web/manage_assets.rs",
+            include_str!("../../src/handlers/web/manage_assets.rs"),
+            ".filter(a::updated_at.eq(existing.updated_at))",
+        ),
+        (
+            "api/manage_assets.rs",
+            include_str!("../../src/handlers/api/manage_assets.rs"),
+            ".filter(updated_at.eq(existing.updated_at))",
+        ),
+    ] {
+        assert_eq!(source.matches(filter).count(), 1, "{file}: {filter}");
+        assert!(
+            source.contains("crate::models::asset::ASSET_CHANGED_MESSAGE"),
+            "{file}: an edit that was not written says so"
+        );
+    }
+}
+
 /// No handler and no IPC command writes the whole document of an
 /// existing asset. Same rule as `scripts/check_connection_config_writes.sh`.
 #[test]
@@ -492,6 +582,9 @@ fn test_handlers_do_not_write_the_whole_document() {
     let whole_document_writes = |source: &str| -> Vec<String> {
         let production = source.split("#[cfg(test)]").next().unwrap_or(source);
         let mut statement = "";
+        // The statement compares the column with the document it read:
+        // a compare-and-swap, not a write from a stale copy.
+        let mut compared = false;
         let mut found = Vec::new();
         for line in production.lines() {
             if line.contains("diesel::insert_into(") {
@@ -499,12 +592,17 @@ fn test_handlers_do_not_write_the_whole_document() {
             }
             if line.contains("diesel::update(") {
                 statement = "update";
+                compared = false;
             }
             let argument = ["connection_config.eq(", "config_col.eq("]
                 .iter()
                 .find_map(|needle| line.split_once(needle).map(|(_, rest)| rest));
             let Some(argument) = argument else { continue };
-            if line.contains(".filter(") || statement == "insert" {
+            if line.contains(".filter(") {
+                compared = true;
+                continue;
+            }
+            if statement == "insert" || compared {
                 continue;
             }
             let through_a_patch = argument.starts_with("crate::models::asset::ConfigPatch")
@@ -516,36 +614,59 @@ fn test_handlers_do_not_write_the_whole_document() {
         }
         found
     };
-    for (file, source) in [
-        ("web/ssh.rs", include_str!("../../src/handlers/web/ssh.rs")),
-        ("web/rdp.rs", include_str!("../../src/handlers/web/rdp.rs")),
-        (
-            "web/mcp_discover.rs",
-            include_str!("../../src/handlers/web/mcp_discover.rs"),
-        ),
-        (
-            "web/manage_assets.rs",
-            include_str!("../../src/handlers/web/manage_assets.rs"),
-        ),
-        (
-            "api/manage_assets.rs",
-            include_str!("../../src/handlers/api/manage_assets.rs"),
-        ),
-        ("ipc/admin.rs", include_str!("../../src/ipc/admin.rs")),
-    ] {
+
+    // Every source file of vauban-web except the model that implements
+    // the three ways to write, and the supervisor's migration command.
+    fn rust_files(dir: &std::path::Path, into: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("source directory").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                rust_files(&path, into);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                into.push(path);
+            }
+        }
+    }
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    rust_files(&crate_dir.join("src"), &mut files);
+    files.retain(|path| !path.ends_with("models/asset.rs"));
+    files.push(crate_dir.join("../vauban-supervisor/src/admin.rs"));
+    assert!(
+        files.len() > 50,
+        "the walk found the sources: {}",
+        files.len()
+    );
+
+    let mut writers = 0;
+    for file in &files {
+        let source = std::fs::read_to_string(file).expect("source file");
+        if source.contains("connection_config.eq(") || source.contains("config_col.eq(") {
+            writers += 1;
+        }
         assert_eq!(
-            whole_document_writes(source),
+            whole_document_writes(&source),
             Vec::<String>::new(),
-            "{file}: write named keys with patch_connection_config, the change of an edit \
-             with ConfigPatch::between, or merge with update_connection_config_with"
+            "{}: write named keys with patch_connection_config, the change of an edit \
+             with ConfigPatch::between, merge with update_connection_config_with, or \
+             compare the column with the document that was read",
+            file.display()
         );
     }
+    assert!(writers >= 4, "the rule looked at the writers: {writers}");
+
     // The rule sees a whole-document write when there is one.
     assert_eq!(
         whole_document_writes("diesel::update(t)\n    .set(dsl::connection_config.eq(&config))\n")
             .len(),
         1
     );
+    // A compare-and-swap is not one; the next statement starts afresh.
+    let swap = "diesel::update(\n    t.filter(dsl::connection_config.eq(&read)),\n)\n\
+                .set(dsl::connection_config.eq(&next))\n";
+    assert_eq!(whole_document_writes(swap).len(), 0);
+    let then_whole = format!("{swap}diesel::update(t)\n.set(dsl::connection_config.eq(&config))\n");
+    assert_eq!(whole_document_writes(&then_whole).len(), 1);
     // Each pin is conditional on the pin that was read.
     for (file, source, key) in [
         (

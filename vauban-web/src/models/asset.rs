@@ -904,6 +904,43 @@ pub type ConfigExpression = Box<
 /// ([`ConfigPatch::expecting`]).
 pub const PIN_CHANGED_MESSAGE: &str = "The pinned identity of this asset changed while the request was running. Reload the page and try again.";
 
+/// Shown when an edit could not be stored because the asset changed
+/// between the moment the request read it and the moment it wrote it
+/// (409 on the API). An edit is written only over the row it was
+/// validated against: the `UPDATE` carries `updated_at = <value read>`.
+///
+/// Raising a mismatch flag and merging an MCP catalogue do not stamp
+/// `updated_at`, on purpose: a failed connection must not make an edit
+/// fail, and an edit keeps their keys anyway ([`ConfigPatch::between`]).
+pub const ASSET_CHANGED_MESSAGE: &str =
+    "The asset changed while it was being saved. Reload it and try again.";
+
+/// Answered (400) when the API is asked to confirm the replacement of a
+/// pin without naming the change it confirms.
+pub const PIN_CONFIRM_PARAMS_MESSAGE: &str = "confirm=true must come with expected_old_fingerprint and expected_new_fingerprint, the two fingerprints reported by the key_changed answer.";
+
+/// Whether a confirmation is about THIS replacement: the stored pin
+/// whose fingerprint is `old_fingerprint`, by the identity whose
+/// fingerprint is `new_fingerprint`.
+///
+/// The confirming request reads the pin and asks the target again. What
+/// it finds may not be what the caller was shown: someone else may have
+/// pinned something else, or the target (or whoever answers in its
+/// place) may now present a third identity. A bare `confirm` would
+/// accept that unseen. The caller therefore sends back the two
+/// fingerprints it was shown, and the confirmation counts only for
+/// exactly that pair. One rule for the web forms
+/// (`PinTrustAnchorForm::confirms_change`) and for the API.
+pub fn confirms_pin_change(
+    confirm: bool,
+    shown_old: Option<&str>,
+    shown_new: Option<&str>,
+    old_fingerprint: &str,
+    new_fingerprint: &str,
+) -> bool {
+    confirm && shown_old == Some(old_fingerprint) && shown_new == Some(new_fingerprint)
+}
+
 /// Apply `patch` to an asset in one statement. Returns the number of
 /// rows changed: `0` when the asset does not exist or when the
 /// [`ConfigPatch::expecting`] condition no longer holds.
@@ -2208,6 +2245,28 @@ mod tests {
             "svc-bastion",
         ] {
             assert!(!text.contains(leaked), "{leaked} leaked into the summary");
+        }
+    }
+
+    /// A confirmation counts for the pair it names and for nothing else.
+    #[test]
+    fn attack_confirmation_counts_only_for_the_pair_it_names() {
+        let (old, new) = ("SHA256:old", "SHA256:new");
+        assert!(confirms_pin_change(true, Some(old), Some(new), old, new));
+        for (confirm, shown_old, shown_new) in [
+            (false, Some(old), Some(new)),
+            (true, None, None),
+            (true, Some(old), None),
+            (true, None, Some(new)),
+            (true, Some(new), Some(old)),
+            (true, Some(old), Some("SHA256:third")),
+            (true, Some("SHA256:other-pin"), Some(new)),
+            (true, Some(""), Some("")),
+        ] {
+            assert!(
+                !confirms_pin_change(confirm, shown_old, shown_new, old, new),
+                "{confirm} {shown_old:?} {shown_new:?}"
+            );
         }
     }
 

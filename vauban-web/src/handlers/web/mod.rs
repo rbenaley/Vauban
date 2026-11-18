@@ -189,9 +189,13 @@ impl PinTrustAnchorForm {
     /// confirmation counts only for exactly that pair; otherwise the
     /// handler shows the warning again, with what it found.
     pub fn confirms_change(&self, old_fingerprint: &str, new_fingerprint: &str) -> bool {
-        self.confirmed()
-            && self.shown_old.as_deref() == Some(old_fingerprint)
-            && self.shown_new.as_deref() == Some(new_fingerprint)
+        crate::models::asset::confirms_pin_change(
+            self.confirmed(),
+            self.shown_old.as_deref(),
+            self.shown_new.as_deref(),
+            old_fingerprint,
+            new_fingerprint,
+        )
     }
 }
 

@@ -1864,30 +1864,45 @@ pub async fn update_asset_web(
         &connection_config,
     );
 
-    let result = diesel::update(a::assets.filter(a::uuid.eq(asset_uuid)))
-        .set((
-            a::name.eq(&sanitized_name),
-            a::hostname.eq(form.hostname.trim()),
-            a::port.eq(form.port),
-            a::asset_type.eq(effective_asset_type),
-            a::status.eq(&form.status),
-            a::description.eq(sanitized_description.as_deref()),
-            // What the form changed, applied to the document as it is
-            // now: a flag or a pin stored since the asset was read
-            // above is kept.
-            a::connection_config.eq(crate::models::asset::ConfigPatch::between(
-                &existing.connection_config,
-                &connection_config,
-            )
-            .expression()),
-            a::connection_username.eq(updated_username),
-            a::updated_at.eq(Utc::now()),
-            a::updated_by_id.eq(actor_id),
-        ))
-        .execute(&mut conn)
-        .await;
+    // Written only over the row this request read and validated the
+    // form against (`updated_at` is stamped by every edit and every
+    // pin): a combination of keys is checked against that row, and must
+    // not be stored over another one.
+    let result = diesel::update(
+        a::assets
+            .filter(a::uuid.eq(asset_uuid))
+            .filter(a::updated_at.eq(existing.updated_at)),
+    )
+    .set((
+        a::name.eq(&sanitized_name),
+        a::hostname.eq(form.hostname.trim()),
+        a::port.eq(form.port),
+        a::asset_type.eq(effective_asset_type),
+        a::status.eq(&form.status),
+        a::description.eq(sanitized_description.as_deref()),
+        // What the form changed, applied to the document as it is
+        // now: a flag or a pin stored since the asset was read
+        // above is kept.
+        a::connection_config.eq(crate::models::asset::ConfigPatch::between(
+            &existing.connection_config,
+            &connection_config,
+        )
+        .expression()),
+        a::connection_username.eq(updated_username),
+        a::updated_at.eq(Utc::now()),
+        a::updated_by_id.eq(actor_id),
+    ))
+    .execute(&mut conn)
+    .await;
 
     match result {
+        // No row: the asset was edited, pinned or deleted since it was
+        // read above. Nothing is written and nothing is audited.
+        Ok(0) => htmx_or_flash_redirect(
+            &headers,
+            flash.error(crate::models::asset::ASSET_CHANGED_MESSAGE),
+            &format!("/assets/manage/{asset_uuid}/edit"),
+        ),
         Ok(_) => {
             crate::services::emit_audit(
                 &state,

@@ -1418,3 +1418,75 @@ async fn attack_api_never_returns_secret_fields() {
 
     test_db::cleanup(&mut conn).await;
 }
+
+/// `confirm=true` alone would pin whatever the target presents when the
+/// confirming request runs, an identity the caller never saw. The API
+/// refuses it before it asks the target anything; the pin is unchanged.
+#[tokio::test]
+#[serial]
+async fn attack_api_pin_confirmation_must_name_the_change() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_name = unique_name("admin_pin_confirm");
+    let admin = create_admin_user(&mut conn, &app.auth_service, &admin_name).await;
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("pin-confirm")).await;
+    let pinned = serde_json::json!({
+        "ssh_host_key": "ssh-ed25519 OLD",
+        "ssh_host_key_fingerprint": "SHA256:OLD",
+    });
+    set_connection_config(&mut conn, asset.asset.uuid, pinned.clone()).await;
+
+    for query in [
+        "confirm=true",
+        "confirm=true&expected_old_fingerprint=SHA256:OLD",
+        "confirm=true&expected_new_fingerprint=SHA256:NEW",
+    ] {
+        // The RDP route is behind a gate of its own in this test
+        // configuration; that it carries the same rule is pinned by
+        // `test_api_pin_routes_bind_the_confirmation_to_the_fingerprints`.
+        let response = app
+            .server
+            .post(&format!(
+                "/api/v1/assets/manage/{}/ssh-host-key?{query}",
+                asset.asset.uuid
+            ))
+            .add_header(header::AUTHORIZATION, app.api_key_header(&admin.api_key))
+            .await;
+        assert_status(&response, 400);
+        let body = response.text();
+        assert!(
+            body.contains("expected_old_fingerprint") && body.contains("expected_new_fingerprint"),
+            "{query}: the refusal names the two parameters: {body}"
+        );
+    }
+
+    use vauban_web::schema::assets::dsl as a;
+    let stored: serde_json::Value = unwrap_ok!(
+        a::assets
+            .filter(a::uuid.eq(asset.asset.uuid))
+            .select(a::connection_config)
+            .first(&mut conn)
+            .await
+    );
+    assert_eq!(stored, pinned, "a refused confirmation pins nothing");
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Both API pin routes decide a replacement with the rule the web forms
+/// use; neither takes a bare `confirm`.
+#[test]
+fn test_api_pin_routes_bind_the_confirmation_to_the_fingerprints() {
+    let source = include_str!("../../src/handlers/api/manage_assets.rs");
+    assert_eq!(
+        source.matches("confirms_pin_change(").count(),
+        2,
+        "the SSH and the RDP route"
+    );
+    assert_eq!(source.matches("PIN_CONFIRM_PARAMS_MESSAGE").count(), 2);
+    assert!(
+        !source.contains("&& !confirm\n"),
+        "a bare confirm must not decide a replacement"
+    );
+}

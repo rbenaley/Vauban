@@ -41,6 +41,19 @@ Read these before deploying. Each one is a behavior change.
    is no need to restart `vauban-web` after correcting a
    configuration, though a restart still asks at once.
 
+5. **API clients that accept a changed pin.** `confirm=true` alone is
+   refused (400). Repeat the request with `confirm=true`,
+   `expected_old_fingerprint` and `expected_new_fingerprint`, the two
+   fingerprints of the `key_changed` answer (URL-encoded). A script
+   that sent `?confirm=true` must be changed.
+6. **Edits.** An edit of an asset (form or `PUT`) is stored only if the
+   asset was not edited or pinned while the request ran. Otherwise the
+   form asks to reload and the API answers 409: read the asset again
+   and repeat the request.
+7. **Credential migration.** The supervisor's migration command skips
+   an asset whose `connection_config` changed since its scan and says
+   so. Run it again; it is idempotent.
+
 ## Automated prerequisites
 
 ```bash
@@ -76,6 +89,13 @@ rtk cargo test -p vauban-proxy-ssh --all-features
    (change the description only) and save. Reload the first browser.
    **Expected:** the pinned key is still the one of step 2.
 5. Repeat 1 to 4 on the RDP asset (**Fetch Certificate**).
+
+6. With an API key, on an SSH asset whose target key changed:
+   `POST /api/v1/assets/manage/<uuid>/ssh-host-key`. **Expected:**
+   `key_changed: true` and two fingerprints. Repeat with
+   `?confirm=true`. **Expected:** 400 naming the two parameters.
+   Repeat with `confirm=true` and the two fingerprints.
+   **Expected:** pinned.
 
 ## B -- An edit keeps a flag raised meanwhile
 

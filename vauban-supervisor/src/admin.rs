@@ -830,6 +830,24 @@ struct AssetCredRow {
     connection_config: serde_json::Value,
 }
 
+/// Replace the `connection_config` of an asset by `new`, only if it is
+/// still `read`. Returns the number of rows written: `0` when the
+/// document changed since it was read.
+fn write_config_if_unchanged(
+    conn: &mut PgConnection,
+    asset_id: i32,
+    read: &serde_json::Value,
+    new: &serde_json::Value,
+) -> diesel::QueryResult<usize> {
+    diesel::update(
+        assets::table
+            .filter(assets::id.eq(asset_id))
+            .filter(assets::connection_config.eq(read)),
+    )
+    .set(assets::connection_config.eq(new))
+    .execute(conn)
+}
+
 fn migrate_credential_secrets(
     conn: &mut PgConnection,
     keyring: &vauban_vault::keyring::Keyring,
@@ -876,10 +894,21 @@ fn migrate_credential_secrets(
                     row.name, row.id
                 );
             } else {
-                diesel::update(assets::table.filter(assets::id.eq(row.id)))
-                    .set(assets::connection_config.eq(&config))
-                    .execute(conn)
-                    .context(format!("Failed to update '{}' credentials", row.name))?;
+                // Written only over the document that was read: this
+                // command runs while vauban-web may be serving, and a pin
+                // or a mismatch flag stored since the scan above must not
+                // be replaced by a copy that predates it.
+                let written =
+                    write_config_if_unchanged(conn, row.id, &row.connection_config, &config)
+                        .context(format!("Failed to update '{}' credentials", row.name))?;
+                if written == 0 {
+                    eprintln!(
+                        "  WARNING: '{}' (id={}) changed during the migration; \
+                         not written. Run the command again.",
+                        row.name, row.id
+                    );
+                    continue;
+                }
                 println!("  Encrypted credentials for '{}' (id={})", row.name, row.id);
             }
             migrated += 1;
@@ -1359,6 +1388,63 @@ mod tests {
             ))
             .execute(conn)
             .expect("failed to seed test asset");
+    }
+
+    /// The credential migration scans every asset, then writes. A pin
+    /// stored by vauban-web in between must not be replaced by the
+    /// document the scan read.
+    #[test]
+    fn attack_migration_does_not_overwrite_a_document_changed_since_the_scan() {
+        let mut conn = test_db_connection();
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_micros();
+        let name = format!("credcas{ts}");
+        let read = serde_json::json!({"password": "plain"});
+        insert_test_asset(
+            &mut conn,
+            &name,
+            &format!("{name}.example"),
+            "root",
+            read.clone(),
+            false,
+        );
+        let id: i32 = assets::table
+            .filter(assets::name.eq(&name))
+            .select(assets::id)
+            .first(&mut conn)
+            .expect("seeded asset");
+        let stored = |conn: &mut PgConnection| -> serde_json::Value {
+            assets::table
+                .filter(assets::id.eq(id))
+                .select(assets::connection_config)
+                .first(conn)
+                .expect("asset")
+        };
+        let migrated = serde_json::json!({"password": "v1:encrypted"});
+
+        // Meanwhile, vauban-web pins a host key.
+        let pinned = serde_json::json!({"password": "plain", "ssh_host_key": "ssh-ed25519 PIN"});
+        diesel::update(assets::table.filter(assets::id.eq(id)))
+            .set(assets::connection_config.eq(&pinned))
+            .execute(&mut conn)
+            .expect("pin");
+
+        let written = write_config_if_unchanged(&mut conn, id, &read, &migrated).expect("write");
+        assert_eq!(written, 0, "the document is not the one that was read");
+        assert_eq!(stored(&mut conn), pinned, "the pin is kept");
+
+        // The next run reads the current document and writes over it.
+        let migrated =
+            serde_json::json!({"password": "v1:encrypted", "ssh_host_key": "ssh-ed25519 PIN"});
+        let written = write_config_if_unchanged(&mut conn, id, &pinned, &migrated).expect("write");
+        assert_eq!(written, 1);
+        assert_eq!(stored(&mut conn), migrated);
+
+        diesel::delete(assets::table.filter(assets::id.eq(id)))
+            .execute(&mut conn)
+            .expect("cleanup");
     }
 
     /// Full E2E matrix on a live database: inclusion (ssh_key only,

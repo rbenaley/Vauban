@@ -2111,6 +2111,10 @@ pub enum AdminCommand {
         user_id: i32,
         encrypted_secret: String,
     },
+    /// Reserved: vauban-web refuses it. It replaced a whole
+    /// `connection_config` computed from a copy read earlier, which
+    /// removed a pin or a mismatch flag stored since. Kept so that the
+    /// positions of the variants after it do not move.
     UpdateAssetConnectionConfig {
         asset_id: i32,
         encrypted_config: String,

@@ -44,10 +44,19 @@ pub async fn handle_admin_command(pool: &DbPool, command: AdminCommand) -> Admin
             user_id,
             encrypted_secret,
         } => handle_update_user_mfa_secret(pool, user_id, &encrypted_secret).await,
-        AdminCommand::UpdateAssetConnectionConfig {
-            asset_id,
-            encrypted_config,
-        } => handle_update_asset_connection_config(pool, asset_id, &encrypted_config).await,
+        // Refused. The command carried a whole `connection_config`,
+        // computed by its sender from a copy read earlier: a pin or a
+        // mismatch flag stored since then looked like a key to remove.
+        // It had no sender. The variant stays in the enum because the
+        // encoding is positional; a command that changes credentials
+        // must name the keys it changes (`ConfigPatch`).
+        AdminCommand::UpdateAssetConnectionConfig { asset_id, .. } => {
+            error!(
+                asset_id,
+                "Refused UpdateAssetConnectionConfig: the command is no longer supported"
+            );
+            AdminResponse::Error(WHOLE_CONFIG_COMMAND_REFUSED.to_string())
+        }
         AdminCommand::SeedUsers { users: seed_users } => handle_seed_users(pool, &seed_users).await,
         AdminCommand::SeedAssets {
             assets: seed_assets,
@@ -298,115 +307,8 @@ async fn handle_update_user_mfa_secret(
     }
 }
 
-/// Whether replacing `stored` by `new` on an asset is acceptable as far
-/// as the RDP auth settings go.
-///
-/// A replacement that leaves the mode and the domain as they are is
-/// always accepted: this command re-encrypts credentials on rows that may
-/// predate the rules. One that CHANGES them must satisfy the same service
-/// as the form and the API (`services::rdp_auth_mode`): a closed-set
-/// mode, and for a Kerberos mode an FQDN target and a DNS-form domain.
-pub(crate) fn check_rdp_auth_settings_change(
-    asset_type: crate::models::asset::AssetType,
-    hostname: &str,
-    stored: &serde_json::Value,
-    new: &serde_json::Value,
-) -> Result<(), crate::services::rdp_auth_mode::RdpAuthSettingsError> {
-    use crate::services::rdp_auth_mode as rdp;
-
-    if asset_type != crate::models::asset::AssetType::Rdp {
-        return Ok(());
-    }
-    let raw = |config: &serde_json::Value, key: &str| -> Option<String> {
-        config
-            .get(key)
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-    };
-    let unchanged = raw(stored, rdp::MODE_KEY) == raw(new, rdp::MODE_KEY)
-        && raw(stored, rdp::DOMAIN_KEY) == raw(new, rdp::DOMAIN_KEY);
-    if unchanged {
-        return Ok(());
-    }
-    // The new config stands alone (`stored: None`): what it says is what
-    // the asset will be. An absent mode is the default; an unknown one is
-    // refused.
-    let new_mode = raw(new, rdp::MODE_KEY);
-    let new_domain = raw(new, rdp::DOMAIN_KEY);
-    rdp::resolve(
-        new_mode.as_deref(),
-        Some(new_domain.as_deref().unwrap_or_default()),
-        None,
-        hostname,
-    )
-    .map(|_| ())
-}
-
-async fn handle_update_asset_connection_config(
-    pool: &DbPool,
-    asset_id: i32,
-    encrypted_config: &str,
-) -> AdminResponse {
-    let mut conn = match pool.get().await {
-        Ok(c) => c,
-        Err(e) => return AdminResponse::Error(format!("DB pool error: {e}")),
-    };
-
-    let config_value: serde_json::Value = match serde_json::from_str(encrypted_config) {
-        Ok(v) => v,
-        Err(e) => return AdminResponse::Error(format!("Invalid JSON config: {e}")),
-    };
-
-    // This command replaces the whole `connection_config`, so it is a
-    // write path for the RDP auth settings too. It must not be a way
-    // around the rules of the form and the API.
-    let existing: Option<(crate::models::asset::AssetType, String, serde_json::Value)> =
-        match assets::table
-            .filter(assets::id.eq(asset_id))
-            .select((
-                assets::asset_type,
-                assets::hostname,
-                assets::connection_config,
-            ))
-            .first(&mut conn)
-            .await
-            .optional()
-        {
-            Ok(row) => row,
-            Err(e) => return AdminResponse::Error(format!("Failed to read asset: {e}")),
-        };
-    if let Some((asset_type, hostname, stored)) = &existing
-        && let Err(e) = check_rdp_auth_settings_change(*asset_type, hostname, stored, &config_value)
-    {
-        return AdminResponse::Error(format!("Refused connection config: {e}"));
-    }
-
-    // The command carries a whole document. What differs from the
-    // document read just above is applied, not the whole document, so
-    // nothing stored between that read and this write is lost. It does
-    // NOT protect what was stored between the moment the sender read
-    // the asset and now: the sender computed its document from its own,
-    // older copy, and a pin or a flag added since then looks like a key
-    // the command removes. No sender of this command exists today; one
-    // that appears should send the keys it changes, not a document.
-    let stored = existing
-        .as_ref()
-        .map(|(_, _, stored)| stored.clone())
-        .unwrap_or(serde_json::Value::Null);
-    let change = crate::models::asset::ConfigPatch::between(&stored, &config_value);
-    match diesel::update(assets::table.filter(assets::id.eq(asset_id)))
-        .set((
-            assets::connection_config.eq(change.expression()),
-            assets::updated_at.eq(chrono::Utc::now()),
-        ))
-        .execute(&mut conn)
-        .await
-    {
-        Ok(0) => AdminResponse::Error(format!("Asset id={asset_id} not found")),
-        Ok(_) => AdminResponse::Ok,
-        Err(e) => AdminResponse::Error(format!("Failed to update connection config: {e}")),
-    }
-}
+/// The answer to `AdminCommand::UpdateAssetConnectionConfig`.
+const WHOLE_CONFIG_COMMAND_REFUSED: &str = "UpdateAssetConnectionConfig is no longer supported: it replaced the whole connection_config from a stale copy";
 
 async fn handle_seed_users(pool: &DbPool, seed_users: &[SeedUser]) -> AdminResponse {
     let mut conn = match pool.get().await {
@@ -699,77 +601,14 @@ mod tests {
         );
     }
 
-    // ---- RDP auth settings through the connection-config command ---------
-
-    /// The admin command replaces the whole config: it must not store an
-    /// unknown mode, or a Kerberos mode without an FQDN target and a
-    /// DNS-form domain.
+    /// The whole-document command writes nothing: no handler, no
+    /// `UPDATE` of `connection_config` in this file.
     #[test]
-    fn attack_rdp_auth_settings_bypass_through_admin_config_update_is_rejected() {
-        use crate::models::asset::AssetType;
-        use crate::services::rdp_auth_mode::RdpAuthSettingsError;
-        use serde_json::json;
-
-        let fqdn = "srv01.corp.example.com";
-        let stored = json!({"username": "jdoe", "rdp_auth_mode": "ntlm", "domain": "CORP"});
-        let check = |host: &str, new: serde_json::Value| {
-            check_rdp_auth_settings_change(AssetType::Rdp, host, &stored, &new)
-        };
-
-        assert_eq!(
-            check(
-                fqdn,
-                json!({"rdp_auth_mode": "kerbeross", "domain": "corp.example.com"})
-            ),
-            Err(RdpAuthSettingsError::UnknownMode)
-        );
-        assert!(matches!(
-            check(fqdn, json!({"rdp_auth_mode": "kerberos", "domain": "CORP"})),
-            Err(RdpAuthSettingsError::Domain(_))
-        ));
-        assert!(matches!(
-            check(fqdn, json!({"rdp_auth_mode": "kerberos_restricted_admin"})),
-            Err(RdpAuthSettingsError::Domain(_))
-        ));
-        assert!(matches!(
-            check(
-                "192.0.2.10",
-                json!({"rdp_auth_mode": "kerberos", "domain": "corp.example.com"})
-            ),
-            Err(RdpAuthSettingsError::Hostname(_))
-        ));
-        // A valid change is accepted.
-        assert_eq!(
-            check(
-                fqdn,
-                json!({"rdp_auth_mode": "kerberos", "domain": "corp.example.com"})
-            ),
-            Ok(())
-        );
-    }
-
-    /// Re-encrypting credentials leaves the mode and the domain as they
-    /// are: accepted even on a row that predates the rules. Other asset
-    /// types are not concerned.
-    #[test]
-    fn test_admin_config_update_that_keeps_the_rdp_auth_settings_is_accepted() {
-        use crate::models::asset::AssetType;
-        use serde_json::json;
-
-        let legacy = json!({"password": "old", "rdp_auth_mode": "kerberos_restricted_admin", "domain": "CORP"});
-        let reencrypted = json!({"password": "v1:abc", "rdp_auth_mode": "kerberos_restricted_admin", "domain": "CORP"});
-        assert_eq!(
-            check_rdp_auth_settings_change(AssetType::Rdp, "192.0.2.10", &legacy, &reencrypted),
-            Ok(())
-        );
-        assert_eq!(
-            check_rdp_auth_settings_change(
-                AssetType::Ssh,
-                "192.0.2.10",
-                &json!({}),
-                &json!({"rdp_auth_mode": "bogus"})
-            ),
-            Ok(())
-        );
+    fn attack_whole_connection_config_command_is_refused() {
+        let source = include_str!("admin.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+        assert!(!production.contains("fn handle_update_asset_connection_config"));
+        assert!(!production.contains("connection_config.eq("));
+        assert!(production.contains("AdminResponse::Error(WHOLE_CONFIG_COMMAND_REFUSED"));
     }
 }

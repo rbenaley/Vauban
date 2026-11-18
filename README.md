@@ -459,12 +459,12 @@ malformed identifier (e.g. bad UUID). Every `/api/*` response carries
 ### SSH Host Key Verification (SSH assets, admin zone)
 - `GET /api/v1/assets/manage/{uuid}/ssh-host-key` - Host key status (`verified`, `mismatch`, or `no_key`)
 - `POST /api/v1/assets/manage/{uuid}/ssh-host-key` - Fetch host key from remote server (detects key changes)
-- `POST /api/v1/assets/manage/{uuid}/ssh-host-key?confirm=true` - Accept a changed host key
+- `POST /api/v1/assets/manage/{uuid}/ssh-host-key?confirm=true&expected_old_fingerprint=...&expected_new_fingerprint=...` - Accept a changed host key: the two fingerprints are those of the `key_changed` answer (`confirm=true` alone is a 400)
 
 ### RDP Server Certificate Pinning (RDP assets, admin zone)
 - `GET /api/v1/assets/manage/{uuid}/rdp-server-cert` - Certificate status (`verified`, `mismatch`, or `no_key`)
 - `POST /api/v1/assets/manage/{uuid}/rdp-server-cert` - Fetch the server TLS certificate SPKI (detects certificate changes)
-- `POST /api/v1/assets/manage/{uuid}/rdp-server-cert?confirm=true` - Accept a changed certificate
+- `POST /api/v1/assets/manage/{uuid}/rdp-server-cert?confirm=true&expected_old_fingerprint=...&expected_new_fingerprint=...` - Accept a changed certificate, same rule
 
 ### Access Rules
 - `GET /api/v1/access-rules` - List access rules

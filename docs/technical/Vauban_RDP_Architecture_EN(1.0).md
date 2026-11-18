@@ -834,10 +834,11 @@ Rules, identical on both paths:
   address is refused.
 - The two fields are refused on an asset that is not RDP.
 
-The administration command that replaces a whole `connection_config`
-(`UpdateAssetConnectionConfig`, used to re-encrypt stored credentials)
-applies the same rules when it changes the mode or the domain; a
-replacement that leaves both as they are is accepted as is.
+The administration command that replaced a whole `connection_config`
+(`UpdateAssetConnectionConfig`) is refused by `vauban-web`: it had no
+sender, and a document computed from an older copy removed a pin or a
+mismatch flag stored since. The form and the API are the only ways to
+change the mode or the domain.
 
 The admin asset list (`/assets/manage`) shows the mode of each RDP
 asset as a badge: `NTLM` in amber, `Kerberos` and `Kerberos RA` in

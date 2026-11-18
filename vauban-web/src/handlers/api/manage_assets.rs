@@ -411,27 +411,46 @@ pub async fn update_asset(
     // live user row) collapses to the muted em-dash on render.
     let actor_id = crate::services::audit_authors::resolve_actor_id(&mut conn, &user.uuid).await;
 
-    let asset: Asset = match diesel::update(assets.filter(uuid.eq(asset_uuid)))
-        .set((
-            name_col.eq(sanitized_name),
-            hostname_col.eq(new_hostname),
-            port_col.eq(new_port),
-            status_col.eq(request.status.unwrap_or(existing.status)),
-            description_col.eq(sanitized_description),
-            // What the request changed, applied to the document as it
-            // is now.
-            config_col.eq(crate::models::asset::ConfigPatch::between(
-                &existing.connection_config,
-                &new_connection_config,
-            )
-            .expression()),
-            updated_at.eq(Utc::now()),
-            updated_by_col.eq(actor_id),
-        ))
-        .get_result(&mut conn)
-        .await
+    // Written only over the row this request read and validated
+    // against (`updated_at` is stamped by every edit and every pin). A
+    // request that gives no hostname, port or status takes them from
+    // that row: over a row changed since, it would put the old values
+    // back.
+    let asset: Asset = match diesel::update(
+        assets
+            .filter(uuid.eq(asset_uuid))
+            .filter(updated_at.eq(existing.updated_at)),
+    )
+    .set((
+        name_col.eq(sanitized_name),
+        hostname_col.eq(new_hostname),
+        port_col.eq(new_port),
+        status_col.eq(request.status.unwrap_or(existing.status)),
+        description_col.eq(sanitized_description),
+        // What the request changed, applied to the document as it
+        // is now.
+        config_col.eq(crate::models::asset::ConfigPatch::between(
+            &existing.connection_config,
+            &new_connection_config,
+        )
+        .expression()),
+        updated_at.eq(Utc::now()),
+        updated_by_col.eq(actor_id),
+    ))
+    .get_result(&mut conn)
+    .await
     {
         Ok(a) => a,
+        // No row: the asset was edited, pinned or deleted since it was
+        // read above. Nothing is written and nothing is audited.
+        Err(diesel::result::Error::NotFound) => {
+            let message = crate::models::asset::ASSET_CHANGED_MESSAGE;
+            if is_htmx {
+                return htmx_error_response(StatusCode::CONFLICT, message).into_response();
+            } else {
+                return AppError::Conflict(message.to_string()).into_response();
+            }
+        }
         Err(diesel::result::Error::DatabaseError(
             diesel::result::DatabaseErrorKind::UniqueViolation,
             _,
@@ -660,8 +679,11 @@ pub async fn list_group_assets(
 /// Fetches the SSH host key from the remote server and returns it as
 /// JSON. If a key was already stored and the new key differs, the
 /// response includes a `key_changed` flag set to `true` and both
-/// fingerprints. In that case the stored key is NOT updated unless
-/// `?confirm=true` is passed. Requires `assets_manage`.
+/// fingerprints. In that case the stored key is NOT updated unless the
+/// request is repeated with `confirm=true` and the two fingerprints of
+/// that answer (`expected_old_fingerprint`, `expected_new_fingerprint`).
+/// `confirm=true` alone is refused (400): it would accept whatever the
+/// target presents at that moment. Requires `assets_manage`.
 pub async fn fetch_ssh_host_key_api(
     State(state): State<AppState>,
     user: AuthUser,
@@ -674,6 +696,16 @@ pub async fn fetch_ssh_host_key_api(
     }
 
     let confirm = params.get("confirm").map(|v| v == "true").unwrap_or(false);
+    // A confirmation names the change it accepts: the two fingerprints
+    // the `key_changed` answer reported. Refused before the target is
+    // asked anything.
+    let expected_old = params.get("expected_old_fingerprint").map(String::as_str);
+    let expected_new = params.get("expected_new_fingerprint").map(String::as_str);
+    if confirm && (expected_old.is_none() || expected_new.is_none()) {
+        return Err(AppError::Validation(
+            crate::models::asset::PIN_CONFIRM_PARAMS_MESSAGE.to_string(),
+        ));
+    }
 
     let asset_uuid = Uuid::parse_str(&asset_uuid_str)
         .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
@@ -741,11 +773,18 @@ pub async fn fetch_ssh_host_key_api(
         )
         .await?;
 
+    let old_fp = stored_fingerprint.as_deref().unwrap_or("unknown");
     if let Some(ref old_key) = stored_host_key
         && old_key != &host_key
-        && !confirm
+        // A confirmation counts only for the change it names.
+        && !crate::models::asset::confirms_pin_change(
+            confirm,
+            expected_old,
+            expected_new,
+            old_fp,
+            &fingerprint,
+        )
     {
-        let old_fp = stored_fingerprint.as_deref().unwrap_or("unknown");
         tracing::warn!(
             asset_uuid = %asset_uuid,
             old_fingerprint = %old_fp,
@@ -759,7 +798,9 @@ pub async fn fetch_ssh_host_key_api(
             "new_fingerprint": fingerprint,
             "message": "The remote server's SSH host key has changed. \
                 This could indicate a man-in-the-middle attack. \
-                Pass ?confirm=true to accept the new key."
+                To accept the new key, repeat the request with confirm=true, \
+                expected_old_fingerprint and expected_new_fingerprint set to \
+                the two fingerprints of this answer."
         })));
     }
 
@@ -871,8 +912,10 @@ pub async fn get_ssh_host_key_status(
 /// Fetches the RDP server's TLS certificate SPKI from the remote server and
 /// returns it as JSON. If a certificate was already pinned and the new SPKI
 /// differs, the response includes a `key_changed` flag set to `true` and
-/// both fingerprints; the stored value is NOT updated unless `?confirm=true`
-/// is passed. Requires `assets_manage`. Mirrors `fetch_ssh_host_key_api`.
+/// both fingerprints; the stored value is NOT updated unless the request is
+/// repeated with `confirm=true`, `expected_old_fingerprint` and
+/// `expected_new_fingerprint`. Requires `assets_manage`. Mirrors
+/// `fetch_ssh_host_key_api`.
 pub async fn fetch_rdp_server_cert_api(
     State(state): State<AppState>,
     user: AuthUser,
@@ -885,6 +928,16 @@ pub async fn fetch_rdp_server_cert_api(
     }
 
     let confirm = params.get("confirm").map(|v| v == "true").unwrap_or(false);
+    // A confirmation names the change it accepts: the two fingerprints
+    // the `key_changed` answer reported. Refused before the target is
+    // asked anything.
+    let expected_old = params.get("expected_old_fingerprint").map(String::as_str);
+    let expected_new = params.get("expected_new_fingerprint").map(String::as_str);
+    if confirm && (expected_old.is_none() || expected_new.is_none()) {
+        return Err(AppError::Validation(
+            crate::models::asset::PIN_CONFIRM_PARAMS_MESSAGE.to_string(),
+        ));
+    }
 
     let asset_uuid = Uuid::parse_str(&asset_uuid_str)
         .map_err(|_| AppError::Validation("Invalid UUID format".to_string()))?;
@@ -945,11 +998,18 @@ pub async fn fetch_rdp_server_cert_api(
         )
         .await?;
 
+    let old_fp = stored_fingerprint.as_deref().unwrap_or("unknown");
     if let Some(ref old_spki) = stored_spki
         && old_spki != &server_spki
-        && !confirm
+        // A confirmation counts only for the change it names.
+        && !crate::models::asset::confirms_pin_change(
+            confirm,
+            expected_old,
+            expected_new,
+            old_fp,
+            &fingerprint,
+        )
     {
-        let old_fp = stored_fingerprint.as_deref().unwrap_or("unknown");
         tracing::warn!(
             asset_uuid = %asset_uuid,
             old_fingerprint = %old_fp,
@@ -963,7 +1023,10 @@ pub async fn fetch_rdp_server_cert_api(
             "new_fingerprint": fingerprint,
             "message": "The remote server's RDP TLS certificate has changed. \
                 This could indicate a man-in-the-middle attack. \
-                Pass ?confirm=true to accept the new certificate."
+                To accept the new certificate, repeat the request with \
+                confirm=true, expected_old_fingerprint and \
+                expected_new_fingerprint set to the two fingerprints of this \
+                answer."
         })));
     }
 
