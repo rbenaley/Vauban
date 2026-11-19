@@ -114,8 +114,20 @@ print_stderr   = "deny"
 # pass -DHAVE_AVX2 to NASM or the C++ compiler, unlike Cisco's official
 # meson.build. Use our fork with AVX2 optimizations for SAD and Intra
 # Prediction.
+#
+# Every entry is pinned by `rev`: Cargo.lock is not versioned, so an entry
+# without one would follow its branch (check_patch_pins.sh).
 [patch.crates-io]
-openh264-sys2 = { git = "https://github.com/rbenaley/openh264-rs-avx2" }
+openh264-sys2 = { git = "https://github.com/rbenaley/openh264-rs-avx2", rev = "351849b6b2cfadf90a11670f9bcc3e4098844143" }
+# Kerberos RDP against Windows (vauban-proxy-rdp, through ironrdp-connector):
+# sspi 0.23.0 refuses the SPNEGO mechListMIC a Windows acceptor signs with
+# sequence number 0 ("invalid MIC token sequence number"), which fails both
+# Kerberos modes against every Windows target. Fixed upstream in sspi 0.23.1
+# (Devolutions/sspi-rs#772, commit 08d8622794), but 0.23.1 needs
+# picky =7.0.0-rc.27 and ironrdp-connector 0.12.0 pins rc.26. This fork is
+# sspi 0.23.0 plus that one fix. Remove the entry, and check_patch_pins.sh's
+# sspi rule, when IronRDP resolves sspi >= 0.23.1.
+sspi = { git = "https://github.com/rbenaley/sspi-rs-vb", rev = "07926c0cd7c816cea02602288535600fe8d3a5da" }
 
 [profile.release]
 opt-level = 3
