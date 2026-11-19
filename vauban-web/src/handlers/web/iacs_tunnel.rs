@@ -99,6 +99,8 @@ fn iacs_tunnel_error_response(
 #[derive(Debug, serde::Deserialize)]
 pub struct ConnectIacsForm {
     pub csrf_token: String,
+    /// Authenticator code, asked when the access rule requires MFA.
+    pub totp_code: Option<String>,
 }
 
 /// Form payload for `POST /sessions/{uuid}/iacs/terminate`. The
@@ -469,7 +471,43 @@ pub async fn connect_iacs(
     };
 
     let session_token = match state.access_client.issue_session_token(token_params).await {
-        Ok(issued) => issued.token,
+        Ok(issued) => {
+            // "Require MFA" on the rule: the tunnel is not opened, and
+            // its row not kept, until the code is verified.
+            let mfa = crate::services::connect_mfa::enforce(
+                &state,
+                &mut conn,
+                &auth_user.uuid,
+                issued.require_mfa,
+                form.totp_code.as_deref(),
+            )
+            .await;
+            if mfa != crate::services::connect_mfa::ConnectMfa::Passed {
+                let _ = diesel::delete(
+                    proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
+                )
+                .execute(&mut conn)
+                .await;
+                return match mfa {
+                    crate::services::connect_mfa::ConnectMfa::Refused(msg) => {
+                        iacs_tunnel_error_response(&headers, StatusCode::FORBIDDEN, msg)
+                    }
+                    _ if headers.get("HX-Request").is_some() => {
+                        crate::services::connect_mfa::prompt_response(
+                            &asset_uuid_str,
+                            "iacs",
+                            false,
+                        )
+                    }
+                    _ => iacs_tunnel_error_response(
+                        &headers,
+                        StatusCode::FORBIDDEN,
+                        crate::services::connect_mfa::CODE_REQUIRED_MESSAGE,
+                    ),
+                };
+            }
+            issued.token
+        }
         Err(e) => {
             tracing::warn!(
                 user = %auth_user.username,

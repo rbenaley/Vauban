@@ -78,13 +78,26 @@ document.addEventListener('alpine:init', function () {
     // the full htmx-request lifecycle (HX-Redirect, HX-Trigger,
     // hx-indicator, htmx:after-request) so behaviour is identical
     // to a static `hx-post` form.
+    //
+    // The same modal asks for the authenticator code when the access
+    // rule requires MFA (`require_mfa`), with or without the
+    // justification field (`need_justification`, on by default so the
+    // two-argument callers keep their behaviour). MCP never shows the
+    // code field: its handler checks the login session's second factor.
     Alpine.store('justificationModal', {
         show: false,
         asset_uuid: '',
         asset_type: '',
-        open: function (uuid, type) {
+        require_mfa: false,
+        need_justification: true,
+        totp_code: '',
+        open: function (uuid, type, requireMfa, needJustification) {
             this.asset_uuid = String(uuid || '');
             this.asset_type = String(type || '');
+            this.require_mfa = !!requireMfa && this.asset_type !== 'mcp';
+            this.need_justification =
+                needJustification === undefined ? true : !!needJustification;
+            this.totp_code = '';
             this.show = true;
         },
         // Single source of truth for the SSH / RDP / MCP endpoint switch.
@@ -98,6 +111,8 @@ document.addEventListener('alpine:init', function () {
                 path = 'connect-rdp';
             } else if (this.asset_type === 'mcp') {
                 path = 'connect-mcp';
+            } else if (this.asset_type === 'iacs') {
+                path = 'connect-iacs';
             }
             return '/assets/' + encodeURIComponent(this.asset_uuid) + '/' + path;
         },
@@ -1005,6 +1020,29 @@ document.addEventListener('DOMContentLoaded', function () {
         } else {
             store.show = true;
         }
+    });
+
+    // Authenticator code prompt from the SSH / RDP / IACS open handlers
+    // (HX-Trigger: show-connect-mfa-modal), sent when the access rule
+    // requires MFA and the request carried no code. Deferred by one
+    // task: when the request came from the modal itself, its
+    // `htmx:after-request` handler closes it right after this event.
+    document.body.addEventListener('show-connect-mfa-modal', function (evt) {
+        if (typeof Alpine === 'undefined' || !Alpine.store('justificationModal')) {
+            return;
+        }
+        var detail = evt.detail || {};
+        if (!detail.asset_uuid) {
+            return;
+        }
+        setTimeout(function () {
+            Alpine.store('justificationModal').open(
+                detail.asset_uuid,
+                detail.asset_type || '',
+                true,
+                !!detail.need_justification
+            );
+        }, 0);
     });
 
     // Issue #34 -- the legacy hash-router has been removed along

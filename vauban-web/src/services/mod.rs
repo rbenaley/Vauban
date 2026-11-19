@@ -19,6 +19,7 @@ pub mod audit_authors;
 pub mod auth;
 pub mod broadcast;
 pub mod broker_latency;
+pub mod connect_mfa;
 pub mod connections;
 pub mod dashboard;
 pub mod iacs;

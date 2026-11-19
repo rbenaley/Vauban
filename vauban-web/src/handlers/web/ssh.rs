@@ -14,6 +14,8 @@ pub struct ConnectSshForm {
     pub username: Option<String>,
     /// Connection justification (SEC-03).
     pub justification: Option<String>,
+    /// Authenticator code, asked when the access rule requires MFA.
+    pub totp_code: Option<String>,
 }
 
 /// Response for SSH connection request.
@@ -534,6 +536,49 @@ pub async fn connect_ssh(
                 }
             }
         } else {
+            // "Require MFA" without approval: the approval request is
+            // where the code is otherwise checked, so check it here.
+            match crate::services::connect_mfa::enforce(
+                &state,
+                &mut conn,
+                &auth_user.uuid,
+                issued.require_mfa,
+                form.totp_code.as_deref(),
+            )
+            .await
+            {
+                crate::services::connect_mfa::ConnectMfa::Passed => {}
+                crate::services::connect_mfa::ConnectMfa::Prompt => {
+                    if is_htmx {
+                        return crate::services::connect_mfa::prompt_response(
+                            &asset_uuid_str,
+                            "ssh",
+                            state.config.security.require_justification,
+                        );
+                    }
+                    return Json(ConnectSshResponse {
+                        success: false,
+                        session_id: None,
+                        redirect_url: None,
+                        error: Some(
+                            crate::services::connect_mfa::CODE_REQUIRED_MESSAGE.to_string(),
+                        ),
+                    })
+                    .into_response();
+                }
+                crate::services::connect_mfa::ConnectMfa::Refused(msg) => {
+                    if is_htmx {
+                        return htmx_error_response(msg);
+                    }
+                    return Json(ConnectSshResponse {
+                        success: false,
+                        session_id: None,
+                        redirect_url: None,
+                        error: Some(msg.to_string()),
+                    })
+                    .into_response();
+                }
+            }
             jit_justification = None;
             jit_max_duration = issued.max_session_duration;
         }

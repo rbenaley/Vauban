@@ -8,6 +8,8 @@ pub struct ConnectRdpForm {
     pub username: Option<String>,
     /// Connection justification (SEC-03).
     pub justification: Option<String>,
+    /// Authenticator code, asked when the access rule requires MFA.
+    pub totp_code: Option<String>,
 }
 
 fn htmx_error_response(message: &str) -> Response {
@@ -319,6 +321,29 @@ pub async fn connect_rdp(
                 }
             }
         } else {
+            // "Require MFA" without approval: the approval request is
+            // where the code is otherwise checked, so check it here.
+            match crate::services::connect_mfa::enforce(
+                &state,
+                &mut conn,
+                &auth_user.uuid,
+                issued.require_mfa,
+                form.totp_code.as_deref(),
+            )
+            .await
+            {
+                crate::services::connect_mfa::ConnectMfa::Passed => {}
+                crate::services::connect_mfa::ConnectMfa::Prompt => {
+                    return crate::services::connect_mfa::prompt_response(
+                        &asset_uuid_str,
+                        "rdp",
+                        state.config.security.require_justification,
+                    );
+                }
+                crate::services::connect_mfa::ConnectMfa::Refused(msg) => {
+                    return htmx_error_response(msg);
+                }
+            }
             jit_justification = None;
             jit_max_duration = issued.max_session_duration;
         }
@@ -1143,6 +1168,7 @@ mod tests {
             csrf_token: "test-token".to_string(),
             username: Some("admin".to_string()),
             justification: None,
+            totp_code: None,
         };
         let debug = format!("{:?}", form);
         assert!(debug.contains("ConnectRdpForm"));

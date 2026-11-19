@@ -769,6 +769,7 @@ fn test_connect_ssh_form_debug() {
         csrf_token: "token123".to_string(),
         username: Some("testuser".to_string()),
         justification: None,
+        totp_code: None,
     };
 
     let debug_str = format!("{:?}", form);

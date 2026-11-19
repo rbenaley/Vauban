@@ -125,10 +125,17 @@ fn asset_list_buttons_call_open_with_per_row_data() {
     assert!(
         ASSET_LIST.contains(
             "$store.justificationModal.open('{{ asset.uuid }}', \
-             '{{ asset.asset_type }}')"
+             '{{ asset.asset_type }}', {{ asset.require_mfa }}, "
         ),
         "asset_list.html must open the justification modal with \
-         per-row (asset.uuid, asset.asset_type) (issue #34)"
+         per-row (asset.uuid, asset.asset_type, asset.require_mfa)"
+    );
+    // A rule that requires MFA must route Connect through the modal
+    // even when the platform asks for no justification.
+    assert!(
+        ASSET_LIST.contains("require_justification || asset.require_mfa ||"),
+        "asset_list.html must open the modal for an asset whose rule \
+         requires MFA"
     );
     // Forbidden legacy patterns:
     assert!(
@@ -180,8 +187,9 @@ fn alpine_stores_expose_open_and_connect_url() {
         "accessModal store must expose open(uuid, type, requireMfa) (issue #34)"
     );
     assert!(
-        COMPONENTS_JS.contains("open: function (uuid, type)"),
-        "justificationModal store must expose open(uuid, type) (issue #34)"
+        COMPONENTS_JS.contains("open: function (uuid, type, requireMfa, needJustification)"),
+        "justificationModal store must expose \
+         open(uuid, type, requireMfa, needJustification)"
     );
     assert!(
         COMPONENTS_JS.contains("connectUrl: function ()"),
@@ -310,4 +318,23 @@ fn asset_detail_template_was_removed() {
         !module.exists(),
         "src/templates/assets/asset_detail.rs must NOT exist (issue #34)"
     );
+}
+
+/// The connection modal carries the authenticator code when the access
+/// rule requires MFA, and posts it under the name the handlers read.
+#[test]
+fn justification_modal_asks_for_the_code_when_mfa_is_required() {
+    assert!(JUSTIFY_MODAL.contains(r#"x-if="$store.justificationModal.require_mfa""#));
+    assert!(JUSTIFY_MODAL.contains(r#"name="totp_code""#));
+    assert!(JUSTIFY_MODAL.contains(r#"x-if="$store.justificationModal.need_justification""#));
+}
+
+/// The server-side prompt (`HX-Trigger: show-connect-mfa-modal`) must
+/// have a listener, and the modal must know the IACS endpoint, or an
+/// IACS asset under an MFA rule could never be opened.
+#[test]
+fn connect_mfa_prompt_is_wired_in_the_script() {
+    const SCRIPT: &str = include_str!("../../static/js/vauban-components.js");
+    assert!(SCRIPT.contains("addEventListener('show-connect-mfa-modal'"));
+    assert!(SCRIPT.contains("path = 'connect-iacs'"));
 }

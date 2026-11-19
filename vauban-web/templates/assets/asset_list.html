@@ -266,9 +266,9 @@
                                 class="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-amber-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600">
                             Request
                         </button>
-                        {% else if require_justification || asset.asset_type == "mcp" %}
+                        {% else if require_justification || asset.require_mfa || asset.asset_type == "mcp" %}
                         <button type="button"
-                                @click="$store.justificationModal.open('{{ asset.uuid }}', '{{ asset.asset_type }}')"
+                                @click="$store.justificationModal.open('{{ asset.uuid }}', '{{ asset.asset_type }}', {{ asset.require_mfa }}, {{ require_justification || asset.asset_type == "mcp" }})"
                                 class="rounded-md bg-vauban-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
                             Connect
                         </button>
