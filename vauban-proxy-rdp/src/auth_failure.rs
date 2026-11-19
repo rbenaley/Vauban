@@ -150,6 +150,10 @@ pub fn kdc_reply(framed: &[u8]) -> KdcReply {
     }
 }
 
+/// KDC replies of a complete password logon: KRB-ERROR asking for
+/// pre-authentication, AS-REP, TGS-REP.
+pub const FULL_EXCHANGE_REPLIES: u32 = 3;
+
 /// What the KDC relay saw during one session open.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct KdcTrace {
@@ -178,6 +182,17 @@ impl KdcTrace {
             KdcReply::Error(code) => Some(code),
             KdcReply::AsRep | KdcReply::Other => None,
         };
+    }
+
+    /// The KDC answered the whole exchange without an error: the
+    /// pre-authentication round, the ticket-granting ticket and the
+    /// service ticket. Fewer than [`FULL_EXCHANGE_REPLIES`] replies, or a
+    /// last reply that is a KRB-ERROR, means no service ticket.
+    pub const fn tickets_were_issued(&self) -> bool {
+        self.replies >= FULL_EXCHANGE_REPLIES
+            && self.last_krb_error.is_none()
+            && self.lease_refusal.is_none()
+            && !self.relay_failed
     }
 
     /// Record a failed KDC exchange, from the relay's error string.
@@ -283,7 +298,10 @@ const fn reason_for_lease_refusal(refusal: KdcLeaseRefusal) -> RdpAuthFailure {
 /// 2. Any mode: the `sspi` kinds that name a cause by themselves.
 /// 3. Any mode: a logon refusal by the target. In Restricted Admin it is
 ///    reported as such, since the target is what refuses that mode.
-/// 4. Kerberos modes: a token the client could not use, which is what a
+/// 4. Kerberos modes, after the KDC issued the tickets: a token of the
+///    target the client refused. The target does Kerberos; what it sent
+///    back was not accepted.
+/// 5. Kerberos modes: a token the client could not use, which is what a
 ///    target that cannot do Kerberos produces.
 ///
 /// Kerberos evidence is ignored in NTLM mode: an NTLM session has no KDC
@@ -326,6 +344,19 @@ pub fn classify(mode: RdpAuthMode, failure: &NlaFailure, trace: &KdcTrace) -> Rd
         } else {
             RdpAuthFailure::CredentialsRejected
         };
+    }
+
+    // The KDC issued the service ticket and the client then refused
+    // what the target sent back: the account, the realm and the SPN are
+    // proven good, so this is not a target that cannot do Kerberos.
+    if profile.kerberos
+        && trace.tickets_were_issued()
+        && matches!(
+            failure.sspi_kind,
+            Some(ErrorKind::InvalidToken | ErrorKind::MessageAltered)
+        )
+    {
+        return RdpAuthFailure::TargetTokenRejected;
     }
 
     if profile.kerberos
@@ -715,6 +746,87 @@ mod tests {
         );
     }
 
+    /// The case met against Windows on 2026-11-19: three KDC replies, no
+    /// KDC error, then `InvalidToken` on the target's mechListMIC.
+    #[test]
+    fn test_classify_target_token_refused_after_the_tickets_were_issued() {
+        let issued = trace_with(&[krb_error_reply(25), as_rep_reply(), tgs_rep_reply()]);
+        assert!(issued.tickets_were_issued());
+        for mode in KERBEROS_MODES {
+            for kind in [ErrorKind::InvalidToken, ErrorKind::MessageAltered] {
+                assert_eq!(
+                    classify(mode, &sspi(kind), &issued),
+                    RdpAuthFailure::TargetTokenRejected,
+                    "{mode:?} {kind:?}"
+                );
+            }
+        }
+    }
+
+    /// Without a service ticket the old reading stands: the target (or
+    /// the path to it) did not do Kerberos.
+    #[test]
+    fn test_classify_token_refused_without_tickets_is_not_a_target_token() {
+        let no_exchange = KdcTrace::default();
+        let no_service_ticket = trace_with(&[krb_error_reply(25), as_rep_reply()]);
+        assert!(!no_exchange.tickets_were_issued());
+        assert!(!no_service_ticket.tickets_were_issued());
+        for mode in KERBEROS_MODES {
+            for trace in [&no_exchange, &no_service_ticket] {
+                assert_eq!(
+                    classify(mode, &sspi(ErrorKind::InvalidToken), trace),
+                    RdpAuthFailure::KerberosPackageRefused
+                );
+            }
+        }
+    }
+
+    /// A KDC error on the last reply keeps its own reason, however many
+    /// replies came before.
+    #[test]
+    fn test_classify_kdc_error_wins_over_a_refused_token() {
+        let trace = trace_with(&[
+            krb_error_reply(25),
+            as_rep_reply(),
+            krb_error_reply(krb_error::KDC_ERR_S_PRINCIPAL_UNKNOWN),
+        ]);
+        assert!(!trace.tickets_were_issued());
+        assert_eq!(
+            classify(
+                RdpAuthMode::Kerberos,
+                &sspi(ErrorKind::InvalidToken),
+                &trace
+            ),
+            RdpAuthFailure::ServicePrincipalUnknown
+        );
+    }
+
+    /// A logon refusal by the target is still a logon refusal after the
+    /// tickets were issued.
+    #[test]
+    fn test_classify_logon_refusal_wins_over_a_refused_token() {
+        let issued = trace_with(&[krb_error_reply(25), as_rep_reply(), tgs_rep_reply()]);
+        let refusal = NlaFailure {
+            sspi_kind: Some(ErrorKind::InvalidToken),
+            nstatus: Some(nstatus::LOGON_FAILURE),
+            access_denied: false,
+        };
+        assert_eq!(
+            classify(RdpAuthMode::Kerberos, &refusal, &issued),
+            RdpAuthFailure::CredentialsRejected
+        );
+    }
+
+    /// NTLM has no KDC: a Kerberos trace there is ignored.
+    #[test]
+    fn test_classify_ntlm_never_yields_target_token_rejected() {
+        let issued = trace_with(&[krb_error_reply(25), as_rep_reply(), tgs_rep_reply()]);
+        assert_eq!(
+            classify(RdpAuthMode::Ntlm, &sspi(ErrorKind::InvalidToken), &issued),
+            RdpAuthFailure::Other
+        );
+    }
+
     #[test]
     fn test_classify_logon_refusals_by_mode() {
         let trace = trace_with(&[krb_error_reply(25), as_rep_reply(), tgs_rep_reply()]);
@@ -766,8 +878,10 @@ mod tests {
             RdpAuthFailure::PasswordExpired,
             RdpAuthFailure::EncryptionTypeUnsupported,
             RdpAuthFailure::KerberosBrokerUnavailable,
+            RdpAuthFailure::TargetTokenRejected,
         ];
         let mut traces = vec![
+            trace_with(&[krb_error_reply(25), as_rep_reply(), tgs_rep_reply()]),
             trace_with(&[as_rep_reply()]),
             trace_with(&[krb_error_reply(24)]),
             trace_with(&[krb_error_reply(7)]),
@@ -829,6 +943,7 @@ mod tests {
                 Just(Some(ErrorKind::KdcInvalidRequest)),
                 Just(Some(ErrorKind::LogonDenied)),
                 Just(Some(ErrorKind::InternalError)),
+                Just(Some(ErrorKind::MessageAltered)),
             ]
         }
 
@@ -891,6 +1006,18 @@ mod tests {
                 }
                 if reason == RdpAuthFailure::RestrictedAdminRefused {
                     prop_assert_eq!(mode, RdpAuthMode::KerberosRestrictedAdmin);
+                }
+                // A refused target token is a Kerberos reason, and only
+                // when the KDC issued the tickets without an error.
+                if reason == RdpAuthFailure::TargetTokenRejected {
+                    prop_assert_ne!(mode, RdpAuthMode::Ntlm);
+                    prop_assert!(trace.tickets_were_issued());
+                    prop_assert!(trace.replies >= FULL_EXCHANGE_REPLIES);
+                    prop_assert!(trace.last_krb_error.is_none());
+                }
+                // No ticket, no such reason, whatever the client reports.
+                if !trace.tickets_were_issued() {
+                    prop_assert_ne!(reason, RdpAuthFailure::TargetTokenRejected);
                 }
             }
         }

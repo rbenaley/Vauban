@@ -245,3 +245,39 @@ fn the_negotiation_is_checked_before_tls_and_the_password_is_stripped() {
         .expect("first I/O");
     assert!(init < strip && strip < first_io, "stripped before any I/O");
 }
+
+/// A session that opens says in which mode it authenticated, on both
+/// lines an operator reads: the attempt and its success.
+#[test]
+fn the_session_log_names_the_auth_mode_on_attempt_and_on_success() {
+    let session = production(SESSION);
+    for line in ["\"Connecting to RDP server\"", "\"RDP session connected\""] {
+        assert!(session.contains(line), "{line} not found");
+        let before = session.split(line).next().unwrap_or_default();
+        let call = &before[before.rfind("info!(").expect("info! call")..];
+        assert!(
+            call.contains("auth_mode = config.auth_mode.as_str()"),
+            "{line} must carry auth_mode"
+        );
+    }
+}
+
+/// The reason for a refused target token is decided on the typed trace,
+/// by one predicate.
+#[test]
+fn target_token_rejected_is_decided_by_the_ticket_predicate() {
+    let auth_failure = production(AUTH_FAILURE);
+    let branch = auth_failure
+        .split("return RdpAuthFailure::TargetTokenRejected;")
+        .next()
+        .expect("TargetTokenRejected branch");
+    let condition = &branch[branch.rfind("if profile.kerberos").expect("condition")..];
+    assert!(condition.contains("trace.tickets_were_issued()"));
+    assert_eq!(
+        auth_failure
+            .matches("RdpAuthFailure::TargetTokenRejected")
+            .count(),
+        1,
+        "one branch produces the reason"
+    );
+}

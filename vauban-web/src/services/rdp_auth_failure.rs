@@ -79,6 +79,9 @@ pub const fn operator_message(reason: RdpAuthFailure) -> &'static str {
         RdpAuthFailure::CredentialsRejected => {
             "The target refused the credentials. Check the username, password and domain stored on the asset, and that the account may log on through Remote Desktop."
         }
+        RdpAuthFailure::TargetTokenRejected => {
+            "Kerberos: the KDC issued the tickets, then the bastion refused the answer of the target. The account, the realm and the service principal are not the cause. See the cause after \"caused by\" in the vauban-proxy-rdp log for this session; if the target is a supported Windows version, report it."
+        }
     }
 }
 
@@ -141,6 +144,11 @@ mod tests {
             (RdpAuthFailure::EncryptionTypeUnsupported, "AES"),
             (RdpAuthFailure::KerberosPackageRefused, "No NTLM fallback"),
             (RdpAuthFailure::Other, "vauban-proxy-rdp log"),
+            (RdpAuthFailure::TargetTokenRejected, "caused by"),
+            (
+                RdpAuthFailure::TargetTokenRejected,
+                "KDC issued the tickets",
+            ),
         ] {
             assert!(
                 operator_message(reason).contains(needle),

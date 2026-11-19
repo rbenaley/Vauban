@@ -130,6 +130,7 @@ impl RdpSession {
             host = %config.host,
             port = config.port,
             username = %config.username,
+            auth_mode = config.auth_mode.as_str(),
             width = config.desktop_width,
             height = config.desktop_height,
             "Connecting to RDP server"
@@ -349,6 +350,9 @@ impl RdpSession {
 
         info!(
             session_id = %config.session_id,
+            // The mode NLA completed in: a session that opens says how
+            // it authenticated, as a refused one does.
+            auth_mode = config.auth_mode.as_str(),
             width = actual_width,
             height = actual_height,
             "RDP session connected"

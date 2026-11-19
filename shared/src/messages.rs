@@ -435,11 +435,14 @@ pub enum RdpAuthFailure {
     /// it, selected TLS-only security, or (Restricted Admin) did not
     /// announce support for the mode. No credential was sent.
     NegotiationRefused,
+    /// The KDC issued the tickets, then the bastion refused a token of
+    /// the target: its Kerberos answer or its SPNEGO mechListMIC.
+    TargetTokenRejected,
 }
 
 impl RdpAuthFailure {
     /// Every reason, in wire order.
-    pub const ALL: [RdpAuthFailure; 18] = [
+    pub const ALL: [RdpAuthFailure; 19] = [
         RdpAuthFailure::KdcUnreachable,
         RdpAuthFailure::ClockSkew,
         RdpAuthFailure::PreAuthFailed,
@@ -458,6 +461,7 @@ impl RdpAuthFailure {
         RdpAuthFailure::KerberosBrokerUnavailable,
         RdpAuthFailure::CredentialsRejected,
         RdpAuthFailure::NegotiationRefused,
+        RdpAuthFailure::TargetTokenRejected,
     ];
 
     /// Stable machine name, for audit details and logs. `[a-z_]` only, so
@@ -482,6 +486,7 @@ impl RdpAuthFailure {
             RdpAuthFailure::KerberosBrokerUnavailable => "kerberos_broker_unavailable",
             RdpAuthFailure::CredentialsRejected => "credentials_rejected",
             RdpAuthFailure::NegotiationRefused => "negotiation_refused",
+            RdpAuthFailure::TargetTokenRejected => "target_token_rejected",
         }
     }
 }
@@ -5997,6 +6002,12 @@ mod tests {
         assert_eq!(serialize(&RdpAuthFailure::Other), vec![9]);
         assert_eq!(serialize(&RdpAuthFailure::CredentialsRejected), vec![16]);
         assert_eq!(serialize(&RdpAuthFailure::NegotiationRefused), vec![17]);
+        assert_eq!(serialize(&RdpAuthFailure::TargetTokenRejected), vec![18]);
+        // Appended, never inserted: the last reason is the newest.
+        assert_eq!(
+            RdpAuthFailure::ALL.last(),
+            Some(&RdpAuthFailure::TargetTokenRejected)
+        );
     }
 
     #[test]
