@@ -94,6 +94,11 @@ pub struct CreateAccessRuleWebForm {
     pub valid_until: Option<String>,
     pub require_mfa: Option<String>,
     pub require_approval: Option<String>,
+    /// Empty means unlimited: a browser sends the cleared field as `""`.
+    #[serde(
+        default,
+        deserialize_with = "crate::models::asset::deserialize_optional_i32"
+    )]
     pub duration_value: Option<i32>,
     pub duration_unit: Option<String>,
     pub is_active: Option<String>,
@@ -115,6 +120,11 @@ pub struct UpdateAccessRuleWebForm {
     pub valid_until: Option<String>,
     pub require_mfa: Option<String>,
     pub require_approval: Option<String>,
+    /// Empty means unlimited: a browser sends the cleared field as `""`.
+    #[serde(
+        default,
+        deserialize_with = "crate::models::asset::deserialize_optional_i32"
+    )]
     pub duration_value: Option<i32>,
     pub duration_unit: Option<String>,
     pub is_active: Option<String>,
@@ -1081,6 +1091,29 @@ pub async fn delete_access_rule_web(
 
 #[cfg(test)]
 mod tests {
+    /// A cleared "Max Session Duration" field arrives as an empty string
+    /// and must mean "unlimited", on creation and on edit.
+    #[test]
+    fn access_rule_forms_accept_an_empty_duration() {
+        let body = "csrf_token=t&name=r&user_group_id=1&asset_group_id=2\
+                    &duration_value=&duration_unit=minutes";
+        let create: super::CreateAccessRuleWebForm =
+            serde_urlencoded::from_str(body).expect("create form");
+        assert_eq!(create.duration_value, None);
+        let update: super::UpdateAccessRuleWebForm =
+            serde_urlencoded::from_str(body).expect("update form");
+        assert_eq!(update.duration_value, None);
+
+        let body = "csrf_token=t&name=r&user_group_id=1&asset_group_id=2\
+                    &duration_value=10&duration_unit=minutes";
+        let update: super::UpdateAccessRuleWebForm =
+            serde_urlencoded::from_str(body).expect("update form");
+        assert_eq!(update.duration_value, Some(10));
+
+        let body = "csrf_token=t&name=r&user_group_id=1&asset_group_id=2&duration_value=abc";
+        assert!(serde_urlencoded::from_str::<super::UpdateAccessRuleWebForm>(body).is_err());
+    }
+
     use super::*;
 
     /// `iacs_protocols()` is the source of truth for the master IACS
