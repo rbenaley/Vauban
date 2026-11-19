@@ -313,9 +313,32 @@ impl RdpSession {
             config.auth_mode,
         )
         .await
-        .map_err(|e| SessionError::AuthenticationFailed {
-            reason: auth_failure_reason(config.auth_mode, &e, &network_client),
-            detail: format!("RDP finalize failed: {e}"),
+        .map_err(|e| {
+            let reason = auth_failure_reason(config.auth_mode, &e, &network_client);
+            // The typed evidence the reason was derived from. Codes and
+            // counters only: no reply, no token, no text from the peer.
+            let evidence = crate::auth_failure::Evidence::new(
+                &nla_failure_of(&e),
+                &network_client.kdc_trace(),
+            );
+            warn!(
+                session_id = %config.session_id,
+                reason = reason.as_str(),
+                auth_mode = config.auth_mode.as_str(),
+                sspi_kind = %evidence.sspi_kind,
+                nstatus = %evidence.nstatus,
+                access_denied = evidence.access_denied,
+                kdc_replies = evidence.kdc_replies,
+                kdc_first_reply_as_rep = evidence.kdc_first_reply_as_rep,
+                kdc_last_error = %evidence.kdc_last_error,
+                kdc_lease_refusal = %evidence.kdc_lease_refusal,
+                kdc_relay_failed = evidence.kdc_relay_failed,
+                "RDP NLA failure evidence"
+            );
+            SessionError::AuthenticationFailed {
+                reason,
+                detail: format!("RDP finalize failed: {e}"),
+            }
         })?;
 
         let actual_width = connection_result.desktop_size.width;

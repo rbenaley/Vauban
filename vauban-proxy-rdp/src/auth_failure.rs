@@ -200,6 +200,51 @@ pub struct NlaFailure {
     pub access_denied: bool,
 }
 
+/// The evidence of a failed NLA leg, in a form fit for one log line.
+///
+/// Every field is a code, a counter or a flag this process produced
+/// itself. Nothing here is text from the KDC or the target, so the line
+/// cannot be shaped by a peer. An absent value is `-`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Evidence {
+    /// `sspi` error kind, by its variant name.
+    pub sspi_kind: String,
+    /// CredSSP `errorCode` (an NTSTATUS), in hexadecimal.
+    pub nstatus: String,
+    pub access_denied: bool,
+    pub kdc_replies: u32,
+    pub kdc_first_reply_as_rep: bool,
+    /// Kerberos error code of the last KDC reply, in decimal (RFC 4120).
+    pub kdc_last_error: String,
+    /// Why the supervisor refused a KDC socket, by its variant name.
+    pub kdc_lease_refusal: String,
+    pub kdc_relay_failed: bool,
+}
+
+impl Evidence {
+    pub fn new(failure: &NlaFailure, trace: &KdcTrace) -> Self {
+        const ABSENT: &str = "-";
+        Self {
+            sspi_kind: failure
+                .sspi_kind
+                .map_or_else(|| ABSENT.to_string(), |kind| format!("{kind:?}")),
+            nstatus: failure
+                .nstatus
+                .map_or_else(|| ABSENT.to_string(), |status| format!("0x{status:08X}")),
+            access_denied: failure.access_denied,
+            kdc_replies: trace.replies,
+            kdc_first_reply_as_rep: trace.first_reply_was_as_rep,
+            kdc_last_error: trace
+                .last_krb_error
+                .map_or_else(|| ABSENT.to_string(), |code| code.to_string()),
+            kdc_lease_refusal: trace
+                .lease_refusal
+                .map_or_else(|| ABSENT.to_string(), |refusal| format!("{refusal:?}")),
+            kdc_relay_failed: trace.relay_failed,
+        }
+    }
+}
+
 /// The reason for a Kerberos error code, when the code decides it.
 const fn reason_for_krb_error(code: u32) -> Option<RdpAuthFailure> {
     match code {
@@ -303,6 +348,55 @@ pub fn classify(mode: RdpAuthMode, failure: &NlaFailure, trace: &KdcTrace) -> Rd
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evidence_of_a_target_side_refusal_names_codes_only() {
+        let failure = NlaFailure {
+            sspi_kind: Some(ErrorKind::InvalidToken),
+            nstatus: Some(nstatus::LOGON_FAILURE),
+            access_denied: false,
+        };
+        let trace = KdcTrace {
+            replies: 3,
+            first_reply_was_as_rep: false,
+            last_krb_error: None,
+            ..KdcTrace::default()
+        };
+        let evidence = Evidence::new(&failure, &trace);
+        assert_eq!(evidence.sspi_kind, "InvalidToken");
+        assert_eq!(
+            evidence.nstatus,
+            format!("0x{:08X}", nstatus::LOGON_FAILURE)
+        );
+        assert_eq!(evidence.kdc_replies, 3);
+        assert_eq!(evidence.kdc_last_error, "-");
+        assert_eq!(evidence.kdc_lease_refusal, "-");
+    }
+
+    #[test]
+    fn evidence_without_any_kdc_exchange_says_so() {
+        let evidence = Evidence::new(&NlaFailure::default(), &KdcTrace::default());
+        assert_eq!(evidence.sspi_kind, "-");
+        assert_eq!(evidence.nstatus, "-");
+        assert_eq!(evidence.kdc_replies, 0);
+        assert!(!evidence.kdc_relay_failed);
+    }
+
+    #[test]
+    fn evidence_carries_the_kdc_error_code_and_the_lease_refusal() {
+        let trace = KdcTrace {
+            replies: 1,
+            last_krb_error: Some(krb_error::KDC_ERR_PREAUTH_FAILED),
+            lease_refusal: Some(KdcLeaseRefusal::Unreachable),
+            ..KdcTrace::default()
+        };
+        let evidence = Evidence::new(&NlaFailure::default(), &trace);
+        assert_eq!(
+            evidence.kdc_last_error,
+            krb_error::KDC_ERR_PREAUTH_FAILED.to_string()
+        );
+        assert_eq!(evidence.kdc_lease_refusal, "Unreachable");
+    }
 
     /// DER definite length.
     fn der_len(len: usize) -> Vec<u8> {
