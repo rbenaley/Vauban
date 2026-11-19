@@ -472,39 +472,123 @@ pub async fn connect_iacs(
 
     let session_token = match state.access_client.issue_session_token(token_params).await {
         Ok(issued) => {
-            // "Require MFA" on the rule: the tunnel is not opened, and
-            // its row not kept, until the code is verified.
-            let mfa = crate::services::connect_mfa::enforce(
-                &state,
-                &mut conn,
-                &auth_user.uuid,
-                issued.require_mfa,
-                form.totp_code.as_deref(),
-            )
-            .await;
-            if mfa != crate::services::connect_mfa::ConnectMfa::Passed {
-                let _ = diesel::delete(
-                    proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
+            // "Require approval" on the rule: the tunnel is opened only
+            // under the caller's live approved request, as for SSH and
+            // RDP. Until 0.9.60 this flag was not read here and an IACS
+            // tunnel opened without any approval.
+            let grant = if issued.require_approval {
+                crate::services::access_request::find_approved_grant(
+                    &mut conn,
+                    user_id,
+                    asset.id,
+                    chrono::Utc::now(),
                 )
-                .execute(&mut conn)
-                .await;
-                return match mfa {
-                    crate::services::connect_mfa::ConnectMfa::Refused(msg) => {
-                        iacs_tunnel_error_response(&headers, StatusCode::FORBIDDEN, msg)
-                    }
-                    _ if headers.get("HX-Request").is_some() => {
-                        crate::services::connect_mfa::prompt_response(
+                .await
+            } else {
+                None
+            };
+            match crate::services::access_request::approval_gate(issued.require_approval, grant) {
+                crate::services::access_request::ApprovalGate::RequestNeeded => {
+                    let _ = diesel::delete(
+                        proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
+                    )
+                    .execute(&mut conn)
+                    .await;
+                    tracing::info!(
+                        user = %auth_user.username,
+                        asset = %asset.name,
+                        "iacs_tunnel: approval required and no live approved request"
+                    );
+                    if headers.get("HX-Request").is_some() {
+                        return crate::services::access_request::request_modal_response(
                             &asset_uuid_str,
-                            "iacs",
-                            false,
-                        )
+                            &asset.asset_type.to_string(),
+                            issued.require_mfa,
+                        );
                     }
-                    _ => iacs_tunnel_error_response(
+                    return iacs_tunnel_error_response(
                         &headers,
                         StatusCode::FORBIDDEN,
-                        crate::services::connect_mfa::CODE_REQUIRED_MESSAGE,
-                    ),
-                };
+                        crate::services::access_request::APPROVAL_REQUIRED_MESSAGE,
+                    );
+                }
+                crate::services::access_request::ApprovalGate::Granted(grant) => {
+                    // The session carries what was approved: the
+                    // justification the approver read, and the granted
+                    // duration, counted from now. `expires_at` is set
+                    // here because the periodic recheck would otherwise
+                    // fill the 4-hour default over a shorter grant.
+                    // The second factor was checked when the request
+                    // was filed.
+                    let duration = grant.max_session_duration.or(issued.max_session_duration);
+                    let expires_at = duration.map(|secs| {
+                        chrono::Utc::now() + chrono::Duration::seconds(i64::from(secs))
+                    });
+                    let stamped = diesel::update(
+                        proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
+                    )
+                    .set((
+                        proxy_sessions::justification.eq(grant.justification),
+                        proxy_sessions::max_session_duration.eq(duration),
+                        proxy_sessions::expires_at.eq(expires_at),
+                    ))
+                    .execute(&mut conn)
+                    .await;
+                    if !matches!(stamped, Ok(1)) {
+                        tracing::error!(
+                            user = %auth_user.username,
+                            session_uuid = %session_uuid,
+                            "iacs_tunnel: could not record the approved grant -- rolling back"
+                        );
+                        let _ = diesel::delete(
+                            proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
+                        )
+                        .execute(&mut conn)
+                        .await;
+                        return iacs_tunnel_error_response(
+                            &headers,
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Failed to create tunnel session",
+                        );
+                    }
+                }
+                crate::services::access_request::ApprovalGate::NotRequired => {
+                    // "Require MFA" without approval: the tunnel is not
+                    // opened, and its row not kept, until the code is
+                    // verified.
+                    let mfa = crate::services::connect_mfa::enforce(
+                        &state,
+                        &mut conn,
+                        &auth_user.uuid,
+                        issued.require_mfa,
+                        form.totp_code.as_deref(),
+                    )
+                    .await;
+                    if mfa != crate::services::connect_mfa::ConnectMfa::Passed {
+                        let _ = diesel::delete(
+                            proxy_sessions::table.filter(proxy_sessions::uuid.eq(session_uuid)),
+                        )
+                        .execute(&mut conn)
+                        .await;
+                        return match mfa {
+                            crate::services::connect_mfa::ConnectMfa::Refused(msg) => {
+                                iacs_tunnel_error_response(&headers, StatusCode::FORBIDDEN, msg)
+                            }
+                            _ if headers.get("HX-Request").is_some() => {
+                                crate::services::connect_mfa::prompt_response(
+                                    &asset_uuid_str,
+                                    "iacs",
+                                    false,
+                                )
+                            }
+                            _ => iacs_tunnel_error_response(
+                                &headers,
+                                StatusCode::FORBIDDEN,
+                                crate::services::connect_mfa::CODE_REQUIRED_MESSAGE,
+                            ),
+                        };
+                    }
+                }
             }
             issued.token
         }

@@ -154,6 +154,13 @@ Three independent layers gate every IACS tunnel session:
 
 The three layers are checked in order, fail-closed; any failure refuses the tunnel.
 
+**Rule constraints at open (0.9.56, 0.9.60).** `IssueSessionToken` returns the constraints of the rules that grant the access; `connect_iacs` applies them before it keeps the session row:
+
+- `require_approval` (0.9.60): the tunnel opens only under the caller's own live approved request for the asset (`services::access_request::approval_gate`, the rule SSH and RDP follow). Without one, no row is kept and the browser is shown the request modal. The session then carries the approved justification and duration, and its `expires_at` is set at open. Before 0.9.60 this flag was not read on the IACS path: a tunnel opened without any approval, the catalogue never offered Request for an industrial asset, and a request row could not have been stored (see below).
+- `require_mfa` without approval (0.9.56): a single-use TOTP code is verified. Under an approval the code was verified when the request was filed.
+
+A request for an industrial asset is a `proxy_sessions` row of type `iacs_tunnel` in status `pending`. `proxy_sessions_iacs_consistency` requires every such row to name `industrial_protocol` and `ews_uuid`, so the request pins the requester's oldest active Engineering Workstation, as the open does; a requester without one is refused. The browser files it under the session type `iacs_tunnel` whatever the protocol of the asset.
+
 ## 7. Anti-SSRF guards on the supervisor TCP broker
 
 The supervisor's `handle_tcp_connect_request` enforces TWO additional guards on every request that targets `Service::ProxyIacs`:
@@ -372,6 +379,7 @@ Constants (v1, not configurable): `CLASSIFY_MAX_BYTES = 4096`, `CLASSIFY_TIMEOUT
 
 | Version | Date | Notes |
 |---------|------|-------|
+| 1.1 | 2026-11-20 | Crate **0.9.60**. Section 6: `require_approval` enforced at tunnel open; access requests for industrial assets (Request button, `iacs_tunnel` session type, protocol and workstation on the request row). |
 | 1.1 | 2026-08-17 | Crate **0.9.37**. ADR 006 profiles (`iacs_enip`, `iacs_bacnet_sc`, `iacs_dnp3`, `iacs_iec61850`) on the same peek-then-passthrough gate; prefix-based access matching for pre-ADR-006 "all IACS" rules. |
 | 1.1 | 2026-07-21 | Document revision. Boot Snapshot resync (§8.1): `IacsTunnelSnapshotRequest` / `Response`, pure `reconcile_iacs_boot`, proxy authority for "alive" after web-only restart. Lot 5: remove in-process IACS sshd from `vauban-web` (fail-closed without `proxy_iacs`; IPC-only watchdog). Updated source-of-truth and pins. Baseline also includes May 2026 amendments previously logged under the 1.0 filename: §11.1 token TTL / replay bypass (2026-05-16) and §14-15 protocol recognition (2026-05-23). |
 | 1.0 | 2026-05-15 | Initial release: per-asset target resolution, three-layer authorization, anti-SSRF guards, supervisor broker via SCM_RIGHTS, DB-driven IPC-dispatched revocation watchdog, real-time WebSocket fan-out. |

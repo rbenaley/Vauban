@@ -1627,13 +1627,39 @@ pub async fn submit_access_request(
 
     use crate::models::session::{NewProxySession, SessionType};
 
+    // A request for an industrial asset is an `iacs_tunnel` row, which
+    // must name its protocol and an Engineering Workstation
+    // (`proxy_sessions_iacs_consistency`). Without a workstation there is
+    // nothing to approve: the tunnel could not be opened.
+    let session_type = SessionType::parse(&form.session_type);
+    let (industrial_protocol, ews_uuid) = if session_type.is_iacs_tunnel() {
+        match crate::services::access_request::iacs_request_columns(
+            &mut conn,
+            user_id,
+            asset.asset_type,
+        )
+        .await
+        {
+            Some((protocol, ews)) => (Some(protocol), Some(ews)),
+            None => {
+                return htmx_or_redirect(
+                    is_htmx,
+                    crate::services::access_request::NO_ACTIVE_EWS_MESSAGE,
+                    "/assets",
+                );
+            }
+        }
+    } else {
+        (None, None)
+    };
+
     let new_session = NewProxySession {
         uuid: session_uuid,
         user_id,
         asset_id: asset.id,
         credential_id: crate::services::access_request::PENDING_CREDENTIAL.to_string(),
         credential_username: crate::services::access_request::PENDING_CREDENTIAL.to_string(),
-        session_type: SessionType::parse(&form.session_type),
+        session_type,
         status: "pending".to_string(),
         client_ip,
         client_user_agent: headers
@@ -1645,8 +1671,8 @@ pub async fn submit_access_request(
         is_recorded: true,
         metadata: serde_json::json!({}),
         max_session_duration: access_result.max_session_duration,
-        industrial_protocol: None,
-        ews_uuid: None,
+        industrial_protocol,
+        ews_uuid,
         tunnel_target_addr: None,
         expires_at: None,
         connected_at: None,

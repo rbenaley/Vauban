@@ -36,9 +36,10 @@ fn access_modal_form_uses_alpine_store_bindings() {
          $store.accessModal.asset_uuid (issue #34)"
     );
     assert!(
-        ACCESS_MODAL.contains(":value=\"$store.accessModal.asset_type\""),
+        ACCESS_MODAL.contains("name=\"session_type\" :value=\"$store.accessModal.sessionType()\""),
         "access_request_modal.html must bind session_type via :value to \
-         $store.accessModal.asset_type (issue #34)"
+         $store.accessModal.sessionType(), which maps an industrial \
+         asset type to the iacs_tunnel session type"
     );
     assert!(
         ACCESS_MODAL.contains("x-if=\"$store.accessModal.require_mfa\""),
@@ -337,4 +338,34 @@ fn connect_mfa_prompt_is_wired_in_the_script() {
     const SCRIPT: &str = include_str!("../../static/js/vauban-components.js");
     assert!(SCRIPT.contains("addEventListener('show-connect-mfa-modal'"));
     assert!(SCRIPT.contains("path = 'connect-iacs'"));
+}
+
+/// An industrial asset under a rule that requires an approval shows
+/// Request, like an SSH or RDP asset, and files its request under the
+/// one session type IACS has.
+#[test]
+fn iacs_assets_can_file_an_access_request() {
+    let iacs_branch = ASSET_LIST
+        .split("{# IACS Connect button")
+        .nth(1)
+        .and_then(|rest| rest.split("{% else if asset.requires_request %}").next())
+        .expect("IACS branch of the asset list");
+    assert!(
+        iacs_branch.contains("{% if user_has_active_ews && asset.requires_request %}"),
+        "the IACS branch must test requires_request before offering Connect"
+    );
+    assert!(iacs_branch.contains("data-testid=\"request-iacs-btn\""));
+    assert!(iacs_branch.contains(
+        "$store.accessModal.open('{{ asset.uuid }}', '{{ asset.asset_type }}', {{ asset.require_mfa }})"
+    ));
+    // Request comes before the Connect form in the branch.
+    let request = iacs_branch.find("request-iacs-btn").unwrap_or(usize::MAX);
+    let connect = iacs_branch.find("connect-iacs-btn").unwrap_or(0);
+    assert!(request < connect);
+
+    assert!(COMPONENTS_JS.contains("sessionType: function ()"));
+    assert!(
+        COMPONENTS_JS
+            .contains("this.asset_type.indexOf('iacs_') === 0 ? 'iacs_tunnel' : this.asset_type")
+    );
 }

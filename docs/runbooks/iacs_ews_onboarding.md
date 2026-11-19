@@ -431,6 +431,55 @@ process-wide constant. A residual `target_addr` line in
 `vauban.conf` is silently ignored (it has a `default_target_addr`
 in code purely for backwards-compatible test deserialization).
 
+### Rules that require an approval (0.9.60)
+
+> Upgrade note. Before 0.9.60 a tunnel opened without any approval
+> even when the access rule had "Require approval" checked. From
+> 0.9.60 it does not. Before upgrading, list the rules concerned and
+> tell their users that Connect becomes Request:
+>
+> ```sql
+> SELECT name, allowed_protocols
+> FROM access_rules
+> WHERE is_active AND require_approval
+>   AND EXISTS (SELECT 1 FROM unnest(allowed_protocols) p
+>               WHERE starts_with(p, 'iacs_'));
+> ```
+
+Smoke test, on a staging bastion with an industrial asset, a user who
+holds `assets:connect_iacs`, an active EWS, and a rule with "Require
+approval" checked. Automated prerequisite:
+`cargo test -p vauban-web --test integration_tests iacs_require_approval -- --test-threads=1`
+(8 tests).
+
+- **A. No approval, no tunnel.** The asset shows **Request**, not
+  Connect. A hand-made `POST /assets/<uuid>/connect-iacs` answers 403
+  (or opens the request modal for an HTMX request) and
+  `/sessions/active` shows no tunnel. Pass: no row in status
+  `waiting_client` for the user and the asset.
+- **B. Request, approval, tunnel.** File the request with a
+  justification; approve it under `/sessions/approvals` with a
+  duration shorter than the rule's. The asset now shows Connect and
+  the tunnel opens. Pass: the session row carries the justification
+  and the approved duration, and `expires_at` is set:
+
+  ```sql
+  SELECT status, justification, max_session_duration, expires_at
+  FROM proxy_sessions
+  WHERE session_type = 'iacs_tunnel'
+  ORDER BY created_at DESC LIMIT 3;
+  ```
+
+- **C. Revocation and expiry.** Revoke the approval while the tunnel
+  is up: the tunnel is terminated. Let another approval expire: Connect
+  becomes Request again and a new open is refused.
+- **D. No workstation.** A user without an active EWS who posts a
+  request for an industrial asset is told to onboard one; no request
+  row is created.
+
+Not covered by the automated tests: A's button rendering in a browser,
+and C (revocation cascade and expiry on a live tunnel).
+
 ### Status of an active tunnel
 
 ```sql
@@ -641,3 +690,4 @@ bash vauban-proxy-iacs/scripts/check_iacs_protocol_gate.sh
 | 0.7.17 | 2026-05-23 | Feature: IACS protocol recognition. Authorization binds `iacs_tunnel` to `asset.asset_type` in granting access rules. `vauban-proxy-iacs` peeks the first frames on the EWS -> asset leg and rejects foreign industrial protocols (Modbus asset cannot carry OPC UA / IEC 104 / PROFINET traffic). `iacs_tcp` stays passthrough. No command-level filtering. Battle-tested: `check_iacs_protocol_gate.sh`, `protocol_gate_adversarial_test.rs`, `iacs_protocol_auth_e2e_test.rs`. See Architecture doc §14-15. |
 | 0.7.18 | 2026-05-23 | Fix: IACS protocol gate observability and classify deadline. Every fail-closed path on the EWS -> asset leg now emits `iacs_protocol_unconfirmed` or `iacs_protocol_mismatch` (structured `cause` field); idle clients hit the 5 s `CLASSIFY_TIMEOUT` via `sleep_until` in the NeedMoreData select (previously blocked forever on `read()`). Feature: IACS asset edit exposes an industrial-protocol selector and persists `asset_type` in place; edit form uses HTMX (`hx-post`) instead of inline `@submit` JS. Pinned by `protocol_gate_timeout_test.rs`, expanded `protocol_gate.rs` unit tests, and `iacs_asset_create_test.rs`. |
 | 0.9.37 | 2026-08-17 | ADR 006 profiles: `iacs_enip`, `iacs_bacnet_sc`, `iacs_dnp3`, `iacs_iec61850`. Same peek-then-passthrough gate; Inspect classifies Cmd on EIP Set / DNP3 Operate / MMS Write. BACnet/SC confirms TLS only. Staging: [iacs_protocol_profiles_smoke_test.md](iacs_protocol_profiles_smoke_test.md). |
+| 0.9.60 | 2026-11-20 | Fix: "Require approval" on an access rule now applies to IACS tunnels. `connect_iacs` did not read the flag: a tunnel opened without approval, the catalogue offered Connect instead of Request, and a request for an industrial asset could not be stored (`proxy_sessions_iacs_consistency`). The open now needs the caller's live approved request; the request row names the protocol and the requester's Engineering Workstation. See "Rules that require an approval". |

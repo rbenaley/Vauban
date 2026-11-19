@@ -64,6 +64,12 @@ document.addEventListener('alpine:init', function () {
             this.require_mfa = !!requireMfa;
             this.show = true;
         },
+        // The session type a request is filed under. An industrial asset
+        // has one asset type per protocol (iacs_modbus, iacs_opcua, ...)
+        // and a single session type; SSH, RDP and MCP use their own name.
+        sessionType: function () {
+            return this.asset_type.indexOf('iacs_') === 0 ? 'iacs_tunnel' : this.asset_type;
+        },
     });
 
     // Global store for connection justification modal (SEC-03 + issue #34).
