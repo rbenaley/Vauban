@@ -4,7 +4,8 @@
 > IronRDP stack bump in `vauban-proxy-rdp` (no RDP server is available in
 > CI, so the connect/reactivation paths can only be exercised end-to-end
 > by hand). First applied for the 0.14 -> 0.17 migration (connector 0.10,
-> session 0.11, input 0.7, sspi 0.21).
+> session 0.11, input 0.7, sspi 0.21). Since 0.9.58 `sspi` is 0.23.0
+> from a fork: see "The `sspi` fork" in the Kerberos section.
 >
 > Audience: release engineers.
 > Severity: BLOCKING for the release -- do not ship an IronRDP bump
@@ -82,8 +83,14 @@ VAUBAN_TEST_MIT_KDC=1 cargo test -p vauban-proxy-rdp \
   -- --ignored mit_kdc --test-threads=1
 ```
 
-Pass: 13 tests, then 3 tests. They validate how the proxy drives its
+Pass: 25 tests, then 3 tests. They validate how the proxy drives its
 Kerberos library; the checklist below is what validates a real domain.
+
+The in-process suite includes a target that signs its SPNEGO
+`mechListMIC` as Windows does (sequence number 0), in both Kerberos
+modes, and one whose MIC is forged. They cover the defect described
+under "The `sspi` fork" below; they do not replace checkpoints 23 to
+25.
 
 Prerequisites:
 
@@ -265,6 +272,47 @@ Checklist:
    `negotiation_refused` (the target does not set
    `RESTRICTED_ADMIN_MODE_SUPPORTED`) or `restricted_admin_refused`.
    Record which one a real Windows target produces.
+23. **Windows mechListMIC, Restricted Admin** -- open a `Kerberos -
+   Restricted Admin` session on a domain-joined Windows target.
+   Expected: the proxy logs `RDP session connected` with
+   `auth_mode=kerberos_restricted_admin`, and no `RDP NLA failure
+   evidence` line. On the target, Security event 4624 for the session
+   shows `Authentication Package: Kerberos`. First passed on
+   2026-11-19 against Windows 10 IoT Enterprise LTSC with 0.9.58;
+   before that version the session failed with `invalid MIC token
+   sequence number: expected <n> but got 0`.
+24. **Windows mechListMIC, Kerberos** -- the same asset in `Kerberos`
+   mode. Expected: `auth_mode=kerberos` on both `Connecting to RDP
+   server` and `RDP session connected`; event 4624 shows Kerberos.
+25. **Reading a refusal** -- store a wrong password on the asset and
+   connect. Expected: reason `pre_auth_failed`, and a `RDP NLA failure
+   evidence` line with `kdc_last_error=24`. A refusal that comes after
+   the tickets were issued (`kdc_replies=3`, `kdc_last_error=-`) has
+   the reason `target_token_rejected`; its cause is the text after
+   `caused by:` on the `RDP session refused` line.
+
+### The `sspi` fork
+
+`sspi` is taken from `https://github.com/rbenaley/sspi-rs-vb`, pinned
+by commit in the workspace `[patch.crates-io]`. It is `sspi` 0.23.0
+plus one upstream fix (Devolutions/sspi-rs#772, commit `08d8622794`):
+a Windows acceptor signs the SPNEGO `mechListMIC` with sequence number
+0 whatever its AP-REP announced, and 0.23.0 refused it on the
+initiator side, which failed both Kerberos modes against every Windows
+target. The fix stops enforcing the sequence number on the initiator;
+the checksum is still verified.
+
+`sspi` 0.23.1 carries the fix but needs `picky =7.0.0-rc.27`, while
+`ironrdp-connector` 0.12.0 pins `rc.26`.
+
+- The build fetches the fork from GitHub: the build host needs that
+  access.
+- `vauban-proxy-rdp/scripts/check_patch_pins.sh` (run by `just lint`)
+  refuses a `[patch.crates-io]` entry without a 40-character `rev` and
+  a manifest without the fork.
+- Removal: when an IronRDP release resolves `sspi >= 0.23.1`
+  (`cargo tree -p sspi`), delete the `sspi` entry and the `sspi` rule
+  of the script, then run checkpoints 23 to 25 again.
 
 ## Credential envelope (web does not decrypt)
 

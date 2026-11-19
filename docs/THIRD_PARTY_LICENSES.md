@@ -167,6 +167,16 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## sspi (MIT OR Apache-2.0), from a fork
+
+`sspi` is built from `https://github.com/rbenaley/sspi-rs-vb`, a fork
+of `https://github.com/Devolutions/sspi-rs` pinned by commit in the
+workspace `[patch.crates-io]`: version 0.23.0 plus the upstream fix of
+issue #772 (commit `08d8622794`, Copyright (c) Devolutions Inc.) and
+tests. `winscard`, a crate of the same repository that `sspi` depends
+on, is built from the same commit, unmodified. Both keep their
+upstream license, MIT OR Apache-2.0.
+
 ## sspi test helper (MIT)
 
 `vauban-proxy-rdp/src/test_support/kdc_mock.rs` is a modified copy of

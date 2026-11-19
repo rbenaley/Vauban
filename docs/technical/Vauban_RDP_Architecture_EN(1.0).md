@@ -916,15 +916,41 @@ evidence only, most specific first:
 | `pre_auth_not_required` | first KDC reply is an AS-REP | clear the pre-authentication exemption |
 | `restricted_admin_refused` | logon refused in Restricted Admin mode | `DisableRestrictedAdmin = 0`, local administrator |
 | `credentials_rejected` | logon refused in another mode | credentials, Remote Desktop logon right |
-| `kerberos_package_refused` | Kerberos mode, token the client cannot use | target joined to the domain |
+| `kerberos_package_refused` | Kerberos mode, token the client cannot use, no service ticket issued | target joined to the domain |
+| `target_token_rejected` | Kerberos mode, the KDC answered the whole exchange without an error (at least three replies), then the client refused a token of the target | the cause after `caused by:` in the proxy log; not the account, the realm or the SPN |
 | `negotiation_refused` | any mode: the target refused the negotiation, selected TLS only, or (Restricted Admin) did not announce support | enable NLA on the target; check the network path |
 | `ntlm_forbidden` | `[rdp] ntlm_policy = "deny"` and a mode that is not a Kerberos mode | switch the asset to a Kerberos mode |
 | `other` | none of the above | proxy log for the session |
 
-`restricted_admin_refused`, `credentials_rejected` and
-`kerberos_package_refused` are inferred from how the target answers, not
-from a code that names the cause; they have not been checked against a
-real Active Directory.
+`restricted_admin_refused`, `credentials_rejected`,
+`kerberos_package_refused` and `target_token_rejected` are inferred
+from how the target answers, not from a code that names the cause.
+`target_token_rejected` (0.9.59) separates a target that answered in
+Kerberos from one that could not: before it, a refused `mechListMIC`
+was reported as `kerberos_package_refused`, with a message that
+pointed at the domain join of a correctly joined target. The others
+have not been checked against a real Active Directory.
+
+The proxy logs the typed evidence of every NLA failure on a line `RDP
+NLA failure evidence` (`sspi_kind`, `nstatus`, `kdc_replies`,
+`kdc_last_error`, lease and relay flags: codes and counters, no text
+from a peer), and the cause chain of the error on the `RDP session
+refused` line. Both stay in the proxy log. `Connecting to RDP server`
+and `RDP session connected` carry `auth_mode`.
+
+**The `sspi` fork (0.9.58).** `sspi` comes from
+`https://github.com/rbenaley/sspi-rs-vb`, pinned by commit in the
+workspace `[patch.crates-io]`: `sspi` 0.23.0 plus the upstream fix
+Devolutions/sspi-rs#772. A Windows acceptor signs the SPNEGO
+`mechListMIC` with sequence number 0 whatever its AP-REP announced;
+0.23.0 refused it on the initiator side, so both Kerberos modes failed
+against every Windows target. The initiator no longer enforces that
+sequence number; it still verifies the checksum, and the acceptor side
+is unchanged. `sspi` 0.23.1 has the fix but needs
+`picky =7.0.0-rc.27`, which `ironrdp-connector` 0.12.0 does not
+accept. The entry is removed when an IronRDP release resolves
+`sspi >= 0.23.1`; `check_patch_pins.sh` keeps it pinned and present
+until then.
 
 vauban-web shows the cause and the action to a holder of `assets:manage`
 and one generic sentence to anyone else
@@ -943,7 +969,14 @@ in CI. The CredSSP leg is covered by two harnesses in
   complete, that the target receives the identity in `kerberos` and
   empty TSCredentials in `kerberos_restricted_admin`, that a target
   offering only NTLM is refused without the client emitting an NTLM
-  token, and that each failure yields its reason.
+  token, and that each failure yields its reason. A filter in the
+  target loop (`test_support::windows_mic`) replaces the acceptor's
+  `mechListMIC` with one numbered 0, signed with the acceptor's own
+  key: both Kerberos modes complete against it, and the same token
+  with an altered checksum is refused as `target_token_rejected`. The
+  filter first reproduces the MIC `sspi` computed, so it cannot sign
+  with the wrong key unnoticed. Against `sspi` 0.23.0 from crates.io
+  the two completion tests fail with the error met in production.
 - **MIT KDC, opt-in** (`session::mit_kdc_tests`). A throwaway MIT realm
   on loopback. The proxy obtains a TGT from it through the production
   path: lease request, a stand-in supervisor that passes the connected
