@@ -337,7 +337,10 @@ impl RdpSession {
             );
             SessionError::AuthenticationFailed {
                 reason,
-                detail: format!("RDP finalize failed: {e}"),
+                // The whole cause chain: the connector's own text stops
+                // at "[CredSSP] CredSSP", the cause is one level down.
+                // Stays in this process's log, like the rest of `detail`.
+                detail: format!("RDP finalize failed: {}", e.report()),
             }
         })?;
 
