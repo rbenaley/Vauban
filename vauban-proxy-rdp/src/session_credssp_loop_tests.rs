@@ -10,6 +10,7 @@
 use super::*;
 use crate::auth_failure::{KdcTrace, krb_error};
 use crate::test_support::kdc_mock::{KdcFaults, KdcMock};
+use crate::test_support::windows_mic::MicStyle;
 use crate::test_support::{
     CredsspTarget, DOMAIN, KdcLink, MockKdcTransport, PASSWORD, REALM, TARGET_HOST, TargetOutcome,
     TargetPackages, TargetReport, USERNAME, kdc_with_password, kdc_without_target_spn,
@@ -268,6 +269,89 @@ async fn test_restricted_admin_mode_completes_without_delegating_the_password() 
         outcome.client_info_password, "",
         "Restricted Admin must not send the password in the Client Info PDU"
     );
+}
+
+/// A target that signs its SPNEGO `mechListMIC` as Windows does: with
+/// sequence number 0, whatever its AP-REP announced.
+fn windows_style(mode: RdpAuthMode, style: MicStyle) -> Attempt {
+    Attempt {
+        target: TargetPackages::KerberosWithMic(style),
+        ..Attempt::healthy(mode)
+    }
+}
+
+/// The failure met against Windows on 2026-11-19 ("invalid MIC token
+/// sequence number: expected 738163592 but got 0"), in the mode that
+/// delegates the identity.
+#[tokio::test]
+async fn test_kerberos_mode_completes_against_a_windows_style_mic() {
+    let outcome = open(windows_style(RdpAuthMode::Kerberos, MicStyle::Windows)).await;
+
+    assert!(
+        outcome.target.mic_replaced,
+        "the target sent no MIC to replace"
+    );
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!(outcome.reason, None);
+    assert!(outcome.trace.tickets_were_issued());
+    match outcome.target.outcome {
+        TargetOutcome::Authenticated { account, password } => {
+            assert_eq!(account, USERNAME);
+            assert_eq!(password, PASSWORD);
+        }
+        other => panic!("the target did not authenticate the client: {other:?}"),
+    }
+}
+
+/// The same target in Restricted Admin: the session opens and the
+/// password still does not reach the target.
+#[tokio::test]
+async fn test_restricted_admin_mode_completes_against_a_windows_style_mic() {
+    let outcome = open(windows_style(
+        RdpAuthMode::KerberosRestrictedAdmin,
+        MicStyle::Windows,
+    ))
+    .await;
+
+    assert!(
+        outcome.target.mic_replaced,
+        "the target sent no MIC to replace"
+    );
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!(outcome.reason, None);
+    match outcome.target.outcome {
+        TargetOutcome::Authenticated { account, password } => {
+            assert_eq!(account, "");
+            assert_eq!(password, "");
+        }
+        other => panic!("the target did not authenticate the client: {other:?}"),
+    }
+    assert!(!contains(&outcome.target.client_bytes, PASSWORD.as_bytes()));
+}
+
+/// Not checking the sequence number does not mean not checking the MIC:
+/// a token numbered 0 with a wrong checksum is refused in both modes,
+/// and the refusal is not blamed on the domain.
+#[tokio::test]
+async fn attack_windows_style_mic_with_a_forged_checksum_is_rejected() {
+    for mode in [RdpAuthMode::Kerberos, RdpAuthMode::KerberosRestrictedAdmin] {
+        let outcome = open(windows_style(mode, MicStyle::WindowsForged)).await;
+
+        assert!(outcome.target.mic_replaced, "{mode:?}: no MIC was replaced");
+        assert!(
+            outcome.result.is_err(),
+            "{mode:?}: a forged MIC was accepted"
+        );
+        assert_eq!(
+            outcome.reason,
+            Some(RdpAuthFailure::TargetTokenRejected),
+            "{mode:?}"
+        );
+        assert!(
+            !matches!(outcome.target.outcome, TargetOutcome::Authenticated { .. }),
+            "{mode:?}: the target received credentials after a forged MIC"
+        );
+    }
 }
 
 /// The password leaves the connector configuration in Restricted Admin

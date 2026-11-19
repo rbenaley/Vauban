@@ -11,6 +11,9 @@
 //!   a Kerberos acceptor), standing in for the RDP target on an
 //!   in-memory stream.
 //!
+//! One Windows behaviour is reproduced on top of that server:
+//! [`windows_mic`] re-signs its `mechListMIC` with sequence number 0.
+//!
 //! Limit: the server is `sspi`'s, not Windows, and the KDC checks little.
 //! This validates how Vauban drives `sspi` in each auth mode. It says
 //! nothing about interoperability with Active Directory.
@@ -24,6 +27,7 @@
 
 pub(crate) mod kdc_mock;
 pub(crate) mod mit_kdc;
+pub(crate) mod windows_mic;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -217,6 +221,9 @@ impl CredentialsProxy for TargetCredentials {
 pub(crate) enum TargetPackages {
     /// SPNEGO with Kerberos only: a domain-joined target.
     Kerberos,
+    /// The same, signing its `mechListMIC` as Windows does or as an
+    /// attacker would (see [`windows_mic`]).
+    KerberosWithMic(windows_mic::MicStyle),
     /// SPNEGO with NTLM only: a target outside the domain.
     NtlmOnly,
     /// Bare NTLM, without SPNEGO: what the NTLM mode of the proxy speaks.
@@ -241,6 +248,8 @@ pub(crate) struct TargetReport {
     pub outcome: TargetOutcome,
     /// Every byte the client sent, in order.
     pub client_bytes: Vec<u8>,
+    /// The target replaced its `mechListMIC` (`KerberosWithMic` only).
+    pub mic_replaced: bool,
 }
 
 /// `sspi`'s CredSSP server on one end of an in-memory stream.
@@ -267,7 +276,7 @@ impl CredsspTarget {
         };
 
         let mode = match packages {
-            TargetPackages::Kerberos => {
+            TargetPackages::Kerberos | TargetPackages::KerberosWithMic(_) => {
                 let kerberos_config = sspi::KerberosConfig {
                     kdc_url: Some(
                         sspi::kerberos::config::parse_kdc_url("tcp://kdc.test.invalid:88").unwrap(),
@@ -307,7 +316,11 @@ impl CredsspTarget {
 
         let mut server =
             CredSspServer::new(server_public_key(), TargetCredentials(known_user), mode).unwrap();
-        let kdc_client = TargetKdcClient(kdc);
+        let mut mic_filter = match packages {
+            TargetPackages::KerberosWithMic(style) => Some(windows_mic::WindowsMic::new(style)),
+            _ => None,
+        };
+        let kdc_client = TargetKdcClient(Arc::clone(&kdc));
 
         let mut client_bytes = Vec::new();
         let mut pending: Vec<u8> = Vec::new();
@@ -336,8 +349,19 @@ impl CredsspTarget {
                 Err(e) => break TargetOutcome::Refused(format!("undecodable TsRequest: {e}")),
             };
 
+            if let (Some(filter), Some(token)) =
+                (mic_filter.as_mut(), ts_request.nego_tokens.as_deref())
+            {
+                filter.observe_client(token, &kdc);
+            }
+
             match server.process(ts_request).resolve_with_client(&kdc_client) {
-                Ok(ServerState::ReplyNeeded(reply)) => {
+                Ok(ServerState::ReplyNeeded(mut reply)) => {
+                    if let Some(filter) = mic_filter.as_mut()
+                        && let Some(token) = reply.nego_tokens.take()
+                    {
+                        reply.nego_tokens = Some(filter.rewrite_server(token));
+                    }
                     let mut out = vec![0u8; usize::from(reply.buffer_len().unwrap())];
                     reply.encode_ts_request(out.as_mut_slice()).unwrap();
                     if stream.write_all(&out).await.is_err() {
@@ -369,6 +393,7 @@ impl CredsspTarget {
         TargetReport {
             outcome,
             client_bytes,
+            mic_replaced: mic_filter.is_some_and(|filter| filter.replaced),
         }
     }
 }

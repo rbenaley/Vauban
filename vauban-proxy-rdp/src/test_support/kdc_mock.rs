@@ -11,6 +11,8 @@
 //!   a panic, and the service is checked in the user-to-user path too;
 //! - [`KdcFaults`] makes the mock produce a chosen error, or skip
 //!   pre-authentication;
+//! - the session keys it issues are recorded (`issued_session_keys`), for
+//!   the test that plays a Windows acceptor (`test_support::windows_mic`);
 //! - the random source is `rand` 0.8, and the constants of the upstream
 //!   test environment that Vauban does not use are removed.
 //!
@@ -146,6 +148,10 @@ pub(crate) struct KdcMock {
     validators: Validators,
     /// Vauban addition: see [`KdcFaults`].
     pub(crate) faults: KdcFaults,
+    /// Vauban addition: every session key this KDC issued, in order. A
+    /// test that plays the acceptor needs the keys the acceptor holds
+    /// (`test_support::windows_mic`).
+    issued_session_keys: std::sync::Mutex<Vec<Vec<u8>>>,
 }
 
 impl KdcMock {
@@ -170,7 +176,13 @@ impl KdcMock {
             users,
             validators,
             faults: KdcFaults::default(),
+            issued_session_keys: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// Vauban addition: the session keys issued so far.
+    pub(crate) fn issued_session_keys(&self) -> Vec<Vec<u8>> {
+        self.issued_session_keys.lock().unwrap().clone()
     }
 
     /// Vauban addition: a KRB-ERROR with a run-time error code.
@@ -433,6 +445,10 @@ impl KdcMock {
         let mut rng = rand::thread_rng();
         let mut session_key = vec![0; cipher.key_size()];
         rng.fill_bytes(&mut session_key);
+        self.issued_session_keys
+            .lock()
+            .unwrap()
+            .push(session_key.clone());
 
         let initial_key = cipher
             .generate_key_from_password(&creds.password, creds.salt.as_bytes())
@@ -701,6 +717,10 @@ impl KdcMock {
         let mut rng = rand::thread_rng();
         let mut session_key = vec![0; cipher.key_size()];
         rng.fill_bytes(&mut session_key);
+        self.issued_session_keys
+            .lock()
+            .unwrap()
+            .push(session_key.clone());
         let nonce = rng.next_u32();
 
         let auth_time = OffsetDateTime::now_utc();
