@@ -278,12 +278,14 @@ Checklist:
    `auth_mode=kerberos_restricted_admin`, and no `RDP NLA failure
    evidence` line. On the target, Security event 4624 for the session
    shows `Authentication Package: Kerberos`. First passed on
-   2026-11-19 against Windows 10 IoT Enterprise LTSC with 0.9.58;
+   2026-11-19 with 0.9.58;
    before that version the session failed with `invalid MIC token
    sequence number: expected <n> but got 0`.
 24. **Windows mechListMIC, Kerberos** -- the same asset in `Kerberos`
    mode. Expected: `auth_mode=kerberos` on both `Connecting to RDP
    server` and `RDP session connected`; event 4624 shows Kerberos.
+   Passed on 2026-11-20, together with checkpoint 23, on a build that
+   takes `sspi` from the fork (0.9.58 or later).
 25. **Reading a refusal** -- store a wrong password on the asset and
    connect. Expected: reason `pre_auth_failed`, and a `RDP NLA failure
    evidence` line with `kdc_last_error=24`. A refusal that comes after

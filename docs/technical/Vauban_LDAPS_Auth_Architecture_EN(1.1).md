@@ -372,11 +372,11 @@ planes in one file:
 ```text
 # --- resolve (vauban-auth) ---
 resolve  user-attr   memberOf
-resolve  group-attr  member  base OU=groups,DC=netris,DC=local
+resolve  group-attr  member  base OU=groups,DC=contoso,DC=local
 
 # --- map (vauban-web) ---
-static   CN=Domain Admins,CN=Users,DC=netris,DC=local          Administrators
-match    CN={name},OU=UserGroup,OU=Vauban,DC=netris,DC=local   {name}
+static   CN=Domain Admins,CN=Users,DC=contoso,DC=local          Administrators
+match    CN={name},OU=UserGroup,OU=Vauban,DC=contoso,DC=local   {name}
 ```
 
 | Token | Meaning |
@@ -422,7 +422,7 @@ resolve  group-attr  <attr>  base <dn>  [key dn|mail]
 - A `match` is **whole-key** equality after normalization, never a
   substring search. `{name}` cannot span a comma (the capture
   charset already forbids `,`). A `@` in a `match` key is literal
-  text around the capture (`{name}@netris.eu`).
+  text around the capture (`{name}@contoso.eu`).
 - A `static` line must not contain `{name}`.
 - A mapping-file key that contains `\` refuses boot. RFC 4514
   escaped DNs are not mappable in Phase 1. A directory key that
@@ -461,9 +461,9 @@ Example:
 
 | Directory key | Result |
 |---|---|
-| `CN=Domain Admins,CN=Users,DC=netris,DC=local` | User Group `Administrators` |
-| `CN=Administrators,OU=UserGroup,OU=Vauban,DC=netris,DC=local` | **none** for `Administrators` (`static` reserved that target) |
-| `CN=Developers,OU=UserGroup,OU=Vauban,DC=netris,DC=local` | User Group `Developers` if it exists |
+| `CN=Domain Admins,CN=Users,DC=contoso,DC=local` | User Group `Administrators` |
+| `CN=Administrators,OU=UserGroup,OU=Vauban,DC=contoso,DC=local` | **none** for `Administrators` (`static` reserved that target) |
+| `CN=Developers,OU=UserGroup,OU=Vauban,DC=contoso,DC=local` | User Group `Developers` if it exists |
 
 ### 6.4 Normalization and captured `{name}`
 
@@ -485,7 +485,7 @@ Example:
 
 `resolve … key mail` collects group **mail** values. `static` /
 `match` then score those strings (for example
-`{name}@netris.eu`). Do not invent a second file. A later
+`{name}@contoso.eu`). Do not invent a second file. A later
 `compare uid` token (POSIX `memberUid`) is the same grammar with
 a new allowlisted word -- new ADR only if the filter compare
 value leaves the user DN.
@@ -993,5 +993,5 @@ membership list (needs another ADR).
 Commented onboarding blocks for every **OK** (and the documented
 **+attr** / **+compare** rows) ship in
 [`config/access/ldaps_mapping.conf`](../../config/access/ldaps_mapping.conf),
-most common first. Example domains in that file use `netris.local`
-or `netris.eu` (never `netris.com`).
+most common first. Example domains in that file use `contoso.local`
+or `contoso.eu` (never `contoso.com`).

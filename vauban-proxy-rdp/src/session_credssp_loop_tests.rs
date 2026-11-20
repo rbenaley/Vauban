@@ -281,7 +281,7 @@ fn windows_style(mode: RdpAuthMode, style: MicStyle) -> Attempt {
 }
 
 /// The failure met against Windows on 2026-11-19 ("invalid MIC token
-/// sequence number: expected 738163592 but got 0"), in the mode that
+/// sequence number: expected <n> but got 0"), in the mode that
 /// delegates the identity.
 #[tokio::test]
 async fn test_kerberos_mode_completes_against_a_windows_style_mic() {

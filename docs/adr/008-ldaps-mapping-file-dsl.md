@@ -59,8 +59,8 @@ Appendix B.
 
    ```text
    resolve  user-attr  memberOf
-   static   CN=Domain Admins,CN=Users,DC=netris,DC=local  Administrators
-   match    CN={name},OU=UserGroup,OU=Vauban,DC=netris,DC=local  {name}
+   static   CN=Domain Admins,CN=Users,DC=contoso,DC=local  Administrators
+   match    CN={name},OU=UserGroup,OU=Vauban,DC=contoso,DC=local  {name}
    ```
 
    `resolve` grammar:
@@ -109,7 +109,7 @@ Appendix B.
 7. **Shipped default is a commented catalogue.**
    [`config/access/ldaps_mapping.conf`](../../config/access/ldaps_mapping.conf)
    lists market directories, most common first. Example Google
-   domains use `netris.eu`. Comments-only is empty of rules.
+   domains use `contoso.eu`. Comments-only is empty of rules.
 
 8. **Match is whole-key, `{name}` once, no escapes.** A `match`
    line contains `{name}` exactly once in the key; equality is on

@@ -570,8 +570,8 @@ mod tests {
 
     const AD_STATIC: &str = r#"
 resolve  user-attr  memberOf
-static   CN=Domain Admins,CN=Users,DC=netris,DC=local  Administrators
-match    CN={name},OU=UserGroup,OU=Vauban,DC=netris,DC=local  {name}
+static   CN=Domain Admins,CN=Users,DC=contoso,DC=local  Administrators
+match    CN={name},OU=UserGroup,OU=Vauban,DC=contoso,DC=local  {name}
 "#;
 
     fn parsed(src: &str) -> MappingFile {
@@ -590,8 +590,8 @@ match    CN={name},OU=UserGroup,OU=Vauban,DC=netris,DC=local  {name}
         );
         let names = apply(
             [
-                "CN=Domain Admins,CN=Users,DC=netris,DC=local",
-                "CN=Developers,OU=UserGroup,OU=Vauban,DC=netris,DC=local",
+                "CN=Domain Admins,CN=Users,DC=contoso,DC=local",
+                "CN=Developers,OU=UserGroup,OU=Vauban,DC=contoso,DC=local",
             ],
             &ast,
         );
@@ -640,12 +640,12 @@ match    CN={name},OU=UserGroup,OU=Vauban,DC=netris,DC=local  {name}
     #[test]
     fn group_attr_accepts_key_mail_and_spaced_base() {
         let ast =
-            parsed("resolve  group-attr  member  base  OU=User Groups,DC=netris,DC=eu  key mail\n");
+            parsed("resolve  group-attr  member  base  OU=User Groups,DC=contoso,DC=eu  key mail\n");
         assert_eq!(
             ast.resolve_plan().lines,
             vec![ResolveLine::GroupAttr {
                 attr: "member".into(),
-                base: "OU=User Groups,DC=netris,DC=eu".into(),
+                base: "OU=User Groups,DC=contoso,DC=eu".into(),
                 key: GroupKeyKind::Mail,
             }]
         );
@@ -739,14 +739,14 @@ static  CN=Ops,DC=x  OnCall
 
         // charset miss (comma in capture).
         let names = apply(
-            ["CN=Bad,Name,OU=UserGroup,OU=Vauban,DC=netris,DC=local"],
+            ["CN=Bad,Name,OU=UserGroup,OU=Vauban,DC=contoso,DC=local"],
             &ast,
         );
         assert!(names.is_empty());
 
         // directory backslash is a miss, not a parse error.
         let names = apply(
-            ["CN=Foo\\,Bar,OU=UserGroup,OU=Vauban,DC=netris,DC=local"],
+            ["CN=Foo\\,Bar,OU=UserGroup,OU=Vauban,DC=contoso,DC=local"],
             &ast,
         );
         assert!(names.is_empty());
@@ -756,7 +756,7 @@ static  CN=Ops,DC=x  OnCall
     fn apply_normalizes_dn_whitespace_and_case() {
         let ast = parsed(AD_STATIC);
         let names = apply(
-            ["cn=Domain  Admins , cn=Users , dc=NETRIS , dc=LOCAL"],
+            ["cn=Domain  Admins , cn=Users , dc=CONTOSO , dc=LOCAL"],
             &ast,
         );
         assert_eq!(names, BTreeSet::from(["Administrators".into()]));
@@ -766,7 +766,7 @@ static  CN=Ops,DC=x  OnCall
     fn apply_captures_original_spelling() {
         let ast = parsed(AD_STATIC);
         let names = apply(
-            ["CN=Help Desk,OU=UserGroup,OU=Vauban,DC=netris,DC=local"],
+            ["CN=Help Desk,OU=UserGroup,OU=Vauban,DC=contoso,DC=local"],
             &ast,
         );
         assert_eq!(names, BTreeSet::from(["Help Desk".into()]));
@@ -776,12 +776,12 @@ static  CN=Ops,DC=x  OnCall
     fn apply_mail_match() {
         let ast = parsed(
             "\
-resolve group-attr member base DC=netris,DC=eu key mail
-static  vauban-admins@netris.eu  Administrators
-match   {name}@netris.eu  {name}
+resolve group-attr member base DC=contoso,DC=eu key mail
+static  vauban-admins@contoso.eu  Administrators
+match   {name}@contoso.eu  {name}
 ",
         );
-        let names = apply(["ops@netris.eu", "vauban-admins@netris.eu"], &ast);
+        let names = apply(["ops@contoso.eu", "vauban-admins@contoso.eu"], &ast);
         // static does not consume the key: the mail is also scored by match.
         assert_eq!(
             names,
@@ -799,7 +799,7 @@ match   {name}@netris.eu  {name}
     fn attack_mapping_match_cannot_claim_static_target() {
         let ast = parsed(AD_STATIC);
         let names = apply(
-            ["CN=Administrators,OU=UserGroup,OU=Vauban,DC=netris,DC=local"],
+            ["CN=Administrators,OU=UserGroup,OU=Vauban,DC=contoso,DC=local"],
             &ast,
         );
         assert!(
@@ -808,12 +808,12 @@ match   {name}@netris.eu  {name}
         );
         // Mixed case of the reserved name is also skipped.
         let names = apply(
-            ["CN=administrators,OU=UserGroup,OU=Vauban,DC=netris,DC=local"],
+            ["CN=administrators,OU=UserGroup,OU=Vauban,DC=contoso,DC=local"],
             &ast,
         );
         assert!(names.is_empty());
         // The static key still grants the reserved group.
-        let names = apply(["CN=Domain Admins,CN=Users,DC=netris,DC=local"], &ast);
+        let names = apply(["CN=Domain Admins,CN=Users,DC=contoso,DC=local"], &ast);
         assert_eq!(names, BTreeSet::from(["Administrators".into()]));
     }
 

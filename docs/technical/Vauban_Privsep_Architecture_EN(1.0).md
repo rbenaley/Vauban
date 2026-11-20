@@ -796,7 +796,7 @@ run_rc_command "$1"
 ## Appendix A: Workspace Structure
 
 ```
-/Users/mnemonic/Code/Vauban/
+Vauban/
 ├── Cargo.toml                    # Workspace root
 ├── shared/                       # Shared IPC library
 │   ├── Cargo.toml

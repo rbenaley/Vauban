@@ -2974,7 +2974,7 @@ sequenceDiagram
 ## Appendix C: Workspace Structure (IAM-related)
 
 ```
-/Users/mnemonic/Code/Vauban/
+Vauban/
 ├── config/
 │   └── access/
 │       ├── model.conf              # Casbin RBAC model definition
