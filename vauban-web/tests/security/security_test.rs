@@ -2412,7 +2412,7 @@ fn test_security_config_validate_rejects_invalid_client_acl_cidr() {
     config.allowed_client_networks = vec![
         "10.0.0.0/8".to_string(),
         "10.20.0.0/28".to_string(),
-        "104.28.30.3/32".to_string(),
+        "203.0.113.3/32".to_string(),
         "2001:db8::/32".to_string(),
     ];
     assert!(config.validate().is_ok());

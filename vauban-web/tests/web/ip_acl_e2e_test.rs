@@ -30,7 +30,7 @@ use crate::fixtures::{create_test_user_with_mfa, current_totp_for, unique_name};
 /// Simulated client IP inside `10.0.0.0/8` (allowed by `spawn_ip_acl`).
 const ALLOWED_IP: &str = "10.1.2.3";
 /// Simulated client IP inside the `/32` single-provider range.
-const ALLOWED_PROVIDER_IP: &str = "104.28.30.3";
+const ALLOWED_PROVIDER_IP: &str = "203.0.113.3";
 /// Simulated client IP outside every configured range.
 const DENIED_IP: &str = "8.8.8.8";
 

@@ -2398,13 +2398,13 @@ mod tests {
     fn test_service_env_vars_proxy_iacs_carries_client_acl() {
         let mut config = test_config();
         config.security.allowed_client_networks =
-            vec!["10.0.0.0/8".to_string(), "104.28.30.3/32".to_string()];
+            vec!["10.0.0.0/8".to_string(), "203.0.113.3/32".to_string()];
         let vars = config.service_env_vars("proxy_iacs");
         let acl = vars
             .iter()
             .find(|(k, _)| k == "VAUBAN_CLIENT_ACL_NETWORKS")
             .expect("proxy_iacs env vars must carry VAUBAN_CLIENT_ACL_NETWORKS");
-        assert_eq!(acl.1, "10.0.0.0/8,104.28.30.3/32");
+        assert_eq!(acl.1, "10.0.0.0/8,203.0.113.3/32");
     }
 
     #[test]
@@ -2424,7 +2424,7 @@ mod tests {
             allowed_client_networks: vec![
                 "10.0.0.0/8".to_string(),
                 "10.20.0.0/28".to_string(),
-                "104.28.30.3/32".to_string(),
+                "203.0.113.3/32".to_string(),
                 "2001:db8::/32".to_string(),
             ],
         };

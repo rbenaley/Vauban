@@ -139,7 +139,7 @@ mod tests {
         let acl = acl(&[
             "10.0.0.0/8",
             "10.20.0.0/28",
-            "104.28.30.3/32",
+            "203.0.113.3/32",
             "2001:db8::/32",
         ]);
         assert!(acl.is_enabled());
@@ -169,9 +169,9 @@ mod tests {
     #[test]
     fn parse_accepts_bare_ip_as_host_route() {
         // ipnetwork parses a bare IP as /32 (v4) or /128 (v6).
-        let acl = acl(&["104.28.30.3"]);
-        assert!(acl.permits(ip("104.28.30.3")));
-        assert!(!acl.permits(ip("104.28.30.4")));
+        let acl = acl(&["203.0.113.3"]);
+        assert!(acl.permits(ip("203.0.113.3")));
+        assert!(!acl.permits(ip("203.0.113.4")));
     }
 
     // ==================== permits: enabled/disabled ====================
@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn permits_inside_range_denies_outside() {
-        let acl = acl(&["10.0.0.0/8", "10.20.0.0/28", "104.28.30.3/32"]);
+        let acl = acl(&["10.0.0.0/8", "10.20.0.0/28", "203.0.113.3/32"]);
         // /8
         assert!(acl.permits(ip("10.0.0.1")));
         assert!(acl.permits(ip("10.255.255.254")));
@@ -194,9 +194,9 @@ mod tests {
         // /28 (also inside /8, but check boundary logic on its own)
         assert!(acl.permits(ip("10.20.0.14")));
         // /32 single-provider case
-        assert!(acl.permits(ip("104.28.30.3")));
-        assert!(!acl.permits(ip("104.28.30.2")));
-        assert!(!acl.permits(ip("104.28.30.4")));
+        assert!(acl.permits(ip("203.0.113.3")));
+        assert!(!acl.permits(ip("203.0.113.2")));
+        assert!(!acl.permits(ip("203.0.113.4")));
         // unrelated
         assert!(!acl.permits(ip("8.8.8.8")));
     }
@@ -238,9 +238,9 @@ mod tests {
 
     #[test]
     fn env_string_round_trips() {
-        let acl = acl(&["10.0.0.0/8", "104.28.30.3/32"]);
+        let acl = acl(&["10.0.0.0/8", "203.0.113.3/32"]);
         let env = acl.to_env_string();
-        assert_eq!(env, "10.0.0.0/8,104.28.30.3/32");
+        assert_eq!(env, "10.0.0.0/8,203.0.113.3/32");
         let back = ClientAcl::from_env_string(&env).unwrap();
         assert!(back.permits(ip("10.1.1.1")));
         assert!(!back.permits(ip("8.8.8.8")));

@@ -270,7 +270,7 @@ impl TestApp {
                     config.security.trusted_proxies =
                         vec!["127.0.0.1".to_string(), "::1".to_string()];
                     config.security.allowed_client_networks =
-                        vec!["10.0.0.0/8".to_string(), "104.28.30.3/32".to_string()];
+                        vec!["10.0.0.0/8".to_string(), "203.0.113.3/32".to_string()];
                 })
                 .await
             })

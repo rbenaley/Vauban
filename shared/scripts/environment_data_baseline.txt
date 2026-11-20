@@ -1,0 +1,65 @@
+# Addresses the tree already used when check_no_environment_data.sh was
+# added. The lint accepts them so that it could be switched on
+# without rewriting every existing test.
+#
+# This list only shrinks. Do NOT add a line to make the lint pass: a new
+# example takes an RFC 5737 address (192.0.2.x, 198.51.100.x,
+# 203.0.113.x). Remove a line when its last use is gone.
+#
+# One value per line. `2.5.4.31` and `120.0.0.0` are not addresses (an
+# object identifier and a browser version) but have their shape.
+2.5.4.31
+10.0.0.0
+10.0.0.1
+10.0.0.2
+10.0.0.3
+10.0.0.5
+10.0.0.6
+10.0.0.7
+10.0.0.8
+10.0.0.10
+10.0.0.11
+10.0.0.12
+10.0.0.20
+10.0.0.50
+10.0.0.99
+10.1.1.1
+10.1.2.3
+10.9.8.7
+10.9.9.9
+10.10.10.10
+10.10.10.20
+10.10.10.99
+10.20.0.0
+10.20.0.14
+10.20.30.40
+10.42.0.7
+10.42.7.18
+10.99.10.1
+10.99.10.2
+10.99.10.3
+10.99.10.4
+10.99.10.5
+10.99.20.1
+10.99.20.2
+10.99.20.3
+10.99.20.4
+10.99.20.5
+10.99.20.6
+10.99.20.7
+10.99.20.8
+10.255.255.254
+11.0.0.1
+11.1.2.3
+70.41.3.18
+85.123.45.67
+120.0.0.0
+150.172.238.178
+172.16.0.1
+192.168.0.0
+192.168.0.1
+192.168.1.1
+192.168.1.10
+192.168.1.42
+192.168.1.50
+192.168.1.100

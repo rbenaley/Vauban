@@ -639,8 +639,9 @@ match    CN={name},OU=UserGroup,OU=Vauban,DC=contoso,DC=local  {name}
 
     #[test]
     fn group_attr_accepts_key_mail_and_spaced_base() {
-        let ast =
-            parsed("resolve  group-attr  member  base  OU=User Groups,DC=contoso,DC=eu  key mail\n");
+        let ast = parsed(
+            "resolve  group-attr  member  base  OU=User Groups,DC=contoso,DC=eu  key mail\n",
+        );
         assert_eq!(
             ast.resolve_plan().lines,
             vec![ResolveLine::GroupAttr {

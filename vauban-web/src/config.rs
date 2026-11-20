@@ -671,7 +671,7 @@ pub struct SecurityConfig {
     #[serde(default = "default_max_concurrent_sessions_per_asset")]
     pub max_concurrent_sessions_per_asset: i64,
     /// Global client IP allowlist (CIDR list, e.g. `["10.0.0.0/8",
-    /// "104.28.30.3/32"]`). Empty = disabled (allow all). When set, any
+    /// "203.0.113.3/32"]`). Empty = disabled (allow all). When set, any
     /// client whose resolved IP is outside every range is treated as an
     /// anonymous visitor and can never authenticate (stealth deny).
     /// Loopback is always permitted (anti-lockout). ACME challenges are
