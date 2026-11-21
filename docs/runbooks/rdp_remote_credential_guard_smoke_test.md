@@ -191,7 +191,7 @@ version with that line.
 
 | Stack | Validated on | By |
 |---|---|---|
-| IronRDP main at `a8da54ba` / sspi 0.23.1, proxy of the release that ships the mode | _pending first manual pass_ | _--_ |
+| IronRDP main at `a8da54ba` / sspi 0.23.1, proxy 0.9.61. Domain-joined Windows target with the Kerberos module of the versions up to Server 2022; a target with the newer module is not covered | 2026-11-21 | Richard Ben Aleya |
 
 The redirected operations of this stack, with the IronRDP client
 instead of the proxy, passed against a domain-joined Windows target on

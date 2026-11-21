@@ -351,4 +351,4 @@ of `v1:` (no payload) is refused before any RDP handshake.
 |---|---|---|
 | ironrdp 0.17.0 / connector 0.10 / session 0.11 / input 0.7 / sspi 0.21.2 | _pending first manual pass_ | _--_ |
 | connector 0.12 / session 0.13 / input 0.9 / pdu 0.11 / sspi 0.23.0 (sub-crates, no `ironrdp` meta-crate) | _pending first manual pass_ | _--_ |
-| IronRDP main at `a8da54ba`, the proxy's own redirection channel backend / sspi 0.23.1 | _pending first manual pass_ | _--_ |
+| IronRDP main at `a8da54ba`, the proxy's own redirection channel backend / sspi 0.23.1, proxy 0.9.61. The three Kerberos modes (`kerberos`, `kerberos_restricted_admin`, `kerberos_remote_guard`) against a domain-joined Windows target; the rest of the checklist is not recorded | 2026-11-21 | Richard Ben Aleya |
