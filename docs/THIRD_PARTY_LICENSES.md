@@ -167,15 +167,16 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## sspi (MIT OR Apache-2.0), from a fork
+## IronRDP (MIT OR Apache-2.0), from a fork
 
-`sspi` is built from `https://github.com/rbenaley/sspi-rs-vb`, a fork
-of `https://github.com/Devolutions/sspi-rs` pinned by commit in the
-workspace `[patch.crates-io]`: version 0.23.0 plus the upstream fix of
-issue #772 (commit `08d8622794`, Copyright (c) Devolutions Inc.) and
-tests. `winscard`, a crate of the same repository that `sspi` depends
-on, is built from the same commit, unmodified. Both keep their
-upstream license, MIT OR Apache-2.0.
+The `ironrdp-*` crates are built from
+`https://github.com/rbenaley/IronRDP-vb`, a fork of
+`https://github.com/Devolutions/IronRDP` pinned by commit in the
+workspace `[patch.crates-io]`: the upstream main branch (Copyright (c)
+Devolutions Inc.) plus two commits: one sets the ASN.1 slot of the
+redirected Kerberos responses of Remote Credential Guard, with its
+tests; the other takes a DNS resolver out of a cargo feature. The slot values are the ones the FreeRDP `rdpear` channel uses.
+The crates keep their upstream license, MIT OR Apache-2.0.
 
 ## sspi test helper (MIT)
 

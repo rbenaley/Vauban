@@ -119,15 +119,38 @@ print_stderr   = "deny"
 # without one would follow its branch (check_patch_pins.sh).
 [patch.crates-io]
 openh264-sys2 = { git = "https://github.com/rbenaley/openh264-rs-avx2", rev = "351849b6b2cfadf90a11670f9bcc3e4098844143" }
-# Kerberos RDP against Windows (vauban-proxy-rdp, through ironrdp-connector):
-# sspi 0.23.0 refuses the SPNEGO mechListMIC a Windows acceptor signs with
-# sequence number 0 ("invalid MIC token sequence number"), which fails both
-# Kerberos modes against every Windows target. Fixed upstream in sspi 0.23.1
-# (Devolutions/sspi-rs#772, commit 08d8622794), but 0.23.1 needs
-# picky =7.0.0-rc.27 and ironrdp-connector 0.12.0 pins rc.26. This fork is
-# sspi 0.23.0 plus that one fix. Remove the entry, and check_patch_pins.sh's
-# sspi rule, when IronRDP resolves sspi >= 0.23.1.
-sspi = { git = "https://github.com/rbenaley/sspi-rs-vb", rev = "07926c0cd7c816cea02602288535600fe8d3a5da" }
+# IronRDP (vauban-proxy-rdp): the fork is upstream main at a8da54ba plus two
+# commits. Upstream main carries Remote Credential Guard (ironrdp-rdpear, the
+# connector's `remote-guard` feature) under the version numbers of the
+# published crates, so nothing on crates.io has it. The first commit sets
+# the ASN.1 slot of the redirected Kerberos responses: without it a Windows
+# target rejects every response and the session has no outbound identity.
+# The second takes sspi's DNS resolver out of `remote-guard`: the proxy
+# reaches a KDC through the supervisor broker only, and the resolver
+# (hickory 0.25) carries open advisories.
+# Every ironrdp-* crate the workspace resolves is listed, on one rev: a
+# crate left on crates.io would be a second copy of the same types.
+# This also moves the workspace to sspi 0.23.1 from crates.io, which holds
+# the Windows mechListMIC fix (Devolutions/sspi-rs#772) the sspi-rs-vb fork
+# used to carry: that fork is gone, do not bring an sspi entry back.
+# Remove these entries, and check_patch_pins.sh's ironrdp rules, when a
+# published IronRDP release contains Remote Credential Guard, sets
+# KERB_ASN1_DATA.Pdu in its responses, and offers it without a DNS resolver.
+ironrdp-async = { git = "https://github.com/rbenaley/IronRDP-vb", rev = "dc728b9d6216c96ee044a82c9ec1c983e0269373" }
+ironrdp-bulk = { git = "https://github.com/rbenaley/IronRDP-vb", rev = "dc728b9d6216c96ee044a82c9ec1c983e0269373" }
+ironrdp-connector = { git = "https://github.com/rbenaley/IronRDP-vb", rev = "dc728b9d6216c96ee044a82c9ec1c983e0269373" }
+ironrdp-core = { git = "https://github.com/rbenaley/IronRDP-vb", rev = "dc728b9d6216c96ee044a82c9ec1c983e0269373" }
+ironrdp-displaycontrol = { git = "https://github.com/rbenaley/IronRDP-vb", rev = "dc728b9d6216c96ee044a82c9ec1c983e0269373" }
+ironrdp-dvc = { git = "https://github.com/rbenaley/IronRDP-vb", rev = "dc728b9d6216c96ee044a82c9ec1c983e0269373" }
+ironrdp-egfx = { git = "https://github.com/rbenaley/IronRDP-vb", rev = "dc728b9d6216c96ee044a82c9ec1c983e0269373" }
+ironrdp-error = { git = "https://github.com/rbenaley/IronRDP-vb", rev = "dc728b9d6216c96ee044a82c9ec1c983e0269373" }
+ironrdp-graphics = { git = "https://github.com/rbenaley/IronRDP-vb", rev = "dc728b9d6216c96ee044a82c9ec1c983e0269373" }
+ironrdp-input = { git = "https://github.com/rbenaley/IronRDP-vb", rev = "dc728b9d6216c96ee044a82c9ec1c983e0269373" }
+ironrdp-pdu = { git = "https://github.com/rbenaley/IronRDP-vb", rev = "dc728b9d6216c96ee044a82c9ec1c983e0269373" }
+ironrdp-rdpei = { git = "https://github.com/rbenaley/IronRDP-vb", rev = "dc728b9d6216c96ee044a82c9ec1c983e0269373" }
+ironrdp-session = { git = "https://github.com/rbenaley/IronRDP-vb", rev = "dc728b9d6216c96ee044a82c9ec1c983e0269373" }
+ironrdp-svc = { git = "https://github.com/rbenaley/IronRDP-vb", rev = "dc728b9d6216c96ee044a82c9ec1c983e0269373" }
+ironrdp-tokio = { git = "https://github.com/rbenaley/IronRDP-vb", rev = "dc728b9d6216c96ee044a82c9ec1c983e0269373" }
 
 [profile.release]
 opt-level = 3

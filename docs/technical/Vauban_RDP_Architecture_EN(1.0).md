@@ -938,19 +938,25 @@ from a peer), and the cause chain of the error on the `RDP session
 refused` line. Both stay in the proxy log. `Connecting to RDP server`
 and `RDP session connected` carry `auth_mode`.
 
-**The `sspi` fork (0.9.58).** `sspi` comes from
-`https://github.com/rbenaley/sspi-rs-vb`, pinned by commit in the
-workspace `[patch.crates-io]`: `sspi` 0.23.0 plus the upstream fix
-Devolutions/sspi-rs#772. A Windows acceptor signs the SPNEGO
+**The IronRDP fork.** The `ironrdp-*` crates come from
+`https://github.com/rbenaley/IronRDP-vb`, pinned by commit in the
+workspace `[patch.crates-io]`: the upstream main branch plus two
+commits. Upstream main carries Remote Credential Guard under the
+version numbers of the published crates, so no published crate has it.
+One commit keeps the DNS resolver of `sspi` out of the connector's
+`remote-guard` feature: the proxy reaches a KDC through the supervisor
+broker only. The other sets `KERB_ASN1_DATA.Pdu` in the redirected Kerberos
+responses: a Windows target decodes each response with that slot, and
+with slot 0 it rejects them all, which leaves the session without an
+outbound identity. `sspi` is 0.23.1 from crates.io. It holds the fix
+of Devolutions/sspi-rs#772 (a Windows acceptor signs the SPNEGO
 `mechListMIC` with sequence number 0 whatever its AP-REP announced;
-0.23.0 refused it on the initiator side, so both Kerberos modes failed
-against every Windows target. The initiator no longer enforces that
-sequence number; it still verifies the checksum, and the acceptor side
-is unchanged. `sspi` 0.23.1 has the fix but needs
-`picky =7.0.0-rc.27`, which `ironrdp-connector` 0.12.0 does not
-accept. The entry is removed when an IronRDP release resolves
-`sspi >= 0.23.1`; `check_patch_pins.sh` keeps it pinned and present
-until then.
+the initiator no longer enforces that number and still verifies the
+checksum), which the `sspi-rs-vb` fork carried from 0.9.58 until this
+change. The entries are removed when a published IronRDP release
+contains Remote Credential Guard and sets the slot;
+`check_patch_pins.sh` keeps every `ironrdp-*` entry on the fork and on
+one commit, and refuses an `sspi` entry.
 
 vauban-web shows the cause and the action to a holder of `assets:manage`
 and one generic sentence to anyone else

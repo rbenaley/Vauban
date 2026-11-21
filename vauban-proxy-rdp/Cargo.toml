@@ -33,9 +33,15 @@ tokio.workspace = true
 # RDP client (async, pure Rust)
 # The `ironrdp` meta-crate (0.17) still resolves to ironrdp-connector 0.10,
 # which pins picky =7.0.0-rc.25 and through it curve25519-dalek =5.0.0-rc.1.
-# The sub-crates are depended on directly so the stack sits on picky
-# 7.0.0-rc.26, which accepts the stable dalek releases.
-ironrdp-connector = "0.12"
+# The sub-crates are depended on directly so the stack sits on a picky
+# release candidate that accepts the stable dalek releases.
+# Every ironrdp-* crate is taken from the fork named in the workspace
+# `[patch.crates-io]`; the versions below are the ones it declares.
+# `remote-guard` brings Remote Credential Guard (ironrdp-rdpear and
+# sspi's `rcg` module). In the fork it does not bring sspi's DNS
+# resolver: the proxy names its KDC and never asks sspi to look one up
+# (kerberos_realm_preflight_invariants_test.rs, patch_pins_invariants_test.rs).
+ironrdp-connector = { version = "0.12", features = ["remote-guard"] }
 ironrdp-session = "0.13"
 ironrdp-graphics = "0.11"
 ironrdp-input = "0.9"
@@ -83,7 +89,7 @@ url = "2"
 # ported from the test suite of `sspi`, driving the production CredSSP
 # sequence against `sspi`'s own CredSSP server. All four are already in
 # the tree through `sspi`, at these versions.
-picky-krb = "0.12"
+picky-krb = "0.13"
 picky-asn1 = { version = "0.10", features = ["time_conversion"] }
 picky-asn1-der = "0.5"
 time = "0.3"

@@ -4,8 +4,9 @@
 > IronRDP stack bump in `vauban-proxy-rdp` (no RDP server is available in
 > CI, so the connect/reactivation paths can only be exercised end-to-end
 > by hand). First applied for the 0.14 -> 0.17 migration (connector 0.10,
-> session 0.11, input 0.7, sspi 0.21). Since 0.9.58 `sspi` is 0.23.0
-> from a fork: see "The `sspi` fork" in the Kerberos section.
+> session 0.11, input 0.7, sspi 0.21). The `ironrdp-*` crates now come
+> from a fork of the upstream main branch and `sspi` is 0.23.1 from
+> crates.io: see "The IronRDP fork" in the Kerberos section.
 >
 > Audience: release engineers.
 > Severity: BLOCKING for the release -- do not ship an IronRDP bump
@@ -293,28 +294,35 @@ Checklist:
    the reason `target_token_rejected`; its cause is the text after
    `caused by:` on the `RDP session refused` line.
 
-### The `sspi` fork
+### The IronRDP fork
 
-`sspi` is taken from `https://github.com/rbenaley/sspi-rs-vb`, pinned
-by commit in the workspace `[patch.crates-io]`. It is `sspi` 0.23.0
-plus one upstream fix (Devolutions/sspi-rs#772, commit `08d8622794`):
-a Windows acceptor signs the SPNEGO `mechListMIC` with sequence number
-0 whatever its AP-REP announced, and 0.23.0 refused it on the
-initiator side, which failed both Kerberos modes against every Windows
-target. The fix stops enforcing the sequence number on the initiator;
-the checksum is still verified.
+The `ironrdp-*` crates are taken from
+`https://github.com/rbenaley/IronRDP-vb`, pinned by commit in the
+workspace `[patch.crates-io]`. The fork is the upstream main branch
+plus two commits: one sets the ASN.1 slot (`KERB_ASN1_DATA.Pdu`) of
+the redirected Kerberos responses of Remote Credential Guard, the
+other takes the DNS resolver of `sspi` out of the connector's
+`remote-guard` feature. Upstream
+main is ahead of the published crates under the same version numbers:
+this pass covers code that no published release contains, so run the
+whole checklist, not only the Kerberos section.
 
-`sspi` 0.23.1 carries the fix but needs `picky =7.0.0-rc.27`, while
-`ironrdp-connector` 0.12.0 pins `rc.26`.
+`sspi` is 0.23.1 from crates.io. It holds the fix of
+Devolutions/sspi-rs#772: a Windows acceptor signs the SPNEGO
+`mechListMIC` with sequence number 0 whatever its AP-REP announced,
+and the initiator no longer enforces that number (the checksum is
+still verified). The `sspi-rs-vb` fork that carried this fix is no
+longer used.
 
 - The build fetches the fork from GitHub: the build host needs that
   access.
 - `vauban-proxy-rdp/scripts/check_patch_pins.sh` (run by `just lint`)
-  refuses a `[patch.crates-io]` entry without a 40-character `rev` and
-  a manifest without the fork.
-- Removal: when an IronRDP release resolves `sspi >= 0.23.1`
-  (`cargo tree -p sspi`), delete the `sspi` entry and the `sspi` rule
-  of the script, then run checkpoints 23 to 25 again.
+  refuses a `[patch.crates-io]` entry without a 40-character `rev`, an
+  `ironrdp-*` entry from another repository or on a second commit, a
+  manifest without the `ironrdp-connector` entry, and an `sspi` entry.
+- Removal: when a published IronRDP release contains Remote Credential
+  Guard and sets the slot, delete the `ironrdp-*` entries and the
+  ironrdp rules of the script, then run checkpoints 23 to 25 again.
 
 ## Credential envelope (web does not decrypt)
 
@@ -333,3 +341,4 @@ of `v1:` (no payload) is refused before any RDP handshake.
 |---|---|---|
 | ironrdp 0.17.0 / connector 0.10 / session 0.11 / input 0.7 / sspi 0.21.2 | _pending first manual pass_ | _--_ |
 | connector 0.12 / session 0.13 / input 0.9 / pdu 0.11 / sspi 0.23.0 (sub-crates, no `ironrdp` meta-crate) | _pending first manual pass_ | _--_ |
+| IronRDP fork at `dc728b9d` (upstream main `a8da54ba` plus the ASN.1 slot fix and the resolver-free feature) / sspi 0.23.1 | _pending first manual pass_ | _--_ |

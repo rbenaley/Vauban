@@ -401,6 +401,7 @@ fn build_connector_config(
 ) -> ironrdp_connector::Config {
     ironrdp_connector::Config {
         credentials: Credentials::UsernamePassword { username, password },
+        rdp_version: ironrdp_pdu::gcc::RdpVersion::V5_PLUS,
         domain,
         enable_tls: true,
         enable_credssp: true,
@@ -3001,7 +3002,7 @@ enum LocalCredsspState {
 /// fail-closed Kerberos-only package list is reachable through its API. This
 /// mirror keeps the exact upstream state machine (Ongoing ->
 /// EarlyUserAuthResult -> Finished, same PduHints, same TsRequest wire
-/// handling -- everything it touches is public in `sspi 0.21`) and
+/// handling -- everything it touches is public in `sspi`) and
 /// parameterizes the posture by [`RdpAuthMode`]:
 ///
 /// - `Ntlm`: `ClientMode::Ntlm` + `WithCredentials`, byte-identical to the
@@ -3076,14 +3077,12 @@ impl LocalCredsspSequence {
                         "Kerberos mode requires the DNS name of the domain"
                     )
                 })?;
-            let kdc_url = Some(
-                sspi::kerberos::config::parse_kdc_url(&kerberos_kdc_sentinel_url(&realm))
-                    .ok_or_else(|| {
-                        ironrdp_connector::general_err!("Kerberos KDC sentinel URL is not valid")
-                    })?,
-            );
+            let kdc_url = sspi::kerberos::config::parse_kdc_url(&kerberos_kdc_sentinel_url(&realm))
+                .ok_or_else(|| {
+                    ironrdp_connector::general_err!("Kerberos KDC sentinel URL is not valid")
+                })?;
             let kerberos_config = sspi::KerberosConfig {
-                kdc_url,
+                kdc_resolution: sspi::kerberos::config::KdcResolution::KdcUrl(Some(kdc_url)),
                 client_computer_name: server_name.clone(),
             };
             sspi_credssp::ClientMode::Negotiate(sspi::NegotiateConfig {
@@ -4219,22 +4218,32 @@ mod tests {
         encode_send_data_indication(IO_CHANNEL_ID, &user_data)
     }
 
-    /// Battle-tested counterfactual: pin the UPSTREAM gap that motivates the
-    /// demux. Feeding an auto-detect PDU to the connector mid-licensing must
-    /// error out (the production `SERVER_NEW_LICENSE ... decode error`). The
-    /// day upstream demuxes message-channel PDUs during licensing, this test
-    /// fails and tells us the local workaround can be retired.
+    /// The UPSTREAM gap that motivated the demux is closed in the IronRDP
+    /// revision the workspace pins: the connector no longer errors out on
+    /// an auto-detect PDU fed mid-licensing (it used to fail with the
+    /// production `SERVER_NEW_LICENSE ... decode error`, and this test
+    /// pinned that failure until 0.9.60).
+    ///
+    /// The local demux stays for now: it answers the request itself, and
+    /// the tests below pin that behavior. Retiring it is separate work.
+    /// If this test fails again, the pinned revision lost the upstream
+    /// fix and the demux is load-bearing once more.
     #[test]
-    fn test_upstream_connector_chokes_on_interleaved_autodetect_without_demux() {
+    fn test_upstream_connector_survives_interleaved_autodetect_without_demux() {
         let mut connector = connector_in_licensing_exchange();
         let rtt_pdu = encode_send_data_indication(MESSAGE_CHANNEL_ID, &encode_rtt_request(7));
 
         let mut buf = WriteBuf::new();
-        let result = connector.step(&rtt_pdu, None, &mut buf);
+        connector
+            .step(&rtt_pdu, None, &mut buf)
+            .expect("the pinned connector handles an interleaved auto-detect PDU during licensing");
         assert!(
-            result.is_err(),
-            "upstream connector is expected to reject an interleaved auto-detect PDU \
-             during licensing; if this now succeeds, the demux workaround can be removed"
+            matches!(
+                connector.state,
+                ClientConnectorState::LicensingExchange { .. }
+            ),
+            "an auto-detect PDU must not move the connector out of licensing, got {:?}",
+            connector.state
         );
     }
 
@@ -5028,17 +5037,25 @@ mod tests {
 
         use super::*;
 
+        /// Largest desktop dimension the connector accepts from a server
+        /// (`MAX_DESKTOP_DIM` in ironrdp-connector, not exported). The
+        /// two properties below fail together if upstream moves it.
+        const MAX_NEGOTIATED_DESKTOP_DIM: u16 = 32766;
+
         proptest! {
             #![proptest_config(ProptestConfig::with_cases(24))]
 
-            /// For ANY desktop size and share id demanded by the server,
-            /// the finalized outcome reports exactly the negotiated values
-            /// and the invariant MCS channel ids. Drives the REAL
-            /// `drive_reactivation` over an in-memory transport per case.
+            /// For ANY desktop size the connector accepts and ANY share id
+            /// demanded by the server, the finalized outcome reports
+            /// exactly the negotiated values and the invariant MCS channel
+            /// ids. Drives the REAL `drive_reactivation` over an in-memory
+            /// transport per case. Sizes outside the accepted range are
+            /// the subject of
+            /// `reactivation_refuses_a_desktop_size_outside_the_range`.
             #[test]
             fn reactivation_outcome_matches_server_negotiation(
-                width in any::<u16>(),
-                height in any::<u16>(),
+                width in 1..=MAX_NEGOTIATED_DESKTOP_DIM,
+                height in 1..=MAX_NEGOTIATED_DESKTOP_DIM,
                 share_id in any::<u32>(),
             ) {
                 use tokio::io::AsyncWriteExt as _;
@@ -5071,6 +5088,49 @@ mod tests {
                     prop_assert_eq!(outcome.share_id, share_id);
                     prop_assert_eq!(outcome.io_channel_id, IO_CHANNEL_ID);
                     prop_assert_eq!(outcome.user_channel_id, USER_CHANNEL_ID);
+                    Ok(())
+                })?;
+            }
+
+            /// A server that demands a desktop size outside the accepted
+            /// range does not get a session resized to it: the
+            /// reactivation fails. Zero and anything above the bound, on
+            /// either axis.
+            #[test]
+            fn reactivation_refuses_a_desktop_size_outside_the_range(
+                bad in prop_oneof![Just(0u16), (MAX_NEGOTIATED_DESKTOP_DIM + 1)..=u16::MAX],
+                good in 1..=MAX_NEGOTIATED_DESKTOP_DIM,
+                bad_is_width in any::<bool>(),
+                share_id in any::<u32>(),
+            ) {
+                use tokio::io::AsyncWriteExt as _;
+
+                let (width, height) = if bad_is_width { (bad, good) } else { (good, bad) };
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime");
+
+                rt.block_on(async {
+                    let (client_side, mut server_side) = tokio::io::duplex(64 * 1024);
+                    let mut framed = ironrdp_tokio::TokioFramed::new(client_side);
+                    let factory = test_activation_factory();
+
+                    server_side
+                        .write_all(&encode_server_demand_active(share_id, width, height))
+                        .await
+                        .expect("demand active");
+                    server_side
+                        .write_all(&encode_server_font_map(share_id))
+                        .await
+                        .expect("font map");
+
+                    prop_assert!(
+                        drive_reactivation(&factory, &mut framed).await.is_err(),
+                        "a {}x{} desktop must be refused",
+                        width,
+                        height
+                    );
                     Ok(())
                 })?;
             }

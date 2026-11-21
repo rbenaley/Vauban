@@ -278,9 +278,9 @@ impl CredsspTarget {
         let mode = match packages {
             TargetPackages::Kerberos | TargetPackages::KerberosWithMic(_) => {
                 let kerberos_config = sspi::KerberosConfig {
-                    kdc_url: Some(
+                    kdc_resolution: sspi::kerberos::config::KdcResolution::KdcUrl(Some(
                         sspi::kerberos::config::parse_kdc_url("tcp://kdc.test.invalid:88").unwrap(),
-                    ),
+                    )),
                     client_computer_name: computer_name.clone(),
                 };
                 let server_properties = ServerProperties {

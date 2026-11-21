@@ -103,3 +103,44 @@ fn preflight_delegates_to_the_shared_seams() {
     );
     assert!(SESSION.contains("shared::kerberos::ambient_config_is_isolated("));
 }
+
+/// Production code of `session.rs`: what precedes its test modules.
+fn session_production() -> &'static str {
+    let end = SESSION.find("\n#[cfg(test)]\n").expect("test modules");
+    &SESSION[..end]
+}
+
+/// The proxy is sandboxed and reaches a KDC only through the supervisor
+/// broker, behind a sentinel URL. `sspi` can also look a KDC up by itself
+/// (environment, krb5.conf, DNS SRV), and does so when it is handed no
+/// URL.
+/// The proxy always hands one, at a single site, and never asks for the
+/// IAKerb or lookup paths.
+#[test]
+fn the_kdc_is_always_named_by_the_proxy_never_looked_up_by_sspi() {
+    let production = session_production();
+    assert_eq!(
+        production.matches("KdcResolution::").count(),
+        1,
+        "exactly one KDC resolution site in production code"
+    );
+    assert!(
+        production.contains("KdcResolution::KdcUrl(Some(kdc_url))"),
+        "the KDC URL is always present"
+    );
+    for forbidden in [
+        "KdcUrl(None)",
+        "KdcResolution::IAKerb",
+        "detect_kdc_url",
+        "detect_kdc_host",
+    ] {
+        assert!(
+            !production.contains(forbidden),
+            "`{forbidden}` would let sspi resolve a KDC outside the broker"
+        );
+        assert!(
+            !MAIN.contains(forbidden),
+            "`{forbidden}` would let sspi resolve a KDC outside the broker"
+        );
+    }
+}
