@@ -14,6 +14,7 @@
 use std::process::Command;
 
 const MANIFEST: &str = include_str!("../../Cargo.toml");
+const PROXY_MANIFEST: &str = include_str!("../Cargo.toml");
 const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/check_patch_pins.sh");
 
 /// The entries of `[patch.crates-io]`: no comments, no blank lines.
@@ -54,7 +55,7 @@ fn every_patch_entry_is_pinned_by_a_full_commit_id() {
 }
 
 const IRONRDP_FORK: &str = "git = \"https://github.com/rbenaley/IronRDP-vb\"";
-const IRONRDP_REV: &str = "dc728b9d6216c96ee044a82c9ec1c983e0269373";
+const IRONRDP_REV: &str = "6083bc3d2dc693e8cc4db586913fd8112ece1d90";
 
 fn ironrdp_entries(manifest: &str) -> Vec<&str> {
     patch_entries(manifest)
@@ -146,21 +147,72 @@ fn the_ironrdp_entries_state_their_removal_condition() {
     assert!(section.contains("without a DNS resolver"));
 }
 
-/// Run the lint on `manifest`, written under the test's own scratch
-/// directory. `name` keeps parallel tests on separate files.
-fn run_script_on(name: &str, manifest: &str) -> bool {
-    let path =
-        std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("patch_pins_{name}.toml"));
+/// Run the lint on `manifest` and on the proxy's own manifest, written
+/// under the test's own scratch directory. `name` keeps parallel tests
+/// on separate files.
+fn run_script_on_both(name: &str, manifest: &str, proxy_manifest: &str) -> bool {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let path = dir.join(format!("patch_pins_{name}.toml"));
+    let proxy_path = dir.join(format!("patch_pins_{name}_proxy.toml"));
     std::fs::write(&path, manifest).unwrap();
+    std::fs::write(&proxy_path, proxy_manifest).unwrap();
     let passed = Command::new("bash")
         .arg(SCRIPT)
         .arg(&path)
+        .arg(&proxy_path)
         .output()
         .expect("bash runs the lint")
         .status
         .success();
     let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&proxy_path);
     passed
+}
+
+/// Run the lint on `manifest`, with the proxy's real manifest.
+fn run_script_on(name: &str, manifest: &str) -> bool {
+    run_script_on_both(name, manifest, PROXY_MANIFEST)
+}
+
+/// The line of the proxy manifest that takes `ironrdp-rdpear` from the
+/// fork.
+fn rdpear_line() -> &'static str {
+    PROXY_MANIFEST
+        .lines()
+        .find(|line| line.starts_with("ironrdp-rdpear = "))
+        .expect("ironrdp-rdpear dependency")
+}
+
+/// `ironrdp-rdpear` is not on crates.io: the proxy takes it from the
+/// fork directly, on the rev of the patch entries.
+#[test]
+fn the_direct_fork_dependency_is_on_the_patch_rev() {
+    let line = rdpear_line();
+    assert!(line.contains(IRONRDP_FORK), "{line}");
+    assert_eq!(rev_of(line), Some(IRONRDP_REV), "{line}");
+    assert!(!line.contains("branch = ") && !line.contains("tag = "));
+}
+
+#[test]
+fn attack_the_lint_refuses_a_direct_fork_dependency_on_another_rev() {
+    let line = rdpear_line();
+    let other = line.replacen(IRONRDP_REV, "a8da54ba4d849370bc92e1d5230cc18e99cf5ff1", 1);
+    assert_ne!(other, line);
+    let proxy = PROXY_MANIFEST.replacen(line, &other, 1);
+    assert!(!run_script_on_both("direct_rev", MANIFEST, &proxy));
+}
+
+#[test]
+fn attack_the_lint_refuses_a_direct_fork_dependency_following_a_branch() {
+    let line = rdpear_line();
+    let branch = line.replacen(
+        &format!("rev = \"{IRONRDP_REV}\""),
+        "branch = \"vb/rcg-asn1-pdu\"",
+        1,
+    );
+    assert_ne!(branch, line);
+    let proxy = PROXY_MANIFEST.replacen(line, &branch, 1);
+    assert!(!run_script_on_both("direct_branch", MANIFEST, &proxy));
 }
 
 #[test]

@@ -38,7 +38,9 @@ use ironrdp_tokio::single_sequence_step;
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, NetworkClient, Upgraded};
 use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
-use shared::messages::{Message, RdpAuthFailure, RdpAuthMode, RdpInputEvent};
+use shared::messages::{
+    Message, RdpAuthFailure, RdpAuthMode, RdpInputEvent, RemoteGuardOutboundIdentity,
+};
 use std::os::unix::io::{FromRawFd, IntoRawFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -89,6 +91,11 @@ pub struct SessionConfig {
     /// mode or in non-sandboxed dev mode; Kerberos mode fails closed
     /// without it.
     pub supervisor_relay: Option<Arc<SupervisorRelay>>,
+    /// What the proxy answers to the target on the authentication
+    /// redirection channel (`KerberosRemoteGuard` only): the bastion-wide
+    /// `[rdp] remote_guard_outbound_identity`, read once at startup. No
+    /// other mode opens that channel.
+    pub remote_guard_outbound_identity: RemoteGuardOutboundIdentity,
 }
 
 /// Active RDP session handle (the actual connection runs in a spawned task).
@@ -204,6 +211,15 @@ impl RdpSession {
                 trace!("Display Control capabilities: {:?}", caps);
                 Ok(Vec::new())
             }));
+        // Remote Credential Guard: the authentication redirection channel
+        // is attached after CredSSP, once the session that answers it
+        // exists. Its carrier must reassemble bounded messages only: the
+        // target is the one that sends them.
+        let drdynvc = if auth_mode_profile(config.auth_mode).remote_guard() {
+            drdynvc.with_max_transport_message_size(REMOTE_GUARD_MAX_MESSAGE_SIZE)
+        } else {
+            drdynvc
+        };
         let mut connector =
             ClientConnector::new(connector_config, client_addr).with_static_channel(drdynvc);
 
@@ -211,15 +227,12 @@ impl RdpSession {
         let mut framed = ironrdp_tokio::TokioFramed::new(stream);
 
         // Drive connection up to TLS upgrade point. Local mirror of
-        // `ironrdp_tokio::connect_begin`: in Restricted Admin mode the
-        // X.224 Connection Request must carry the
-        // RESTRICTED_ADMIN_MODE_REQUIRED nego flag, which upstream
-        // hardcodes to empty. The plain `Kerberos` mode sends no flag.
-        let extra_nego_flags = if auth_mode_profile(config.auth_mode).restricted_admin {
-            nego::RequestFlags::RESTRICTED_ADMIN_MODE_REQUIRED
-        } else {
-            nego::RequestFlags::empty()
-        };
+        // `ironrdp_tokio::connect_begin`: the X.224 Connection Request
+        // must carry RESTRICTED_ADMIN_MODE_REQUIRED in Restricted Admin
+        // mode and REDIRECTED_AUTHENTICATION_MODE_REQUIRED in Remote
+        // Credential Guard mode. The connector is not told about either
+        // mode, so it sends none. The plain `Kerberos` mode sends no flag.
+        let extra_nego_flags = auth_mode_profile(config.auth_mode).request_flags();
         let (should_upgrade, negotiation) =
             connect_begin_with_nego_flags(&mut framed, &mut connector, extra_nego_flags)
                 .await
@@ -311,7 +324,11 @@ impl RdpSession {
             &mut network_client,
             ironrdp_connector::ServerName::new(config.host.clone()),
             server_public_key,
-            config.auth_mode,
+            &NlaSettings {
+                auth_mode: config.auth_mode,
+                remote_guard_outbound_identity: config.remote_guard_outbound_identity,
+                session_id: config.session_id.clone(),
+            },
         )
         .await
         .map_err(|e| {
@@ -1828,45 +1845,116 @@ impl ServerCertVerifier for TofuAcceptAnyFetchVerifier {
     }
 }
 
-/// What an [`RdpAuthMode`] means on the wire, for the three places that
-/// differ between modes: the X.224 negotiation flag, the CredSSP
-/// TSCredentials, and the security package.
+/// What the target receives in the CredSSP TSCredentials.
+///
+/// The X.224 negotiation flag, the flag the target must announce, the
+/// CredSSP mode and the fate of the password in the Client Info PDU all
+/// follow from this one value, so no two of them can disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetCredentials {
+    /// The identity, password included (`TSPasswordCreds`).
+    Password,
+    /// Empty TSCredentials: Restricted Admin. The target logs the user on
+    /// with nothing to reuse, and acts on the network as itself.
+    Nothing,
+    /// A service ticket and a TGT whose key stays in the proxy
+    /// (`TSRemoteGuardCreds`): Remote Credential Guard. The target asks
+    /// the proxy for every Kerberos operation that needs the key.
+    RemoteGuard,
+}
+
+/// What an [`RdpAuthMode`] means on the wire, for the places that differ
+/// between modes: the X.224 negotiation flag, the CredSSP TSCredentials,
+/// and the security package.
 ///
 /// One row per mode in [`auth_mode_profile`]. Adding a mode is adding a
 /// row there: the `match` is exhaustive, so the compiler refuses a mode
 /// that has not stated its posture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AuthModeProfile {
-    /// Send `RESTRICTED_ADMIN_MODE_REQUIRED` in the X.224 Connection
-    /// Request.
-    pub restricted_admin: bool,
-    /// Send EMPTY TSCredentials (`CredSspMode::CredentialLess`): the
-    /// target never receives the password.
-    pub credential_less: bool,
     /// Authenticate with the Kerberos package ONLY, through the
     /// supervisor KDC broker. `false` means NTLM, with no network client.
     pub kerberos: bool,
+    /// What the target receives once it is authenticated.
+    pub target_credentials: TargetCredentials,
 }
 
-/// The posture of each auth mode. Neither Kerberos row can reach NTLM:
+impl AuthModeProfile {
+    /// The flag added to the X.224 Connection Request
+    /// ([MS-RDPBCGR] 2.2.1.1.1).
+    pub const fn request_flags(&self) -> nego::RequestFlags {
+        match self.target_credentials {
+            TargetCredentials::Password => nego::RequestFlags::empty(),
+            TargetCredentials::Nothing => nego::RequestFlags::RESTRICTED_ADMIN_MODE_REQUIRED,
+            TargetCredentials::RemoteGuard => {
+                nego::RequestFlags::REDIRECTED_AUTHENTICATION_MODE_REQUIRED
+            }
+        }
+    }
+
+    /// The flag the target must announce in its negotiation response
+    /// ([MS-RDPBCGR] 2.2.1.2.1), with the refusal text when it does not.
+    /// Without it the target has not agreed to credentials other than a
+    /// password, and the session does not continue.
+    pub const fn required_response_flag(&self) -> Option<(nego::ResponseFlags, &'static str)> {
+        match self.target_credentials {
+            TargetCredentials::Password => None,
+            TargetCredentials::Nothing => Some((
+                nego::ResponseFlags::RESTRICTED_ADMIN_MODE_SUPPORTED,
+                "Restricted Admin: the target did not announce support for the mode",
+            )),
+            TargetCredentials::RemoteGuard => Some((
+                nego::ResponseFlags::REDIRECTED_AUTHENTICATION_MODE_SUPPORTED,
+                "Remote Credential Guard: the target did not announce support for the mode",
+            )),
+        }
+    }
+
+    /// The CredSSP mode: what goes in TSCredentials.
+    pub const fn credssp_mode(&self) -> CredSspMode {
+        match self.target_credentials {
+            TargetCredentials::Password => CredSspMode::WithCredentials,
+            TargetCredentials::Nothing => CredSspMode::CredentialLess,
+            TargetCredentials::RemoteGuard => CredSspMode::RemoteGuard,
+        }
+    }
+
+    /// Whether the password stays in the proxy: it is then removed from
+    /// the Client Info PDU, which IronRDP would otherwise send it in.
+    pub const fn keeps_password_in_proxy(&self) -> bool {
+        match self.target_credentials {
+            TargetCredentials::Password => false,
+            TargetCredentials::Nothing | TargetCredentials::RemoteGuard => true,
+        }
+    }
+
+    /// Remote Credential Guard: the session keeps the authentication
+    /// redirection channel.
+    pub const fn remote_guard(&self) -> bool {
+        matches!(self.target_credentials, TargetCredentials::RemoteGuard)
+    }
+}
+
+/// The posture of each auth mode. No Kerberos row can reach NTLM:
 /// `kerberos: true` selects a Kerberos-only package list, and a
 /// server-driven NTLM downgrade aborts the sequence.
 pub const fn auth_mode_profile(mode: RdpAuthMode) -> AuthModeProfile {
     match mode {
         RdpAuthMode::Ntlm => AuthModeProfile {
-            restricted_admin: false,
-            credential_less: false,
             kerberos: false,
+            target_credentials: TargetCredentials::Password,
         },
         RdpAuthMode::KerberosRestrictedAdmin => AuthModeProfile {
-            restricted_admin: true,
-            credential_less: true,
             kerberos: true,
+            target_credentials: TargetCredentials::Nothing,
         },
         RdpAuthMode::Kerberos => AuthModeProfile {
-            restricted_admin: false,
-            credential_less: false,
             kerberos: true,
+            target_credentials: TargetCredentials::Password,
+        },
+        RdpAuthMode::KerberosRemoteGuard => AuthModeProfile {
+            kerberos: true,
+            target_credentials: TargetCredentials::RemoteGuard,
         },
     }
 }
@@ -2645,7 +2733,10 @@ fn negotiation_outcome_of(pdu: &[u8]) -> Option<NegotiationOutcome> {
 /// * a negotiation response that selects NLA (`HYBRID` or `HYBRID_EX`);
 /// * in Restricted Admin, the `RESTRICTED_ADMIN_MODE_SUPPORTED` flag
 ///   ([MS-RDPBCGR] 2.2.1.2.1): without it the target has not agreed to
-///   empty credentials.
+///   empty credentials;
+/// * in Remote Credential Guard, the
+///   `REDIRECTED_AUTHENTICATION_MODE_SUPPORTED` flag: without it the
+///   target has not agreed to redirect its authentication.
 ///
 /// A target that cannot do NLA (for example xrdp) is not reachable.
 fn check_negotiation(
@@ -2661,12 +2752,10 @@ fn check_negotiation(
     {
         return Err("the target did not select NLA (no NLA, no session)");
     }
-    if auth_mode_profile(mode).restricted_admin
-        && !outcome
-            .flags
-            .contains(nego::ResponseFlags::RESTRICTED_ADMIN_MODE_SUPPORTED)
+    if let Some((flag, refusal)) = auth_mode_profile(mode).required_response_flag()
+        && !outcome.flags.contains(flag)
     {
-        return Err("Restricted Admin: the target did not announce support for the mode");
+        return Err(refusal);
     }
     Ok(())
 }
@@ -2726,7 +2815,7 @@ async fn connect_finalize_with_message_channel_demux<S, N>(
     network_client: &mut N,
     server_name: ironrdp_connector::ServerName,
     server_public_key: Vec<u8>,
-    auth_mode: RdpAuthMode,
+    nla: &NlaSettings,
 ) -> ConnectorResult<ConnectionResult>
 where
     S: FramedRead + FramedWrite,
@@ -2751,7 +2840,7 @@ where
             &mut buf,
             server_name,
             server_public_key,
-            auth_mode,
+            nla,
         )
         .await?;
     }
@@ -2816,12 +2905,13 @@ async fn perform_credssp_step<S, N>(
     buf: &mut WriteBuf,
     server_name: ironrdp_connector::ServerName,
     server_public_key: Vec<u8>,
-    auth_mode: RdpAuthMode,
+    nla: &NlaSettings,
 ) -> ConnectorResult<()>
 where
     S: FramedRead + FramedWrite,
     N: NetworkClient,
 {
+    let auth_mode = nla.auth_mode;
     let selected_protocol = match connector.state {
         ClientConnectorState::Credssp {
             selected_protocol, ..
@@ -2842,12 +2932,12 @@ where
         auth_mode,
     )?;
 
-    // Restricted Admin: the CredSSP client now holds its own copy of the
-    // identity (it needs the password for the Kerberos pre-authentication,
-    // in memory). Remove the password from the connector configuration,
-    // which IronRDP would otherwise send to the target after CredSSP, in
-    // the Client Info PDU.
-    if auth_mode_profile(auth_mode).credential_less {
+    // Restricted Admin and Remote Credential Guard: the CredSSP client
+    // now holds its own copy of the identity (it needs the password for
+    // the Kerberos pre-authentication, in memory). Remove the password
+    // from the connector configuration, which IronRDP would otherwise
+    // send to the target after CredSSP, in the Client Info PDU.
+    if auth_mode_profile(auth_mode).keeps_password_in_proxy() {
         strip_client_info_password(&mut connector.config);
     }
 
@@ -2896,8 +2986,102 @@ where
         }
     }
 
+    // Remote Credential Guard: the target accepted the logon. The
+    // Kerberos context of this exchange becomes the session that answers
+    // the target's redirected operations, behind the bastion's policy.
+    // Attached before the connector moves on, so the channel is ready
+    // before the target can open it.
+    if auth_mode_profile(auth_mode).remote_guard() {
+        attach_remote_guard_channel(connector, &mut sequence, nla)?;
+    }
+
     connector.mark_credssp_as_done();
 
+    Ok(())
+}
+
+/// Largest message the authentication redirection channel reassembles
+/// (the bound the connector's own Remote Credential Guard path uses).
+const REMOTE_GUARD_MAX_MESSAGE_SIZE: usize = ironrdp_connector::remote_guard::MAX_MESSAGE_SIZE;
+
+/// What the NLA leg of a session is driven by.
+#[derive(Debug, Clone)]
+pub struct NlaSettings {
+    /// The mode of the asset: see [`auth_mode_profile`].
+    pub auth_mode: RdpAuthMode,
+    /// `[rdp] remote_guard_outbound_identity`: what the proxy answers on
+    /// the authentication redirection channel. Read only in
+    /// `KerberosRemoteGuard` mode; no other mode opens that channel.
+    pub remote_guard_outbound_identity: RemoteGuardOutboundIdentity,
+    /// For the log lines of that channel.
+    pub session_id: String,
+}
+
+/// Take the Remote Credential Guard session out of the finished CredSSP
+/// exchange and install it on the dynamic channel carrier, behind
+/// [`crate::remote_guard::PolicyContext`].
+///
+/// The connector is not told about the mode (it would then insist on
+/// running CredSSP itself, with a package list the proxy does not
+/// control), so this is the proxy's own version of the connector's
+/// `complete_credssp`, with the same three checks: a carrier, a bounded
+/// carrier, and no channel of that name already.
+///
+/// Redirected NTLM is never enabled: `enable_remote_guard_ntlm` is not
+/// called on the CredSSP client, so the target receives no NTLM
+/// supplemental credential, and the policy context refuses any NTLM
+/// request it would still send.
+fn attach_remote_guard_channel(
+    connector: &mut ClientConnector,
+    sequence: &mut LocalCredsspSequence,
+    settings: &NlaSettings,
+) -> ConnectorResult<()> {
+    let session = sequence
+        .client
+        .take_remote_guard_session()
+        .map_err(|e| ConnectorError::new("CredSSP", ConnectorErrorKind::Credssp(e)))?;
+
+    let drdynvc = connector
+        .get_static_channel_processor_mut::<DrdynvcClient>()
+        .ok_or_else(|| {
+            ironrdp_connector::general_err!(
+                "Remote Credential Guard requires the dynamic channel carrier"
+            )
+        })?;
+    if ironrdp_svc::SvcProcessor::max_message_size(drdynvc)
+        .is_none_or(|limit| limit > REMOTE_GUARD_MAX_MESSAGE_SIZE)
+    {
+        return Err(ironrdp_connector::general_err!(
+            "Remote Credential Guard requires a bounded dynamic channel carrier"
+        ));
+    }
+    if drdynvc.has_channel_name(ironrdp_rdpear::CHANNEL_NAME) {
+        return Err(ironrdp_connector::general_err!(
+            "the authentication redirection channel is already registered"
+        ));
+    }
+
+    let context = crate::remote_guard::PolicyContext::new(
+        session,
+        settings.remote_guard_outbound_identity,
+        settings.session_id.clone(),
+    );
+    let backend = ironrdp_connector::remote_guard::Backend {
+        context: Some(context),
+        negotiated: false,
+        ntlm_negotiated: false,
+        // The version negotiation is answered by the connector, in every
+        // policy: a Windows target closes the connection when it is
+        // refused. What follows it is the policy context's decision.
+        kerberos_allowed: true,
+    };
+    let max_message_size = u32::try_from(REMOTE_GUARD_MAX_MESSAGE_SIZE).map_err(|_| {
+        ironrdp_connector::general_err!("Remote Credential Guard message limit exceeds u32")
+    })?;
+    let channel =
+        ironrdp_rdpear::AuthRedirectionClient::new(Box::new(backend), max_message_size)
+            .map_err(|e| ironrdp_connector::custom_err!("Remote Credential Guard channel", e))?;
+    drdynvc.attach_dynamic_channel(channel);
     Ok(())
 }
 
@@ -2996,7 +3180,7 @@ enum LocalCredsspState {
 /// Local mirror of `ironrdp-connector 0.10`'s `CredsspSequence` (Kerberos
 /// phase A, audit §7 / "point 7").
 ///
-/// Upstream hardcodes `CredSspMode::WithCredentials` (`credssp.rs` L161) and
+/// Upstream hardcodes the credential-carrying CredSSP mode (`credssp.rs`) and
 /// derives the sspi `ClientMode` solely from an optional KDC-proxy config,
 /// so neither Restricted Admin (credential-less TSCredentials) nor a
 /// fail-closed Kerberos-only package list is reachable through its API. This
@@ -3060,12 +3244,9 @@ impl LocalCredsspSequence {
 
         let profile = auth_mode_profile(auth_mode);
 
-        // TSCredentials: empty in Restricted Admin, the identity otherwise.
-        let credssp_mode = if profile.credential_less {
-            CredSspMode::CredentialLess
-        } else {
-            CredSspMode::WithCredentials
-        };
+        // TSCredentials: empty in Restricted Admin, a ticket and a
+        // keyless TGT in Remote Credential Guard, the identity otherwise.
+        let credssp_mode = profile.credssp_mode();
 
         let client_mode = if profile.kerberos {
             // The realm comes from the session domain, canonicalized by
@@ -4009,24 +4190,44 @@ mod tests {
             1,
             "exactly one upstream connect_begin call (cert-fetch) is expected"
         );
-        let sel_start = source
-            .find(
-                "let extra_nego_flags = if auth_mode_profile(config.auth_mode).restricted_admin {",
-            )
-            .expect("connect() must select nego flags from the auth-mode profile");
-        let sel = &source[sel_start..sel_start + 320];
-        let flag = sel
-            .find("nego::RequestFlags::RESTRICTED_ADMIN_MODE_REQUIRED")
-            .expect("the restricted-admin branch must set RESTRICTED_ADMIN_MODE_REQUIRED");
-        let empty = sel
-            .find("nego::RequestFlags::empty()")
-            .expect("every other mode must add no extra nego flag");
-        assert!(flag < empty, "flag in the `if` branch, empty in the `else`");
-        // The flag is tied to Restricted Admin alone: NTLM and plain
-        // Kerberos send none.
-        assert!(auth_mode_profile(RdpAuthMode::KerberosRestrictedAdmin).restricted_admin);
-        assert!(!auth_mode_profile(RdpAuthMode::Ntlm).restricted_admin);
-        assert!(!auth_mode_profile(RdpAuthMode::Kerberos).restricted_admin);
+        assert_eq!(
+            source
+                .matches(
+                    "let extra_nego_flags = auth_mode_profile(config.auth_mode).request_flags();"
+                )
+                .count(),
+            // The production site, plus this needle.
+            2,
+            "connect() must take its nego flags from the auth-mode profile"
+        );
+        // Each flag is tied to one mode: NTLM and plain Kerberos send
+        // none, and no mode sends both.
+        assert_eq!(
+            auth_mode_profile(RdpAuthMode::KerberosRestrictedAdmin).request_flags(),
+            nego::RequestFlags::RESTRICTED_ADMIN_MODE_REQUIRED
+        );
+        assert_eq!(
+            auth_mode_profile(RdpAuthMode::KerberosRemoteGuard).request_flags(),
+            nego::RequestFlags::REDIRECTED_AUTHENTICATION_MODE_REQUIRED
+        );
+        assert!(
+            auth_mode_profile(RdpAuthMode::Ntlm)
+                .request_flags()
+                .is_empty()
+        );
+        assert!(
+            auth_mode_profile(RdpAuthMode::Kerberos)
+                .request_flags()
+                .is_empty()
+        );
+        // Empty TSCredentials are Restricted Admin's alone.
+        for mode in RdpAuthMode::ALL {
+            assert_eq!(
+                auth_mode_profile(mode).target_credentials == TargetCredentials::Nothing,
+                mode == RdpAuthMode::KerberosRestrictedAdmin,
+                "{mode:?}"
+            );
+        }
     }
 
     /// Source pin (Kerberos phase A / point 7): the local CredSSP mirror
@@ -4041,20 +4242,31 @@ mod tests {
         let body = &source[fn_start..];
         let end = body.find("\n    fn next_pdu_hint").expect("end of init");
         let body = &body[..end];
-        // TSCredentials follow `credential_less`, nothing else.
-        let cl = body
-            .find("let credssp_mode = if profile.credential_less {")
-            .expect("credssp_mode must come from profile.credential_less");
-        let cl_block = &body[cl..cl + 200];
+        // TSCredentials follow the profile, nothing else: the sequence
+        // names no CredSSP mode itself.
         assert!(
-            cl_block
-                .find("CredSspMode::CredentialLess")
-                .expect("CredentialLess")
-                < cl_block
-                    .find("CredSspMode::WithCredentials")
-                    .expect("WithCredentials"),
-            "CredentialLess in the `if` branch, WithCredentials in the `else`"
+            body.contains("let credssp_mode = profile.credssp_mode();"),
+            "credssp_mode must come from the profile"
         );
+        assert!(
+            !body.contains("CredSspMode::"),
+            "the CredSSP sequence must not choose a CredSSP mode on its own"
+        );
+        assert_eq!(
+            auth_mode_profile(RdpAuthMode::KerberosRestrictedAdmin).credssp_mode(),
+            CredSspMode::CredentialLess
+        );
+        assert_eq!(
+            auth_mode_profile(RdpAuthMode::KerberosRemoteGuard).credssp_mode(),
+            CredSspMode::RemoteGuard
+        );
+        for mode in [RdpAuthMode::Ntlm, RdpAuthMode::Kerberos] {
+            assert_eq!(
+                auth_mode_profile(mode).credssp_mode(),
+                CredSspMode::WithCredentials,
+                "{mode:?}"
+            );
+        }
         // The package follows `kerberos`, nothing else.
         let km = body
             .find("let client_mode = if profile.kerberos {")
@@ -4086,26 +4298,63 @@ mod tests {
         for mode in RdpAuthMode::ALL {
             let profile = auth_mode_profile(mode);
             assert_eq!(profile.kerberos, mode.uses_kerberos(), "{mode:?}");
+            // The password leaves the proxy in exactly the modes the
+            // shared classification says it does.
             assert_eq!(
-                profile.credential_less,
+                profile.keeps_password_in_proxy(),
                 !mode.delegates_password(),
                 "{mode:?}"
             );
-            // Restricted Admin and credential-less go together.
-            assert_eq!(
-                profile.restricted_admin, profile.credential_less,
+            assert_eq!(profile.remote_guard(), mode.is_remote_guard(), "{mode:?}");
+            // Credentials other than a password only exist with Kerberos.
+            assert!(
+                !profile.keeps_password_in_proxy() || profile.kerberos,
                 "{mode:?}"
             );
-            // Credential-less CredSSP only exists with Kerberos here.
-            assert!(!profile.credential_less || profile.kerberos, "{mode:?}");
+            // A mode asks for a flag exactly when it requires one back,
+            // and exactly when the password stays in the proxy.
+            assert_eq!(
+                profile.request_flags().is_empty(),
+                profile.required_response_flag().is_none(),
+                "{mode:?}"
+            );
+            assert_eq!(
+                profile.request_flags().is_empty(),
+                !profile.keeps_password_in_proxy(),
+                "{mode:?}"
+            );
+            // Only `WithCredentials` puts the password in TSCredentials.
+            assert_eq!(
+                profile.credssp_mode() == CredSspMode::WithCredentials,
+                mode.delegates_password(),
+                "{mode:?}"
+            );
         }
         assert_eq!(
             auth_mode_profile(RdpAuthMode::Kerberos),
             AuthModeProfile {
-                restricted_admin: false,
-                credential_less: false,
                 kerberos: true,
+                target_credentials: TargetCredentials::Password,
             }
+        );
+        assert_eq!(
+            auth_mode_profile(RdpAuthMode::KerberosRemoteGuard),
+            AuthModeProfile {
+                kerberos: true,
+                target_credentials: TargetCredentials::RemoteGuard,
+            }
+        );
+        assert_eq!(
+            auth_mode_profile(RdpAuthMode::KerberosRemoteGuard)
+                .required_response_flag()
+                .map(|(flag, _)| flag),
+            Some(nego::ResponseFlags::REDIRECTED_AUTHENTICATION_MODE_SUPPORTED)
+        );
+        assert_eq!(
+            auth_mode_profile(RdpAuthMode::KerberosRestrictedAdmin)
+                .required_response_flag()
+                .map(|(flag, _)| flag),
+            Some(nego::ResponseFlags::RESTRICTED_ADMIN_MODE_SUPPORTED)
         );
     }
 
@@ -5563,6 +5812,7 @@ mod tests {
             preconnected_fd: None,
             auth_mode: RdpAuthMode::Ntlm,
             supervisor_relay: None,
+            remote_guard_outbound_identity: RemoteGuardOutboundIdentity::Deny,
         };
 
         assert_eq!(config.session_id, "test-session");
@@ -5590,6 +5840,7 @@ mod tests {
             preconnected_fd: None,
             auth_mode: RdpAuthMode::Ntlm,
             supervisor_relay: None,
+            remote_guard_outbound_identity: RemoteGuardOutboundIdentity::Deny,
         };
 
         assert!(config.password.is_none());
@@ -5619,6 +5870,7 @@ mod tests {
             preconnected_fd: Some(fd),
             auth_mode: RdpAuthMode::Ntlm,
             supervisor_relay: None,
+            remote_guard_outbound_identity: RemoteGuardOutboundIdentity::Deny,
         };
 
         assert!(config.preconnected_fd.is_some());

@@ -25,6 +25,7 @@ mod error;
 mod fmp4_writer;
 mod ipc;
 mod rdp_recording_writer;
+mod remote_guard;
 mod session;
 mod session_manager;
 #[cfg(test)]
@@ -42,7 +43,9 @@ use session_manager::{
 };
 use shared::access_guard::{AccessGuard, AccessGuardMetrics, AccessGuardWiring, PROTOCOL_RDP};
 use shared::ipc::{IpcChannel, recv_fd};
-use shared::messages::{ControlMessage, Message, NtlmPolicy, RdpOpenFailure, ServiceStats};
+use shared::messages::{
+    ControlMessage, Message, NtlmPolicy, RdpOpenFailure, RemoteGuardOutboundIdentity, ServiceStats,
+};
 use shared::recording_fd::{DEFAULT_BROKER_TIMEOUT, recv_fd_timed};
 use shared::sandbox as capsicum;
 use shared::session_token::proxy_gate as session_token_gate;
@@ -64,6 +67,22 @@ static NTLM_POLICY: std::sync::OnceLock<NtlmPolicy> = std::sync::OnceLock::new()
 /// be the permissive one.
 fn ntlm_policy() -> NtlmPolicy {
     NTLM_POLICY.get().copied().unwrap_or(NtlmPolicy::Deny)
+}
+
+/// Remote Credential Guard policy of this process, set once at startup
+/// from the environment the supervisor provides.
+static REMOTE_GUARD_OUTBOUND_IDENTITY: std::sync::OnceLock<RemoteGuardOutboundIdentity> =
+    std::sync::OnceLock::new();
+
+/// The policy applied to the redirected operations of a Remote Credential
+/// Guard session. Before startup has set it (which no session can
+/// precede) the answer is `Deny`: the unset state must not be the one
+/// that signs for a target.
+fn remote_guard_outbound_identity() -> RemoteGuardOutboundIdentity {
+    REMOTE_GUARD_OUTBOUND_IDENTITY
+        .get()
+        .copied()
+        .unwrap_or(RemoteGuardOutboundIdentity::Deny)
 }
 
 struct ServiceState {
@@ -333,6 +352,25 @@ async fn run_service() -> Result<ServiceExit> {
     .map_err(|e| anyhow::anyhow!(e))?;
     let _ = NTLM_POLICY.set(ntlm_policy);
 
+    // Remote Credential Guard policy, set by the supervisor from
+    // `[rdp] remote_guard_outbound_identity`. A value that is absent or
+    // not canonical stops the proxy: neither is ever read as "allow", and
+    // a proxy that was not handed its policy does not guess one.
+    let remote_guard_raw = std::env::var_os(RemoteGuardOutboundIdentity::ENV);
+    let remote_guard_policy = match &remote_guard_raw {
+        // Absent is an error too: the supervisor always sets it.
+        None => RemoteGuardOutboundIdentity::from_env_value(None),
+        Some(value) => match value.to_str() {
+            Some(text) => RemoteGuardOutboundIdentity::from_env_value(Some(text)),
+            None => Err(format!(
+                "{} is not valid UTF-8",
+                RemoteGuardOutboundIdentity::ENV
+            )),
+        },
+    }
+    .map_err(|e| anyhow::anyhow!(e))?;
+    let _ = REMOTE_GUARD_OUTBOUND_IDENTITY.set(remote_guard_policy);
+
     let recording_enabled: bool = std::env::var("VAUBAN_RECORDING_ENABLED")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -400,6 +438,7 @@ async fn run_service() -> Result<ServiceExit> {
         std::env::remove_var("VAUBAN_FD_PASSING_SOCKET");
         std::env::remove_var("VAUBAN_RDP_VIDEO_BITRATE_BPS");
         std::env::remove_var(NtlmPolicy::ENV);
+        std::env::remove_var(RemoteGuardOutboundIdentity::ENV);
         std::env::remove_var("VAUBAN_RECORDING_ENABLED");
         std::env::remove_var("VAUBAN_AUDIT_IPC_READ");
         std::env::remove_var("VAUBAN_AUDIT_IPC_WRITE");
@@ -995,6 +1034,7 @@ async fn handle_web_message(
                 preconnected_fd,
                 auth_mode: rdp_auth_mode,
                 supervisor_relay: Some(supervisor_relay),
+                remote_guard_outbound_identity: remote_guard_outbound_identity(),
             };
 
             // Spawn session creation in a separate task to avoid blocking

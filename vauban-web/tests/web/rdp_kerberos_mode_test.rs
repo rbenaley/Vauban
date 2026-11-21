@@ -1219,3 +1219,248 @@ fn test_rdp_auth_failure_wording_is_a_single_seam() {
         "handlers never bypass the assets:manage selection"
     );
 }
+
+// =============================================================================
+// Remote Credential Guard mode
+// =============================================================================
+
+/// POST the create form for an RDP asset in Remote Credential Guard mode.
+/// `hostname` defaults to a fresh FQDN; `domain` `None` leaves the field
+/// out. Returns the hostname used, the asset name and the HTTP status.
+async fn post_remote_guard_create(
+    app: &TestApp,
+    token: &str,
+    label: &str,
+    hostname: Option<&str>,
+    domain: Option<&str>,
+) -> (String, String, u16) {
+    let csrf = app.generate_csrf_token();
+    let asset_name = unique_name(label);
+    let hostname = hostname
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{}.corp.example.com", unique_name("host")));
+    let mut form: Vec<(&str, &str)> = vec![
+        ("csrf_token", csrf.as_str()),
+        ("name", &asset_name),
+        ("hostname", &hostname),
+        ("port", "3389"),
+        ("asset_type", "rdp"),
+        ("status", "online"),
+        ("ssh_username", "jdoe"),
+        ("ssh_password", "Win-Pwd-2026!"),
+        ("rdp_auth_mode", "kerberos_remote_guard"),
+    ];
+    if let Some(d) = domain {
+        form.push(("rdp_domain", d));
+    }
+    let status = app
+        .server
+        .post("/assets/manage/new")
+        .add_header(COOKIE, auth_csrf_cookie(token, &csrf))
+        .form(&form)
+        .await
+        .status_code()
+        .as_u16();
+    (hostname, asset_name, status)
+}
+
+/// The create form offers the mode, and shows next to it the bastion's
+/// outbound-identity policy: `deny`, the default of the test
+/// configuration. The form has no control that could change it.
+#[tokio::test]
+#[serial]
+async fn test_create_form_offers_remote_guard_and_shows_the_bastion_policy() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("rcg_ui")).await;
+
+    let response = app
+        .server
+        .get("/assets/manage/new")
+        .add_header(COOKIE, format!("access_token={}", admin.token))
+        .await;
+    assert_status(&response, 200);
+    let body = response.text();
+
+    assert!(
+        body.contains("value=\"kerberos_remote_guard\""),
+        "the Remote Credential Guard mode must be offered"
+    );
+    assert!(body.contains("data-remote-guard-notice"));
+    assert!(
+        body.contains("data-remote-guard-policy=\"deny\""),
+        "the default policy is shown"
+    );
+    assert!(
+        !body.contains("data-remote-guard-policy=\"allow\""),
+        "only the policy in force is shown"
+    );
+    assert!(
+        !body.contains("name=\"remote_guard_outbound_identity"),
+        "the policy is bastion-wide: the form must not carry a control for it"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Remote Credential Guard + FQDN + DNS domain: the mode is persisted
+/// verbatim, with the canonical realm.
+#[tokio::test]
+#[serial]
+async fn test_create_rdp_remote_guard_with_fqdn_and_dns_domain_persists_mode() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("rcg_ok")).await;
+
+    let (hostname, _name, status) = post_remote_guard_create(
+        app,
+        &admin.token,
+        "rcg-asset-ok",
+        None,
+        Some("corp.example.com"),
+    )
+    .await;
+    assert!(
+        status == 302 || status == 303,
+        "Remote Credential Guard + FQDN + DNS domain must succeed, got {status}"
+    );
+    let asset = read_asset_by_hostname(&mut conn, &hostname)
+        .await
+        .expect("the asset must be persisted");
+    assert_eq!(
+        stored_auth_mode(&asset),
+        Some("kerberos_remote_guard"),
+        "got config: {}",
+        asset.connection_config
+    );
+    assert!(
+        stored_domain(&asset).is_some(),
+        "a Kerberos mode stores its realm"
+    );
+    // The bastion-wide policy is not a property of the asset.
+    assert!(
+        asset
+            .connection_config
+            .get("remote_guard_outbound_identity")
+            .is_none(),
+        "the policy must not be stored on the asset: {}",
+        asset.connection_config
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// The mode is a Kerberos mode: without the DNS name of the domain there
+/// is no realm, and NO row is persisted.
+#[tokio::test]
+#[serial]
+async fn attack_remote_guard_mode_without_dns_domain_is_rejected() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("rcg_nodom")).await;
+
+    for domain in [
+        None,
+        Some(""),
+        Some("   "),
+        Some("CORP"),
+        Some("corp.example.com@evil.test"),
+        Some("corp.example.com/admin"),
+    ] {
+        let (hostname, _name, status) =
+            post_remote_guard_create(app, &admin.token, "rcg-nodom", None, domain).await;
+        assert!(
+            status == 302 || status == 303,
+            "refusal is a flash-redirect, got {status} for {domain:?}"
+        );
+        assert!(
+            read_asset_by_hostname(&mut conn, &hostname).await.is_none(),
+            "domain {domain:?} must NOT yield a Remote Credential Guard asset"
+        );
+    }
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// The mode needs the service principals of a named host: an IP-literal
+/// hostname is refused, and NO row is persisted.
+#[tokio::test]
+#[serial]
+async fn attack_remote_guard_mode_with_ip_hostname_is_rejected() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+    let admin = create_admin_user(&mut conn, &app.auth_service, &unique_name("rcg_ip")).await;
+
+    let (_hostname, asset_name, status) = post_remote_guard_create(
+        app,
+        &admin.token,
+        "rcg-ip",
+        Some("192.0.2.10"),
+        Some("corp.example.com"),
+    )
+    .await;
+    assert!(
+        status == 302 || status == 303,
+        "refusal is a flash-redirect, got {status}"
+    );
+    let count: i64 = unwrap_ok!(
+        assets::table
+            .filter(assets::name.eq(&asset_name))
+            .count()
+            .get_result(&mut conn)
+            .await
+    );
+    assert_eq!(
+        count, 0,
+        "Remote Credential Guard + IP-literal hostname must NOT persist any asset row"
+    );
+
+    test_db::cleanup(&mut conn).await;
+}
+
+/// Source pin: neither form has a control for the bastion-wide policy,
+/// both show it from the template context, and the context is filled
+/// from the configuration at the two render sites.
+#[test]
+fn test_remote_guard_policy_is_shown_not_edited() {
+    for (name, template) in [
+        (
+            "asset_create.html",
+            include_str!("../../templates/assets/asset_create.html"),
+        ),
+        (
+            "asset_edit.html",
+            include_str!("../../templates/assets/asset_edit.html"),
+        ),
+    ] {
+        assert!(
+            template.contains("<option value=\"kerberos_remote_guard\">"),
+            "{name} must offer the mode"
+        );
+        assert!(
+            !template.contains("name=\"remote_guard_outbound_identity"),
+            "{name} must not carry a control for the policy"
+        );
+        assert_eq!(
+            template
+                .matches("{% if remote_guard_outbound_identity_allowed %}")
+                .count(),
+            1,
+            "{name} shows the policy in force, once"
+        );
+        assert!(template.contains("data-remote-guard-policy=\"allow\""));
+        assert!(template.contains("data-remote-guard-policy=\"deny\""));
+    }
+    let handlers = include_str!("../../src/handlers/web/manage_assets.rs");
+    assert_eq!(
+        handlers
+            .matches(".remote_guard_outbound_identity\n            .grants_outbound_identity(),")
+            .count(),
+        2,
+        "the create and edit forms read the policy from the configuration"
+    );
+    // The web tier shows the policy. It decides nothing with it: the
+    // session-open handler does not read it.
+    let connect = include_str!("../../src/handlers/web/rdp.rs");
+    assert!(!connect.contains("remote_guard_outbound_identity"));
+}

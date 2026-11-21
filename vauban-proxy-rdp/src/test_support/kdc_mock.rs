@@ -155,6 +155,12 @@ pub(crate) struct KdcMock {
 }
 
 impl KdcMock {
+    /// Vauban addition: remove a service from the database, so that a
+    /// request for it is answered `KDC_ERR_S_PRINCIPAL_UNKNOWN`.
+    pub(crate) fn forget_service(&mut self, service: &PrincipalName) {
+        self.keys.remove(&UserName(service.clone()));
+    }
+
     /// Returns empty [KdcMock].
     ///
     /// Methods of the returned [KdcMock] should never be called. It can only be used for mocking in tests
@@ -642,7 +648,7 @@ impl KdcMock {
             from: _,
             till: _,
             rtime: _,
-            nonce: _,
+            nonce: request_nonce,
             etype: _,
             addresses: _,
             enc_authorization_data: _,
@@ -721,7 +727,10 @@ impl KdcMock {
             .lock()
             .unwrap()
             .push(session_key.clone());
-        let nonce = rng.next_u32();
+        // Vauban change: the reply echoes the nonce of the request (RFC 4120
+        // 5.4.2), as a KDC does. Upstream drew a fresh one, which the
+        // Remote Credential Guard logon of `sspi` refuses.
+        let nonce = request_nonce.0;
 
         let auth_time = OffsetDateTime::now_utc();
         let end_time = auth_time + Duration::days(1);
@@ -739,7 +748,7 @@ impl KdcMock {
                     auth_time - Duration::hours(1),
                 ))),
             }])),
-            nonce: ExplicitContextTag2::from(IntegerAsn1::from(nonce.to_be_bytes().to_vec())),
+            nonce: ExplicitContextTag2::from(nonce),
             key_expiration: Optional::from(None),
             flags: ExplicitContextTag4::from(kdc_options.0.clone()),
             auth_time: ExplicitContextTag5::from(KerberosTime::from(GeneralizedTime::from(

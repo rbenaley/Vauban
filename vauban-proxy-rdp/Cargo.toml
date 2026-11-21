@@ -51,6 +51,15 @@ ironrdp-pdu = "0.11"
 ironrdp-core = "0.3"
 ironrdp-async = "0.12"
 ironrdp-tokio = "0.12"
+ironrdp-svc = "0.10"
+# Remote Credential Guard channel. Not on crates.io: taken from the fork
+# directly, on the rev of the workspace `[patch.crates-io]` entries
+# (check_patch_pins.sh keeps the two equal).
+ironrdp-rdpear = { git = "https://github.com/rbenaley/IronRDP-vb", rev = "6083bc3d2dc693e8cc4db586913fd8112ece1d90" }
+# Service names of the redirected Kerberos operations, for the log
+# (`remote_guard.rs`). Already in the tree through `sspi`.
+picky-krb = "0.13"
+picky-asn1-der = "0.5"
 
 # TLS for RDP connection upgrade
 tokio-rustls = "0.26"
@@ -89,8 +98,6 @@ url = "2"
 # ported from the test suite of `sspi`, driving the production CredSSP
 # sequence against `sspi`'s own CredSSP server. All four are already in
 # the tree through `sspi`, at these versions.
-picky-krb = "0.13"
 picky-asn1 = { version = "0.10", features = ["time_conversion"] }
-picky-asn1-der = "0.5"
 time = "0.3"
 rand = "0.8"

@@ -100,6 +100,11 @@ pub async fn asset_create_form(
         csrf_token,
         asset_types: AssetType::select_options(state.config.industrial.enabled),
         ntlm_denied: state.config.rdp.ntlm_policy == shared::messages::NtlmPolicy::Deny,
+        remote_guard_outbound_identity_allowed: state
+            .config
+            .rdp
+            .remote_guard_outbound_identity
+            .grants_outbound_identity(),
     };
 
     let html = template
@@ -151,8 +156,8 @@ pub struct CreateAssetWebForm {
     /// `vauban-proxy-rdp` (see `SessionConfig.domain`). Ignored for
     /// non-RDP `asset_type` values to keep the JSONB blob protocol-clean.
     pub rdp_domain: Option<String>,
-    /// RDP NLA auth mode: `ntlm` (default) or
-    /// `kerberos_restricted_admin`. Stored as
+    /// RDP NLA auth mode: `ntlm` (default), `kerberos`,
+    /// `kerberos_restricted_admin` or `kerberos_remote_guard`. Stored as
     /// `connection_config.rdp_auth_mode`. Ignored for non-RDP assets.
     pub rdp_auth_mode: Option<String>,
     /// MCP upstream SPKI pin (`SHA256:<base64>`), stored as
@@ -1429,6 +1434,11 @@ pub async fn asset_edit(
         asset,
         iacs_asset_types: AssetType::iacs_select_options(),
         ntlm_denied: state.config.rdp.ntlm_policy == shared::messages::NtlmPolicy::Deny,
+        remote_guard_outbound_identity_allowed: state
+            .config
+            .rdp
+            .remote_guard_outbound_identity
+            .grants_outbound_identity(),
     };
 
     match template.render() {
@@ -1463,7 +1473,7 @@ pub struct UpdateAssetForm {
     pub rdp_domain: Option<String>,
     pub mcp_transport: Option<String>,
     /// RDP NLA auth mode: `ntlm` | `kerberos_restricted_admin` | `kerberos`
-    /// (see `CreateAssetWebForm::rdp_auth_mode`).
+    /// | `kerberos_remote_guard` (see `CreateAssetWebForm::rdp_auth_mode`).
     pub rdp_auth_mode: Option<String>,
     /// Present on IACS asset edits; selects the industrial protocol.
     pub asset_type: Option<String>,

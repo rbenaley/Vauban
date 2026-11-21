@@ -339,21 +339,25 @@ pub fn classify(mode: RdpAuthMode, failure: &NlaFailure, trace: &KdcTrace) -> Rd
         )
         || failure.sspi_kind == Some(ErrorKind::LogonDenied);
     if logon_refused {
-        return if profile.restricted_admin {
-            RdpAuthFailure::RestrictedAdminRefused
-        } else {
-            RdpAuthFailure::CredentialsRejected
+        return match profile.target_credentials {
+            crate::session::TargetCredentials::Nothing => RdpAuthFailure::RestrictedAdminRefused,
+            crate::session::TargetCredentials::RemoteGuard => RdpAuthFailure::RemoteGuardRefused,
+            crate::session::TargetCredentials::Password => RdpAuthFailure::CredentialsRejected,
         };
     }
 
     // The KDC issued the service ticket and the client then refused
     // what the target sent back: the account, the realm and the SPN are
     // proven good, so this is not a target that cannot do Kerberos.
+    //
+    // `OutOfSequence` is the same refusal in Remote Credential Guard:
+    // that mode asks for sequence detection, and `sspi` then checks the
+    // sequence number of the target's `mechListMIC` before its checksum.
     if profile.kerberos
         && trace.tickets_were_issued()
         && matches!(
             failure.sspi_kind,
-            Some(ErrorKind::InvalidToken | ErrorKind::MessageAltered)
+            Some(ErrorKind::InvalidToken | ErrorKind::MessageAltered | ErrorKind::OutOfSequence)
         )
     {
         return RdpAuthFailure::TargetTokenRejected;

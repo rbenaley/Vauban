@@ -18,6 +18,16 @@ use crate::test_support::{
 };
 use shared::kerberos::KdcLeaseRefusal;
 
+/// NLA settings of a test session in `mode`, with the `deny` default
+/// for the mode that reads the Remote Credential Guard policy.
+fn test_nla_settings(mode: RdpAuthMode) -> NlaSettings {
+    NlaSettings {
+        auth_mode: mode,
+        remote_guard_outbound_identity: RemoteGuardOutboundIdentity::Deny,
+        session_id: "sess".to_string(),
+    }
+}
+
 impl KdcTransport for MockKdcTransport {
     fn kdc_round_trip<'a>(
         &'a self,
@@ -73,6 +83,7 @@ struct Outcome {
     /// The password left in the connector configuration after CredSSP:
     /// what IronRDP then sends to the target in the Client Info PDU.
     client_info_password: String,
+    remote_guard_channel_attached: bool,
 }
 
 async fn open(attempt: Attempt) -> Outcome {
@@ -93,6 +104,7 @@ async fn open(attempt: Attempt) -> Outcome {
         trace,
         target,
         client_info_password,
+        remote_guard_channel_attached,
     } = open_with(mode, relay, target, host, username, password).await;
     let realms_asked = transport.realms_asked.lock().unwrap().clone();
     Outcome {
@@ -102,6 +114,7 @@ async fn open(attempt: Attempt) -> Outcome {
         target,
         realms_asked,
         client_info_password,
+        remote_guard_channel_attached,
     }
 }
 
@@ -113,6 +126,9 @@ pub(super) struct Opened {
     pub trace: KdcTrace,
     pub target: TargetReport,
     pub client_info_password: String,
+    /// The authentication redirection channel is registered on the
+    /// dynamic channel carrier of the connector.
+    pub remote_guard_channel_attached: bool,
 }
 
 pub(super) async fn open_with(
@@ -150,6 +166,13 @@ pub(super) async fn open_with(
         768,
     );
     let mut connector = ClientConnector::new(config, "127.0.0.1:3389".parse().unwrap());
+    // As `connect()` does: in Remote Credential Guard mode the dynamic
+    // channel carrier is registered, bounded, before the handshake.
+    if auth_mode_profile(mode).remote_guard() {
+        connector = connector.with_static_channel(
+            DrdynvcClient::new().with_max_transport_message_size(REMOTE_GUARD_MAX_MESSAGE_SIZE),
+        );
+    }
     connector.state = ClientConnectorState::Credssp {
         selected_protocol: nego::SecurityProtocol::HYBRID,
     };
@@ -165,7 +188,7 @@ pub(super) async fn open_with(
             &mut buf,
             ironrdp_connector::ServerName::new(host),
             server_public_key(),
-            mode,
+            &test_nla_settings(mode),
         ),
     )
     .await
@@ -184,12 +207,16 @@ pub(super) async fn open_with(
         Credentials::UsernamePassword { password, .. } => password.clone(),
         Credentials::SmartCard { .. } => panic!("the proxy only uses password credentials"),
     };
+    let remote_guard_channel_attached = connector
+        .get_static_channel_processor::<DrdynvcClient>()
+        .is_some_and(|carrier| carrier.has_channel_name(ironrdp_rdpear::CHANNEL_NAME));
     Opened {
         result,
         reason,
         trace: network_client.kdc_trace(),
         target,
         client_info_password,
+        remote_guard_channel_attached,
     }
 }
 
@@ -334,7 +361,7 @@ async fn test_restricted_admin_mode_completes_against_a_windows_style_mic() {
 /// and the refusal is not blamed on the domain.
 #[tokio::test]
 async fn attack_windows_style_mic_with_a_forged_checksum_is_rejected() {
-    for mode in [RdpAuthMode::Kerberos, RdpAuthMode::KerberosRestrictedAdmin] {
+    for mode in KERBEROS_MODES {
         let outcome = open(windows_style(mode, MicStyle::WindowsForged)).await;
 
         assert!(outcome.target.mic_replaced, "{mode:?}: no MIC was replaced");
@@ -395,7 +422,7 @@ async fn test_ntlm_mode_completes_without_any_kdc_exchange() {
 /// never emits an NTLM token, whichever way the target offers NTLM.
 #[tokio::test]
 async fn attack_ntlm_downgrade_by_the_target_is_rejected() {
-    for mode in [RdpAuthMode::Kerberos, RdpAuthMode::KerberosRestrictedAdmin] {
+    for mode in KERBEROS_MODES {
         for target in [TargetPackages::NtlmOnly, TargetPackages::RawNtlm] {
             let outcome = open(Attempt {
                 target,
@@ -429,7 +456,7 @@ async fn attack_ntlm_downgrade_by_the_target_is_rejected() {
 /// Run a failing attempt in both Kerberos modes and check the reason, that
 /// the target never authenticated anyone, and that no NTLM token left.
 async fn assert_fails_with(make: impl Fn(RdpAuthMode) -> Attempt, expected: RdpAuthFailure) {
-    for mode in [RdpAuthMode::Kerberos, RdpAuthMode::KerberosRestrictedAdmin] {
+    for mode in KERBEROS_MODES {
         let outcome = open(make(mode)).await;
         assert!(outcome.result.is_err(), "{mode:?} must fail");
         assert_eq!(
@@ -484,7 +511,7 @@ async fn test_unregistered_spn_is_service_principal_unknown() {
 /// negotiation, not as an unknown SPN.
 #[tokio::test]
 async fn test_hostname_the_target_does_not_answer_to_is_refused_by_the_target() {
-    for mode in [RdpAuthMode::Kerberos, RdpAuthMode::KerberosRestrictedAdmin] {
+    for mode in KERBEROS_MODES {
         let outcome = open(Attempt {
             host: "alias.corp.example.com",
             ..Attempt::healthy(mode)
@@ -648,7 +675,7 @@ async fn attack_no_failure_path_reaches_ntlm_or_another_realm() {
         }),
     ];
     for make in &attempts {
-        for mode in [RdpAuthMode::Kerberos, RdpAuthMode::KerberosRestrictedAdmin] {
+        for mode in KERBEROS_MODES {
             let outcome = open(make(mode)).await;
             assert!(outcome.result.is_err());
             assert!(!contains(&outcome.target.client_bytes, NTLMSSP_SIGNATURE));
@@ -685,11 +712,7 @@ async fn negotiate(mode: RdpAuthMode, confirm: nego::ConnectionConfirm) -> Sessi
     );
     let mut connector = ClientConnector::new(config, "127.0.0.1:3389".parse().unwrap());
     let mut framed = ironrdp_tokio::TokioFramed::new(client_io);
-    let extra_flags = if auth_mode_profile(mode).restricted_admin {
-        nego::RequestFlags::RESTRICTED_ADMIN_MODE_REQUIRED
-    } else {
-        nego::RequestFlags::empty()
-    };
+    let extra_flags = auth_mode_profile(mode).request_flags();
 
     let begun = tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -714,8 +737,11 @@ fn response(
     nego::ConnectionConfirm::Response { flags, protocol }
 }
 
-const KERBEROS_MODES: [RdpAuthMode; 2] =
-    [RdpAuthMode::Kerberos, RdpAuthMode::KerberosRestrictedAdmin];
+const KERBEROS_MODES: [RdpAuthMode; 3] = [
+    RdpAuthMode::Kerberos,
+    RdpAuthMode::KerberosRestrictedAdmin,
+    RdpAuthMode::KerberosRemoteGuard,
+];
 
 /// A target (or anyone on the path: the negotiation is cleartext) that
 /// answers "TLS only". IronRDP would accept it and skip CredSSP; a
@@ -775,6 +801,50 @@ async fn attack_restricted_admin_without_target_support_is_rejected() {
         )
         .await
         .expect("Restricted Admin with NLA and the support flag");
+    }
+}
+
+/// Remote Credential Guard needs the target's agreement too: NLA
+/// selected but no `REDIRECTED_AUTHENTICATION_MODE_SUPPORTED` flag is
+/// refused, before any credential or ticket goes to the target. The flag
+/// of the other mode does not stand in for it, in either direction.
+#[tokio::test]
+async fn attack_remote_guard_without_target_support_is_rejected() {
+    for protocol in [
+        nego::SecurityProtocol::HYBRID,
+        nego::SecurityProtocol::HYBRID_EX,
+    ] {
+        for flags in [
+            nego::ResponseFlags::empty(),
+            nego::ResponseFlags::RESTRICTED_ADMIN_MODE_SUPPORTED,
+        ] {
+            let refused = negotiate(RdpAuthMode::KerberosRemoteGuard, response(protocol, flags))
+                .await
+                .expect_err("no Remote Credential Guard support, no session");
+            assert_eq!(
+                refused.auth_failure(),
+                Some(RdpAuthFailure::NegotiationRefused),
+                "{flags:?}"
+            );
+        }
+        negotiate(
+            RdpAuthMode::KerberosRestrictedAdmin,
+            response(
+                protocol,
+                nego::ResponseFlags::REDIRECTED_AUTHENTICATION_MODE_SUPPORTED,
+            ),
+        )
+        .await
+        .expect_err("the Remote Credential Guard flag is not Restricted Admin support");
+        for flags in [
+            nego::ResponseFlags::REDIRECTED_AUTHENTICATION_MODE_SUPPORTED,
+            nego::ResponseFlags::REDIRECTED_AUTHENTICATION_MODE_SUPPORTED
+                | nego::ResponseFlags::RESTRICTED_ADMIN_MODE_SUPPORTED,
+        ] {
+            negotiate(RdpAuthMode::KerberosRemoteGuard, response(protocol, flags))
+                .await
+                .expect("Remote Credential Guard with NLA and the support flag");
+        }
     }
 }
 
@@ -846,11 +916,18 @@ fn test_check_negotiation_table() {
     let nla = nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX;
     for bits in 0u32..16 {
         let selected = nego::SecurityProtocol::from_bits_retain(bits);
-        for flag_bits in [0u8, 0x08, 0x01, 0x09] {
+        for flag_bits in [0u8, 0x08, 0x01, 0x09, 0x10, 0x18, 0x19, 0x11] {
             let flags = nego::ResponseFlags::from_bits_retain(flag_bits);
             let outcome = Some(NegotiationOutcome { selected, flags });
             let has_nla = selected.intersects(nla);
             let ra_ok = flags.contains(nego::ResponseFlags::RESTRICTED_ADMIN_MODE_SUPPORTED);
+            let rcg_ok =
+                flags.contains(nego::ResponseFlags::REDIRECTED_AUTHENTICATION_MODE_SUPPORTED);
+            assert_eq!(
+                check_negotiation(RdpAuthMode::KerberosRemoteGuard, outcome).is_ok(),
+                has_nla && rcg_ok,
+                "{selected:?} {flags:?}"
+            );
             for mode in [RdpAuthMode::Ntlm, RdpAuthMode::Kerberos] {
                 assert_eq!(
                     check_negotiation(mode, outcome).is_ok(),
@@ -907,7 +984,7 @@ async fn attack_handshake_without_credssp_is_rejected() {
             &mut network_client,
             ironrdp_connector::ServerName::new(TARGET_HOST),
             server_public_key(),
-            mode,
+            &test_nla_settings(mode),
         )
         .await;
         assert!(
@@ -975,4 +1052,159 @@ fn attack_kerberos_session_without_realm_or_isolation_is_rejected() {
             );
         }
     }
+}
+
+// ---- Remote Credential Guard ---------------------------------------------
+
+/// `kerberos_remote_guard`: the client leg completes, the password stays
+/// in the proxy, and the authentication redirection channel is installed.
+///
+/// The in-process target is `sspi`'s CredSSP server, which authenticates
+/// the client but cannot read `TSRemoteGuardCreds`: it refuses the last
+/// message, after the client has finished. What the test asserts is the
+/// client side and everything the client put on the wire. A Windows
+/// target accepting the logon is the smoke runbook's part.
+#[tokio::test]
+async fn test_remote_guard_mode_completes_without_delegating_the_password() {
+    let outcome = open(Attempt::healthy(RdpAuthMode::KerberosRemoteGuard)).await;
+    outcome
+        .result
+        .as_ref()
+        .expect("the Remote Credential Guard leg must complete");
+    assert!(
+        outcome.remote_guard_channel_attached,
+        "the redirection channel is installed once the logon is accepted"
+    );
+    // AS, then the three tickets of the logon: the terminal service, the
+    // computer account (`HOST/<target>`), and the forwarded TGT.
+    assert!(
+        outcome.realms_asked.len() >= 4,
+        "AS and three TGS exchanges: {:?}",
+        outcome.realms_asked
+    );
+    assert!(outcome.realms_asked.iter().all(|r| r == REALM));
+    assert_eq!(outcome.trace.last_krb_error, None);
+    assert!(!outcome.trace.relay_failed);
+    // The password is nowhere in what the client sent, in either of the
+    // encodings a TSCredentials would use, and no NTLM message was sent.
+    let utf16: Vec<u8> = PASSWORD.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    assert!(!contains(&outcome.target.client_bytes, PASSWORD.as_bytes()));
+    assert!(!contains(&outcome.target.client_bytes, &utf16));
+    assert!(!contains(&outcome.target.client_bytes, NTLMSSP_SIGNATURE));
+    // And it is gone from the configuration IronRDP builds the Client
+    // Info PDU from, which is sent to the target AFTER CredSSP.
+    assert_eq!(
+        outcome.client_info_password, "",
+        "Remote Credential Guard must not send the password in the Client Info PDU"
+    );
+    // The target got as far as the credentials: it authenticated the
+    // client, then met a TSCredentials type it does not implement.
+    assert!(
+        matches!(outcome.target.outcome, TargetOutcome::Refused(_)),
+        "the test target does not read TSRemoteGuardCreds: {:?}",
+        outcome.target.outcome
+    );
+}
+
+/// No other mode installs the channel: a target cannot ask the proxy for
+/// Kerberos operations in a session that was not opened for it.
+#[tokio::test]
+async fn attack_redirection_channel_outside_remote_guard_is_never_installed() {
+    for mode in [
+        RdpAuthMode::Ntlm,
+        RdpAuthMode::Kerberos,
+        RdpAuthMode::KerberosRestrictedAdmin,
+    ] {
+        let outcome = open(Attempt::healthy(mode)).await;
+        outcome.result.as_ref().expect("the leg completes");
+        assert!(!outcome.remote_guard_channel_attached, "{mode:?}");
+    }
+}
+
+/// A logon the KDC refuses installs no channel: the session that would
+/// answer it never exists.
+#[tokio::test]
+async fn attack_redirection_channel_after_a_failed_logon_is_never_installed() {
+    let outcome = open(Attempt {
+        password: "wrong-password",
+        ..Attempt::healthy(RdpAuthMode::KerberosRemoteGuard)
+    })
+    .await;
+    assert!(outcome.result.is_err());
+    assert_eq!(outcome.reason, Some(RdpAuthFailure::PreAuthFailed));
+    assert!(!outcome.remote_guard_channel_attached);
+    // The password is still removed from the Client Info PDU source.
+    assert_eq!(outcome.client_info_password, "");
+}
+
+/// The computer account of the target is not registered under `HOST`:
+/// the logon cannot carry its ticket. Classified like any missing
+/// service principal.
+#[tokio::test]
+async fn test_remote_guard_without_the_host_principal_is_service_principal_unknown() {
+    let outcome = open(Attempt {
+        kdc: crate::test_support::kdc_without_host_spn(),
+        ..Attempt::healthy(RdpAuthMode::KerberosRemoteGuard)
+    })
+    .await;
+    assert!(outcome.result.is_err());
+    assert_eq!(
+        outcome.reason,
+        Some(RdpAuthFailure::ServicePrincipalUnknown)
+    );
+    assert!(!outcome.remote_guard_channel_attached);
+    assert!(!contains(&outcome.target.client_bytes, NTLMSSP_SIGNATURE));
+}
+
+/// A target that refuses the Remote Credential Guard logon is reported
+/// as such, not as a wrong password: the stored credential is not the
+/// thing to fix.
+#[test]
+fn test_remote_guard_logon_refusal_has_its_own_reason() {
+    let refused = crate::auth_failure::NlaFailure {
+        access_denied: true,
+        ..Default::default()
+    };
+    let trace = KdcTrace::default();
+    assert_eq!(
+        crate::auth_failure::classify(RdpAuthMode::KerberosRemoteGuard, &refused, &trace),
+        RdpAuthFailure::RemoteGuardRefused
+    );
+    assert_eq!(
+        crate::auth_failure::classify(RdpAuthMode::KerberosRestrictedAdmin, &refused, &trace),
+        RdpAuthFailure::RestrictedAdminRefused
+    );
+    for mode in [RdpAuthMode::Ntlm, RdpAuthMode::Kerberos] {
+        assert_eq!(
+            crate::auth_failure::classify(mode, &refused, &trace),
+            RdpAuthFailure::CredentialsRejected,
+            "{mode:?}"
+        );
+    }
+}
+
+/// Remote Credential Guard asks the target for sequence detection, and
+/// `sspi` then enforces the sequence number of the target's
+/// `mechListMIC`: a MIC numbered 0 is refused even with a correct
+/// checksum. The other two Kerberos modes accept that MIC (it is what a
+/// Windows acceptor sends them, see the tests above); this mode is the
+/// stricter one, and the refusal is classified, not "other".
+///
+/// A Windows target does open Remote Credential Guard sessions with
+/// this `sspi` (checked against a domain-joined Windows target on
+/// 2026-11-21, with the IronRDP client): asked for sequence detection,
+/// it numbers its MIC. The proxy's own CredSSP sequence against a
+/// Windows target is the smoke runbook's part.
+#[tokio::test]
+async fn test_remote_guard_enforces_the_mic_sequence_number() {
+    let outcome = open(windows_style(
+        RdpAuthMode::KerberosRemoteGuard,
+        MicStyle::Windows,
+    ))
+    .await;
+    assert!(outcome.target.mic_replaced);
+    assert!(outcome.result.is_err(), "a MIC numbered 0 was accepted");
+    assert_eq!(outcome.reason, Some(RdpAuthFailure::TargetTokenRejected));
+    assert!(!outcome.remote_guard_channel_attached);
+    assert_eq!(outcome.client_info_password, "");
 }

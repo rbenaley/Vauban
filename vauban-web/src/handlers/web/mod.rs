@@ -833,8 +833,8 @@ pub(crate) fn build_connection_config(
                     serde_json::Value::String(d.trim().to_string()),
                 );
             }
-            // NLA auth mode: normalise to the closed
-            // {ntlm, kerberos_restricted_admin} set (default ntlm) so a
+            // NLA auth mode: normalise to the closed set of
+            // `RdpAuthMode` (default ntlm) so a
             // tampered request cannot persist an arbitrary string.
             config.insert(
                 "rdp_auth_mode".to_string(),

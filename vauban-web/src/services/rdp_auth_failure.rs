@@ -74,10 +74,13 @@ pub const fn operator_message(reason: RdpAuthFailure) -> &'static str {
             "Kerberos is not enabled on this bastion. Set enabled = true and at least one realm under [auth.kerberos] in the supervisor configuration."
         }
         RdpAuthFailure::NegotiationRefused => {
-            "The target did not negotiate Network Level Authentication: it refused the security negotiation, selected TLS-only security, or does not support Restricted Admin. No credential was sent. The bastion requires NLA in every mode: enable it on the target. If it is already enabled, the negotiation may have been altered on the network path."
+            "The target did not negotiate Network Level Authentication: it refused the security negotiation, selected TLS-only security, or does not support the mode of the asset (Restricted Admin or Remote Credential Guard). No credential was sent. The bastion requires NLA in every mode: enable it on the target. If it is already enabled, the negotiation may have been altered on the network path."
         }
         RdpAuthFailure::CredentialsRejected => {
             "The target refused the credentials. Check the username, password and domain stored on the asset, and that the account may log on through Remote Desktop."
+        }
+        RdpAuthFailure::RemoteGuardRefused => {
+            "The target refused the Remote Credential Guard logon. Check that the account may log on through Remote Desktop, that the target accepts Remote Credential Guard (DisableRestrictedAdmin is 0 under HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa), and that the asset hostname is the FQDN of the target's computer account (setspn -Q HOST/<fqdn>). The stored password is not the cause: the KDC accepted it."
         }
         RdpAuthFailure::TargetTokenRejected => {
             "Kerberos: the KDC issued the tickets, then the bastion refused the answer of the target. The account, the realm and the service principal are not the cause. See the cause after \"caused by\" in the vauban-proxy-rdp log for this session; if the target is a supported Windows version, report it."

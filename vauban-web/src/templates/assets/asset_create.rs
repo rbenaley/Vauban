@@ -28,7 +28,7 @@ pub struct AssetCreateForm {
     pub ssh_key_source: Option<String>,
     /// Optional Windows AD domain shown only for RDP assets.
     pub rdp_domain: Option<String>,
-    /// RDP NLA auth mode (`ntlm` | `kerberos_restricted_admin` | `kerberos`), shown only
+    /// RDP NLA auth mode (`ntlm` | `kerberos_restricted_admin` | `kerberos` | `kerberos_remote_guard`), shown only
     /// for RDP assets.
     pub rdp_auth_mode: Option<String>,
 }
@@ -49,6 +49,10 @@ pub struct AssetCreateTemplate {
     pub asset_types: Vec<(String, String)>,
     /// `[rdp] ntlm_policy = "deny"`: the NTLM option is disabled.
     pub ntlm_denied: bool,
+    /// `[rdp] remote_guard_outbound_identity = "allow"`: shown, read-only,
+    /// next to the Remote Credential Guard mode. The forms cannot change
+    /// it: it is a bastion-wide setting the RDP proxy applies.
+    pub remote_guard_outbound_identity_allowed: bool,
 }
 
 #[cfg(test)]
@@ -108,6 +112,7 @@ mod tests {
                 ("rdp".to_string(), "RDP".to_string()),
             ],
             ntlm_denied: false,
+            remote_guard_outbound_identity_allowed: false,
         };
         assert_eq!(template.title, "New Asset");
     }
@@ -134,6 +139,7 @@ mod tests {
             csrf_token: "test".to_string(),
             asset_types: vec![],
             ntlm_denied: false,
+            remote_guard_outbound_identity_allowed: false,
         };
 
         assert!(template.user.is_some());
@@ -163,6 +169,7 @@ mod tests {
                 ("rdp".to_string(), "RDP".to_string()),
             ],
             ntlm_denied: false,
+            remote_guard_outbound_identity_allowed: false,
         };
 
         let result = template.render();
@@ -195,6 +202,7 @@ mod tests {
                 ("rdp".to_string(), "RDP".to_string()),
             ],
             ntlm_denied: false,
+            remote_guard_outbound_identity_allowed: false,
         };
 
         let html = template.render().expect("render should succeed");
@@ -232,6 +240,7 @@ mod tests {
                 ("rdp".to_string(), "RDP".to_string()),
             ],
             ntlm_denied: false,
+            remote_guard_outbound_identity_allowed: false,
         };
 
         let html = template.render().expect("render should succeed");

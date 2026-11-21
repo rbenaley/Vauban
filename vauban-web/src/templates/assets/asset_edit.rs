@@ -178,7 +178,7 @@ pub struct AssetEdit {
     pub rdp_server_cert_fingerprint: Option<String>,
     /// Windows AD domain extracted from connection_config (RDP only).
     pub rdp_domain: String,
-    /// NLA auth mode (`ntlm` | `kerberos_restricted_admin` | `kerberos`) extracted from
+    /// NLA auth mode (`ntlm` | `kerberos_restricted_admin` | `kerberos` | `kerberos_remote_guard`) extracted from
     /// connection_config (RDP only), normalised to the closed set.
     pub rdp_auth_mode: String,
     /// MCP upstream SPKI pin (`mcp_upstream_tls_spki`, MCP only).
@@ -210,6 +210,10 @@ pub struct AssetEditTemplate {
     pub iacs_asset_types: Vec<(String, String)>,
     /// `[rdp] ntlm_policy = "deny"`: the NTLM option is disabled.
     pub ntlm_denied: bool,
+    /// `[rdp] remote_guard_outbound_identity = "allow"`: shown, read-only,
+    /// next to the Remote Credential Guard mode. The forms cannot change
+    /// it: it is a bastion-wide setting the RDP proxy applies.
+    pub remote_guard_outbound_identity_allowed: bool,
 }
 
 #[cfg(test)]
@@ -302,6 +306,7 @@ mod tests {
             asset: create_test_asset_edit(),
             iacs_asset_types: AssetType::iacs_select_options(),
             ntlm_denied: false,
+            remote_guard_outbound_identity_allowed: false,
         };
         assert_eq!(template.title, "Edit Asset");
         assert_eq!(template.asset.name, "Production Server");
@@ -324,6 +329,7 @@ mod tests {
             asset,
             iacs_asset_types: AssetType::iacs_select_options(),
             ntlm_denied: false,
+            remote_guard_outbound_identity_allowed: false,
         }
         .render()
         .unwrap();
@@ -355,6 +361,7 @@ mod tests {
             asset: create_test_asset_edit(),
             iacs_asset_types: AssetType::iacs_select_options(),
             ntlm_denied: false,
+            remote_guard_outbound_identity_allowed: false,
         };
 
         assert!(template.user.is_some());
@@ -380,6 +387,7 @@ mod tests {
             asset: create_test_asset_edit(),
             iacs_asset_types: AssetType::iacs_select_options(),
             ntlm_denied: false,
+            remote_guard_outbound_identity_allowed: false,
         };
 
         let result = template.render();
@@ -514,6 +522,7 @@ mod tests {
             asset,
             iacs_asset_types: AssetType::iacs_select_options(),
             ntlm_denied: false,
+            remote_guard_outbound_identity_allowed: false,
         }
         .render()
         .unwrap();

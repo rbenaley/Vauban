@@ -13,12 +13,17 @@
 #    types.
 # 4. There is no sspi entry. sspi 0.23.1 from crates.io holds the Windows
 #    mechListMIC fix; an entry would put an older sspi back under it.
+# 5. A crate the proxy takes from the fork directly (ironrdp-rdpear is not
+#    on crates.io, so it cannot be a patch entry) is pinned by the same
+#    rev as the patch entries. Another rev would be a second copy of the
+#    fork, with its own types.
 #
 # Uses grep (not rg) so cargo-test sandboxes without ripgrep still pass.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MANIFEST="${1:-$(cd "${ROOT}/.." && pwd)/Cargo.toml}"
+PROXY_MANIFEST="${2:-${ROOT}/Cargo.toml}"
 IRONRDP_FORK='https://github.com/rbenaley/IronRDP-vb'
 errors=0
 
@@ -63,6 +68,21 @@ ironrdp_revs="$(printf '%s\n' "${ironrdp_entries}" | grep -Eo 'rev = "[0-9a-f]{4
 if [ "${ironrdp_revs}" -gt 1 ]; then
     fail "the ironrdp entries of [patch.crates-io] are on ${ironrdp_revs} different revs: they must share one"
 fi
+
+patch_rev="$(printf '%s\n' "${ironrdp_entries}" | grep -Eo 'rev = "[0-9a-f]{40}"' | sort -u | head -n 1)"
+direct="$(grep -E '^[a-z0-9-]+[[:space:]]*=.*IronRDP-vb' "${PROXY_MANIFEST}" || true)"
+while IFS= read -r entry; do
+    [ -z "${entry}" ] && continue
+    if ! printf '%s\n' "${entry}" | grep -Fq "git = \"${IRONRDP_FORK}\""; then
+        fail "a dependency on the IronRDP fork must point at ${IRONRDP_FORK}: ${entry}"
+    fi
+    if printf '%s\n' "${entry}" | grep -Eq '(branch|tag) = '; then
+        fail "a dependency on the IronRDP fork is pinned by branch or tag, not by rev: ${entry}"
+    fi
+    if [ -z "${patch_rev}" ] || ! printf '%s\n' "${entry}" | grep -Fq "${patch_rev}"; then
+        fail "a dependency on the IronRDP fork in ${PROXY_MANIFEST} is not on the rev of [patch.crates-io]: ${entry}"
+    fi
+done <<< "${direct}"
 
 if printf '%s\n' "${entries}" | grep -Eq '^sspi[[:space:]]*='; then
     fail "an sspi entry is back in [patch.crates-io]: sspi 0.23.1 from crates.io holds the Windows mechListMIC fix and Remote Credential Guard needs it"

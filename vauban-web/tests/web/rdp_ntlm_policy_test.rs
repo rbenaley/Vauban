@@ -339,3 +339,46 @@ fn attack_mistyped_ntlm_policy_in_web_config_is_rejected() {
         assert!(parse(bad.clone()).is_err(), "{bad} must be refused");
     }
 }
+
+/// The web tier reads the Remote Credential Guard policy through the
+/// same closed set as the supervisor: a value outside it is a
+/// configuration error, read neither as `allow` nor as the default.
+#[test]
+fn attack_mistyped_remote_guard_policy_in_web_config_is_rejected() {
+    use shared::messages::RemoteGuardOutboundIdentity as Policy;
+    use vauban_web::config::RdpSettings;
+    let parse = |source: serde_json::Value| serde_json::from_value::<RdpSettings>(source);
+
+    assert_eq!(
+        unwrap_ok!(parse(json!({}))).remote_guard_outbound_identity,
+        Policy::Deny,
+        "an absent key grants nothing"
+    );
+    assert_eq!(
+        unwrap_ok!(parse(json!({"remote_guard_outbound_identity": "allow"})))
+            .remote_guard_outbound_identity,
+        Policy::Allow
+    );
+    assert_eq!(
+        unwrap_ok!(parse(json!({"remote_guard_outbound_identity": "deny"})))
+            .remote_guard_outbound_identity,
+        Policy::Deny
+    );
+    // The two policies of the table are independent.
+    let both = unwrap_ok!(parse(json!({
+        "ntlm_policy": "deny",
+        "remote_guard_outbound_identity": "allow"
+    })));
+    assert_eq!(both.ntlm_policy, shared::messages::NtlmPolicy::Deny);
+    assert_eq!(both.remote_guard_outbound_identity, Policy::Allow);
+    for bad in [
+        json!({"remote_guard_outbound_identity": "Allow"}),
+        json!({"remote_guard_outbound_identity": "allowed"}),
+        json!({"remote_guard_outbound_identity": ""}),
+        json!({"remote_guard_outbound_identity": "services"}),
+        json!({"remote_guard_outbound_identity": true}),
+        json!({"remote_guard_outbound_identity": 1}),
+    ] {
+        assert!(parse(bad.clone()).is_err(), "{bad} must be refused");
+    }
+}

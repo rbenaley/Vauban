@@ -223,7 +223,8 @@ video_bitrate_bps = 5_000_000
 # NTLM policy for RDP sessions: "allow" (default) or "deny".
 #
 # "deny" refuses every RDP session whose asset is not in a Kerberos
-# authentication mode ("kerberos" or "kerberos_restricted_admin"), including
+# authentication mode ("kerberos", "kerberos_restricted_admin" or
+# "kerberos_remote_guard"), including
 # for assets that already exist. It is enforced by vauban-web before a session
 # is created and again by vauban-proxy-rdp at session open. The asset forms
 # then disable the NTLM option, and the dashboard counts the RDP assets still
@@ -233,6 +234,38 @@ video_bitrate_bps = 5_000_000
 # refuse to start. Requires [auth.kerberos] to be configured for "deny" to
 # leave any RDP asset usable.
 ntlm_policy = "allow"
+
+# Outbound identity of Remote Credential Guard sessions
+# ("kerberos_remote_guard" authentication mode): "deny" (default) or "allow".
+#
+# In that mode the target receives no password. It holds a ticket-granting
+# ticket without its key, and asks the RDP proxy for every Kerberos operation
+# that needs the key.
+#
+# "deny": the proxy lets the logon negotiate and refuses every other
+# operation. The session opens, and the target cannot act on the network as
+# the user: it obtains no service ticket, and cannot use one it already holds.
+# What the logon would normally fetch from the domain as the user (for
+# example the user part of group policy) is not fetched.
+#
+# "allow": the proxy performs the operations. For as long as the session is
+# open, the target can reach other services as the user. A compromised target
+# can do the same.
+#
+# Redirected NTLM is refused under both values: from such a session, a
+# resource reached by IP address is not accessible.
+#
+# The value applies to every asset in that mode. It is handed to
+# vauban-proxy-rdp when the supervisor starts it: a change takes effect when
+# the proxy restarts, for the sessions opened afterward.
+#
+# Any other value is a configuration error: the supervisor and vauban-web
+# refuse to start.
+remote_guard_outbound_identity = "deny"
+#
+# Planned, not implemented yet: a list of services the target may reach.
+# remote_guard_outbound_identity = "services"
+# remote_guard_allowed_services = ["cifs", "ldap"]
 
 # ==============================================================================
 # EMAIL NOTIFICATIONS (Issue #10)
@@ -395,7 +428,8 @@ login_password_min_length = 12
 aggregation_fail_closed_threshold = 3
 
 # ------------------------------------------------------------------------------
-# Kerberos KDC brokering (RDP "kerberos" and "kerberos_restricted_admin" modes)
+# Kerberos KDC brokering (RDP "kerberos", "kerberos_restricted_admin" and
+# "kerberos_remote_guard" modes)
 # ------------------------------------------------------------------------------
 #
 # When enabled, the supervisor relays the sandboxed RDP proxy's Kerberos KDC

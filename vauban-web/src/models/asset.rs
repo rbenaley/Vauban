@@ -1322,8 +1322,9 @@ pub struct CreateAssetRequest {
     #[serde(default)]
     pub group_ids: Vec<i32>,
     pub description: Option<String>,
-    /// RDP NLA authentication mode: `ntlm` (default), `kerberos` or
-    /// `kerberos_restricted_admin`. RDP assets only; an unknown value is
+    /// RDP NLA authentication mode: `ntlm` (default), `kerberos`,
+    /// `kerberos_restricted_admin` or `kerberos_remote_guard`. RDP assets
+    /// only; an unknown value is
     /// refused. Validated by `services::rdp_auth_mode`.
     #[serde(default)]
     pub rdp_auth_mode: Option<String>,

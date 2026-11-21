@@ -62,6 +62,10 @@ pub(crate) fn server_public_key() -> Vec<u8> {
     (0u8..=255).collect()
 }
 
+/// `KRB_NT_SRV_HST` (RFC 4120 6.2): a service with a host name as
+/// instance, the name type `sspi` gives the `HOST/<target>` principal.
+const NT_SRV_HST: u8 = 3;
+
 fn principal(name_type: u8, parts: &[&str]) -> PrincipalName {
     PrincipalName {
         name_type: ExplicitContextTag0::from(IntegerAsn1::from(vec![name_type])),
@@ -88,6 +92,15 @@ pub(crate) fn kdc_without_target_spn() -> KdcMock {
     kdc_database(PASSWORD, false)
 }
 
+/// The same database without `HOST/<TARGET_HOST>`: the terminal service
+/// is registered, the computer account alias a Remote Credential Guard
+/// logon needs is not.
+pub(crate) fn kdc_without_host_spn() -> KdcMock {
+    let mut kdc = kdc_database(PASSWORD, true);
+    kdc.forget_service(&principal(NT_SRV_HST, &["HOST", TARGET_HOST]));
+    kdc
+}
+
 fn kdc_database(password: &str, with_target_spn: bool) -> KdcMock {
     let tgt_service_key: Vec<u8> = (1u8..=32).collect();
     let target_service_key: Vec<u8> = (101u8..=132).collect();
@@ -102,6 +115,13 @@ fn kdc_database(password: &str, with_target_spn: bool) -> KdcMock {
         ),
         (
             UserName(principal(NT_SRV_INST, &["TERMSRV", TARGET_HOST])),
+            target_service_key.clone(),
+        ),
+        // The computer account of the target under its `HOST` alias: the
+        // ticket a Remote Credential Guard logon carries. Same account,
+        // same key, as in a directory.
+        (
+            UserName(principal(NT_SRV_HST, &["HOST", TARGET_HOST])),
             target_service_key,
         ),
     ]

@@ -191,8 +191,9 @@ pub struct AuthConfig {
     /// default (`[auth.ldaps].enabled = false`).
     #[serde(default)]
     pub ldaps: LdapConfig,
-    /// Kerberos KDC brokering for RDP assets in `kerberos_restricted_admin`
-    /// auth mode. When enabled, the supervisor relays the sandboxed RDP
+    /// Kerberos KDC brokering for RDP assets in a Kerberos auth mode
+    /// (`kerberos`, `kerberos_restricted_admin`, `kerberos_remote_guard`).
+    /// When enabled, the supervisor relays the sandboxed RDP
     /// proxy's KDC exchanges (AS-REQ / TGS-REQ) to the configured KDC over
     /// TCP 88 (the proxy cannot `connect()` itself). Disabled by default
     /// (`[auth.kerberos].enabled = false`).
@@ -687,6 +688,13 @@ pub struct RdpProxyConfig {
     /// vauban-web reads the same key from the same file.
     #[serde(default)]
     pub ntlm_policy: shared::messages::NtlmPolicy,
+    /// Outbound identity of Remote Credential Guard sessions: `"deny"`
+    /// (default) or `"allow"`. Any other value fails deserialization, so
+    /// the supervisor refuses to start instead of letting targets act as
+    /// users by accident. vauban-web reads the same key from the same
+    /// file, to show it.
+    #[serde(default)]
+    pub remote_guard_outbound_identity: shared::messages::RemoteGuardOutboundIdentity,
 }
 
 fn default_video_bitrate_bps() -> u32 {
@@ -698,6 +706,8 @@ impl Default for RdpProxyConfig {
         Self {
             video_bitrate_bps: default_video_bitrate_bps(),
             ntlm_policy: shared::messages::NtlmPolicy::default(),
+            remote_guard_outbound_identity: shared::messages::RemoteGuardOutboundIdentity::default(
+            ),
         }
     }
 }
@@ -1579,6 +1589,14 @@ impl SupervisorConfig {
                     shared::messages::NtlmPolicy::ENV.to_string(),
                     self.rdp.ntlm_policy.as_str().to_string(),
                 ));
+                // Outbound identity of Remote Credential Guard sessions.
+                // The proxy is the one that answers the target, so it is
+                // the one that holds the policy. Always set, for the same
+                // reason as the NTLM policy.
+                vars.push((
+                    shared::messages::RemoteGuardOutboundIdentity::ENV.to_string(),
+                    self.rdp.remote_guard_outbound_identity.as_str().to_string(),
+                ));
                 let rdp_recording = self.recording.rdp_recording_enabled();
                 vars.push((
                     "VAUBAN_RECORDING_ENABLED".to_string(),
@@ -2236,15 +2254,17 @@ mod tests {
     fn test_service_env_vars_proxy_rdp() {
         let config = test_config();
         let vars = config.service_env_vars("proxy_rdp");
-        assert_eq!(vars.len(), 4);
+        assert_eq!(vars.len(), 5);
         assert_eq!(vars[0].0, "VAUBAN_RDP_VIDEO_BITRATE_BPS");
         assert_eq!(vars[0].1, "5000000");
         assert_eq!(vars[1].0, "KRB5_CONFIG");
         assert_eq!(vars[1].1, "/dev/null");
         assert_eq!(vars[2].0, "VAUBAN_RDP_NTLM_POLICY");
         assert_eq!(vars[2].1, "allow");
-        assert_eq!(vars[3].0, "VAUBAN_RECORDING_ENABLED");
-        assert_eq!(vars[3].1, "true");
+        assert_eq!(vars[3].0, "VAUBAN_RDP_REMOTE_GUARD_OUTBOUND_IDENTITY");
+        assert_eq!(vars[3].1, "deny");
+        assert_eq!(vars[4].0, "VAUBAN_RECORDING_ENABLED");
+        assert_eq!(vars[4].1, "true");
     }
 
     /// The policy reaches the RDP proxy as its canonical string, which
@@ -2284,6 +2304,114 @@ mod tests {
         assert_eq!(parsed.ntlm_policy, NtlmPolicy::Deny);
         // The shipped default file does not turn NTLM off.
         assert_eq!(load_default_toml_only().rdp.ntlm_policy, NtlmPolicy::Allow);
+    }
+
+    /// The Remote Credential Guard policy reaches the RDP proxy as its
+    /// canonical string, which the proxy's reader accepts; no other
+    /// service receives it.
+    #[test]
+    fn test_remote_guard_policy_is_handed_to_proxy_rdp_only() {
+        use shared::messages::RemoteGuardOutboundIdentity as Policy;
+        for policy in Policy::ALL {
+            let mut config = test_config();
+            config.rdp.remote_guard_outbound_identity = policy;
+            let vars = config.service_env_vars("proxy_rdp");
+            let values: Vec<&str> = vars
+                .iter()
+                .filter(|(name, _)| name == Policy::ENV)
+                .map(|(_, value)| value.as_str())
+                .collect();
+            assert_eq!(values.len(), 1, "the variable is set, and set once");
+            assert_eq!(Policy::from_env_value(values.first().copied()), Ok(policy));
+            for service in [
+                "web",
+                "access",
+                "auth",
+                "audit",
+                "proxy_ssh",
+                "vault",
+                "proxy_iacs",
+                "proxy_mcp",
+                "mailer",
+            ] {
+                assert!(
+                    config
+                        .service_env_vars(service)
+                        .iter()
+                        .all(|(name, _)| name != Policy::ENV),
+                    "{service} must not receive the Remote Credential Guard policy"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_remote_guard_policy_defaults_to_deny() {
+        use shared::messages::RemoteGuardOutboundIdentity as Policy;
+        assert_eq!(
+            RdpProxyConfig::default().remote_guard_outbound_identity,
+            Policy::Deny
+        );
+        let parsed: RdpProxyConfig = toml::from_str("").expect("empty [rdp]");
+        assert_eq!(parsed.remote_guard_outbound_identity, Policy::Deny);
+        let parsed: RdpProxyConfig =
+            toml::from_str("remote_guard_outbound_identity = \"allow\"").expect("allow");
+        assert_eq!(parsed.remote_guard_outbound_identity, Policy::Allow);
+        let parsed: RdpProxyConfig =
+            toml::from_str("remote_guard_outbound_identity = \"deny\"").expect("deny");
+        assert_eq!(parsed.remote_guard_outbound_identity, Policy::Deny);
+        // The shipped default file grants nothing.
+        assert_eq!(
+            load_default_toml_only().rdp.remote_guard_outbound_identity,
+            Policy::Deny
+        );
+        // The two policies of [rdp] are independent keys.
+        let parsed: RdpProxyConfig =
+            toml::from_str("ntlm_policy = \"deny\"\nremote_guard_outbound_identity = \"allow\"")
+                .expect("both keys");
+        assert_eq!(parsed.ntlm_policy, shared::messages::NtlmPolicy::Deny);
+        assert_eq!(parsed.remote_guard_outbound_identity, Policy::Allow);
+    }
+
+    /// A mistyped policy stops the supervisor at load: it is read neither
+    /// as `allow` nor as the `deny` default. `"services"` is planned and
+    /// is refused with a message that says so.
+    #[test]
+    fn attack_mistyped_remote_guard_policy_in_supervisor_config_is_rejected() {
+        for bad in [
+            "remote_guard_outbound_identity = \"Allow\"",
+            "remote_guard_outbound_identity = \"ALLOW\"",
+            "remote_guard_outbound_identity = \"allowed\"",
+            "remote_guard_outbound_identity = \"allow \"",
+            "remote_guard_outbound_identity = \"\"",
+            "remote_guard_outbound_identity = \"services\"",
+            "remote_guard_outbound_identity = true",
+            "remote_guard_outbound_identity = 1",
+            "remote_guard_outbound_identity = [\"allow\"]",
+        ] {
+            assert!(
+                toml::from_str::<RdpProxyConfig>(bad).is_err(),
+                "{bad} must be refused"
+            );
+        }
+        let error =
+            toml::from_str::<RdpProxyConfig>("remote_guard_outbound_identity = \"services\"")
+                .expect_err("services is refused")
+                .to_string();
+        assert!(error.contains("planned and not implemented"), "{error}");
+    }
+
+    /// The list of reachable services is a planned key. Setting it today
+    /// does not grant anything: the policy stays what its own key says.
+    #[test]
+    fn attack_allowed_services_key_alone_grants_nothing() {
+        use shared::messages::RemoteGuardOutboundIdentity as Policy;
+        let parsed = toml::from_str::<RdpProxyConfig>(
+            "remote_guard_allowed_services = [\"cifs\", \"ldap\"]",
+        );
+        if let Ok(parsed) = parsed {
+            assert_eq!(parsed.remote_guard_outbound_identity, Policy::Deny);
+        }
     }
 
     /// A mistyped policy stops the supervisor at load: it is never read

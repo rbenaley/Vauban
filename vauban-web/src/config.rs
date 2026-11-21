@@ -394,6 +394,13 @@ pub struct RdpSettings {
     /// which enforces it too.
     #[serde(default)]
     pub ntlm_policy: shared::messages::NtlmPolicy,
+    /// Outbound identity of Remote Credential Guard sessions: `"deny"`
+    /// (default) or `"allow"`. The web tier only shows it: the supervisor
+    /// hands the same key to the RDP proxy, which is the one that answers
+    /// the target. Any other value fails deserialization, so the web
+    /// tier and the supervisor refuse the same files.
+    #[serde(default)]
+    pub remote_guard_outbound_identity: shared::messages::RemoteGuardOutboundIdentity,
 }
 
 /// Asset and asset-group configuration.

@@ -223,6 +223,98 @@ impl NtlmPolicy {
     }
 }
 
+/// Bastion-wide policy on the outbound identity of Remote Credential
+/// Guard sessions (`[rdp] remote_guard_outbound_identity`).
+///
+/// In a Remote Credential Guard session the target holds a forwarded TGT
+/// without its key, and asks the RDP proxy for every Kerberos operation
+/// that needs a key. This policy decides what the proxy answers:
+///
+/// - `Deny` (default): the proxy accepts the version negotiation the
+///   logon needs and refuses every other operation. The session opens;
+///   the target obtains no service ticket and cannot use one it holds.
+/// - `Allow`: the proxy performs the operations. The target can act on
+///   the network as the user for as long as the session is open.
+///
+/// Redirected NTLM is refused under both values.
+///
+/// The default is `Deny`: an installation that does not set the key has
+/// the bastion sign nothing for a target. A value outside the set is a
+/// configuration error (the service refuses to start), never a silent
+/// `Allow`. `"services"` (a list of reachable services) is planned and is
+/// outside the set until it is implemented.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteGuardOutboundIdentity {
+    #[default]
+    Deny,
+    Allow,
+}
+
+impl RemoteGuardOutboundIdentity {
+    /// Environment variable through which the supervisor hands the policy
+    /// to `vauban-proxy-rdp`.
+    pub const ENV: &'static str = "VAUBAN_RDP_REMOTE_GUARD_OUTBOUND_IDENTITY";
+
+    /// Every policy.
+    pub const ALL: [RemoteGuardOutboundIdentity; 2] = [
+        RemoteGuardOutboundIdentity::Deny,
+        RemoteGuardOutboundIdentity::Allow,
+    ];
+
+    /// What a refused value is told, in configuration and environment
+    /// errors alike.
+    pub const EXPECTED: &'static str =
+        "must be \"deny\" or \"allow\" (\"services\" is planned and not implemented)";
+
+    /// Canonical string, as written in the configuration.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            RemoteGuardOutboundIdentity::Deny => "deny",
+            RemoteGuardOutboundIdentity::Allow => "allow",
+        }
+    }
+
+    /// Exact parse of the canonical string. No trimming, no case folding.
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.as_str() == s)
+    }
+
+    /// Whether the proxy performs the redirected Kerberos operations of a
+    /// session. Exhaustive on purpose: a new value must state its side.
+    pub const fn grants_outbound_identity(&self) -> bool {
+        match self {
+            RemoteGuardOutboundIdentity::Deny => false,
+            RemoteGuardOutboundIdentity::Allow => true,
+        }
+    }
+
+    /// Read the policy from a process environment value. The supervisor
+    /// always sets the variable, so an ABSENT value is an error, exactly
+    /// like a value that is not canonical: neither is read as `Allow`,
+    /// and neither is read as the `Deny` default either, so a proxy that
+    /// was not handed its policy does not start.
+    pub fn from_env_value(value: Option<&str>) -> Result<Self, String> {
+        match value {
+            None => Err(format!("{} is not set", Self::ENV)),
+            Some(raw) => {
+                Self::parse(raw).ok_or_else(|| format!("{} {}", Self::ENV, Self::EXPECTED))
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RemoteGuardOutboundIdentity {
+    /// Exact, through [`Self::parse`], so the configuration error names
+    /// the two values and says that `"services"` is not available yet.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw).ok_or_else(|| {
+            serde::de::Error::custom(format!("remote_guard_outbound_identity {}", Self::EXPECTED))
+        })
+    }
+}
+
 /// Why the RDP proxy could not open a session or fetch a certificate,
 /// outside the NLA leg, as a closed set.
 ///
@@ -438,11 +530,13 @@ pub enum RdpAuthFailure {
     /// The KDC issued the tickets, then the bastion refused a token of
     /// the target: its Kerberos answer or its SPNEGO mechListMIC.
     TargetTokenRejected,
+    /// The target refused a Remote Credential Guard logon.
+    RemoteGuardRefused,
 }
 
 impl RdpAuthFailure {
     /// Every reason, in wire order.
-    pub const ALL: [RdpAuthFailure; 19] = [
+    pub const ALL: [RdpAuthFailure; 20] = [
         RdpAuthFailure::KdcUnreachable,
         RdpAuthFailure::ClockSkew,
         RdpAuthFailure::PreAuthFailed,
@@ -462,6 +556,7 @@ impl RdpAuthFailure {
         RdpAuthFailure::CredentialsRejected,
         RdpAuthFailure::NegotiationRefused,
         RdpAuthFailure::TargetTokenRejected,
+        RdpAuthFailure::RemoteGuardRefused,
     ];
 
     /// Stable machine name, for audit details and logs. `[a-z_]` only, so
@@ -487,6 +582,7 @@ impl RdpAuthFailure {
             RdpAuthFailure::CredentialsRejected => "credentials_rejected",
             RdpAuthFailure::NegotiationRefused => "negotiation_refused",
             RdpAuthFailure::TargetTokenRejected => "target_token_rejected",
+            RdpAuthFailure::RemoteGuardRefused => "remote_guard_refused",
         }
     }
 }
@@ -494,7 +590,8 @@ impl RdpAuthFailure {
 /// NLA authentication mode for an RDP asset (CredSSP leg).
 ///
 /// Stored in `assets.connection_config.rdp_auth_mode` as its canonical wire
-/// string (`ntlm` | `kerberos_restricted_admin` | `kerberos`), threaded through
+/// string (`ntlm` | `kerberos_restricted_admin` | `kerberos` |
+/// `kerberos_remote_guard`), threaded through
 /// `Message::RdpSessionOpen` down to the RDP proxy's CredSSP sequence.
 ///
 /// - `Ntlm` (default): CredSSP + NTLMv2, credentials delegated in
@@ -509,7 +606,14 @@ impl RdpAuthFailure {
 ///   any domain account. The password IS delegated to the target, exactly
 ///   as in `Ntlm`: this mode removes NTLM, not the delegation.
 ///
-/// Neither Kerberos mode ever falls back to NTLM.
+/// - `KerberosRemoteGuard`: CredSSP + Kerberos with the
+///   `REDIRECTED_AUTHENTICATION_MODE_REQUIRED` nego flag and Remote
+///   Credential Guard TSCredentials. The target receives a service ticket
+///   and a TGT whose key stays in the proxy; the password never leaves
+///   the proxy. For any domain account. What the target may then do on
+///   the network as the user is [`RemoteGuardOutboundIdentity`].
+///
+/// No Kerberos mode ever falls back to NTLM.
 ///
 /// Wire: bincode encodes the variant by index, so new modes are APPENDED.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -518,14 +622,16 @@ pub enum RdpAuthMode {
     Ntlm,
     KerberosRestrictedAdmin,
     Kerberos,
+    KerberosRemoteGuard,
 }
 
 impl RdpAuthMode {
     /// Every mode, in wire order.
-    pub const ALL: [RdpAuthMode; 3] = [
+    pub const ALL: [RdpAuthMode; 4] = [
         RdpAuthMode::Ntlm,
         RdpAuthMode::KerberosRestrictedAdmin,
         RdpAuthMode::Kerberos,
+        RdpAuthMode::KerberosRemoteGuard,
     ];
 
     /// Canonical wire/storage form (JSON `connection_config.rdp_auth_mode`).
@@ -534,6 +640,7 @@ impl RdpAuthMode {
             RdpAuthMode::Ntlm => "ntlm",
             RdpAuthMode::KerberosRestrictedAdmin => "kerberos_restricted_admin",
             RdpAuthMode::Kerberos => "kerberos",
+            RdpAuthMode::KerberosRemoteGuard => "kerberos_remote_guard",
         }
     }
 
@@ -544,6 +651,7 @@ impl RdpAuthMode {
             "ntlm" => Some(RdpAuthMode::Ntlm),
             "kerberos_restricted_admin" => Some(RdpAuthMode::KerberosRestrictedAdmin),
             "kerberos" => Some(RdpAuthMode::Kerberos),
+            "kerberos_remote_guard" => Some(RdpAuthMode::KerberosRemoteGuard),
             _ => None,
         }
     }
@@ -555,16 +663,31 @@ impl RdpAuthMode {
     pub const fn uses_kerberos(&self) -> bool {
         match self {
             RdpAuthMode::Ntlm => false,
-            RdpAuthMode::KerberosRestrictedAdmin | RdpAuthMode::Kerberos => true,
+            RdpAuthMode::KerberosRestrictedAdmin
+            | RdpAuthMode::Kerberos
+            | RdpAuthMode::KerberosRemoteGuard => true,
         }
     }
 
     /// Whether the target receives the account password in TSCredentials.
-    /// `false` only for Restricted Admin (credential-less CredSSP).
+    /// `false` for Restricted Admin (credential-less CredSSP) and for
+    /// Remote Credential Guard (a ticket and a keyless TGT instead).
     pub const fn delegates_password(&self) -> bool {
         match self {
             RdpAuthMode::Ntlm | RdpAuthMode::Kerberos => true,
-            RdpAuthMode::KerberosRestrictedAdmin => false,
+            RdpAuthMode::KerberosRestrictedAdmin | RdpAuthMode::KerberosRemoteGuard => false,
+        }
+    }
+
+    /// Whether this mode is Remote Credential Guard: the only mode whose
+    /// session keeps a channel on which the target asks the proxy for
+    /// Kerberos operations.
+    pub const fn is_remote_guard(&self) -> bool {
+        match self {
+            RdpAuthMode::KerberosRemoteGuard => true,
+            RdpAuthMode::Ntlm | RdpAuthMode::KerberosRestrictedAdmin | RdpAuthMode::Kerberos => {
+                false
+            }
         }
     }
 }
@@ -5836,6 +5959,10 @@ mod tests {
             assert_eq!(RdpAuthMode::parse(mode.as_str()), Some(mode));
         }
         assert_eq!(RdpAuthMode::Kerberos.as_str(), "kerberos");
+        assert_eq!(
+            RdpAuthMode::KerberosRemoteGuard.as_str(),
+            "kerberos_remote_guard"
+        );
         assert_eq!(RdpAuthMode::default(), RdpAuthMode::Ntlm);
     }
 
@@ -5848,6 +5975,9 @@ mod tests {
             " kerberos",
             "kerberos ",
             "kerberos_delegation",
+            "kerberos_remote_guard ",
+            "remote_guard",
+            "kerberos-remote-guard",
             "ntlmv1",
             "negotiate",
         ] {
@@ -5859,15 +5989,25 @@ mod tests {
     #[test]
     fn test_rdp_auth_mode_classification() {
         let table = [
-            (RdpAuthMode::Ntlm, false, true),
-            (RdpAuthMode::KerberosRestrictedAdmin, true, false),
-            (RdpAuthMode::Kerberos, true, true),
+            (RdpAuthMode::Ntlm, false, true, false),
+            (RdpAuthMode::KerberosRestrictedAdmin, true, false, false),
+            (RdpAuthMode::Kerberos, true, true, false),
+            (RdpAuthMode::KerberosRemoteGuard, true, false, true),
         ];
         assert_eq!(table.len(), RdpAuthMode::ALL.len());
-        for (mode, kerberos, delegates) in table {
+        for (mode, kerberos, delegates, remote_guard) in table {
             assert_eq!(mode.uses_kerberos(), kerberos, "{mode:?}");
             assert_eq!(mode.delegates_password(), delegates, "{mode:?}");
+            assert_eq!(mode.is_remote_guard(), remote_guard, "{mode:?}");
         }
+        // Remote Credential Guard is a Kerberos mode that keeps the
+        // password in the proxy: both properties at once.
+        assert!(
+            RdpAuthMode::ALL
+                .into_iter()
+                .filter(|m| m.is_remote_guard())
+                .all(|m| m.uses_kerberos() && !m.delegates_password())
+        );
     }
 
     proptest::proptest! {
@@ -5883,13 +6023,14 @@ mod tests {
         /// Near-misses of the canonical strings are rejected.
         #[test]
         fn proptest_rdp_auth_mode_near_misses_are_rejected(
-            idx in 0usize..3,
+            idx in 0usize..RdpAuthMode::ALL.len(),
             suffix in "[ _A-Za-z0-9]{1,8}",
             upper in proptest::bool::ANY,
         ) {
             let canonical = RdpAuthMode::ALL[idx].as_str();
             let padded = format!("{canonical}{suffix}");
-            // `kerberos` + `_restricted_admin` is itself canonical.
+            // `kerberos` + `_restricted_admin` or `_remote_guard` is itself
+            // canonical.
             if RdpAuthMode::ALL.iter().all(|m| m.as_str() != padded) {
                 proptest::prop_assert_eq!(RdpAuthMode::parse(&padded), None);
             }
@@ -5902,14 +6043,23 @@ mod tests {
         }
     }
 
-    /// Wire pin: existing modes keep their bincode index; `Kerberos` is
-    /// appended. A peer from the previous release still decodes the two
-    /// historical modes.
+    /// Wire pin: existing modes keep their bincode index; each new mode
+    /// is appended. A peer from the previous release still decodes the
+    /// modes it knows.
     #[test]
     fn test_rdp_auth_mode_wire_indexes_are_frozen() {
         assert_eq!(serialize(&RdpAuthMode::Ntlm), vec![0]);
         assert_eq!(serialize(&RdpAuthMode::KerberosRestrictedAdmin), vec![1]);
         assert_eq!(serialize(&RdpAuthMode::Kerberos), vec![2]);
+        assert_eq!(serialize(&RdpAuthMode::KerberosRemoteGuard), vec![3]);
+        assert_eq!(
+            RdpAuthMode::ALL.last(),
+            Some(&RdpAuthMode::KerberosRemoteGuard),
+            "appended, never inserted"
+        );
+        for (index, mode) in RdpAuthMode::ALL.into_iter().enumerate() {
+            assert_eq!(serialize(&mode), vec![index as u8], "{mode:?} moved");
+        }
         for mode in RdpAuthMode::ALL {
             let decoded: RdpAuthMode = deserialize(&serialize(&mode));
             assert_eq!(decoded, mode);
@@ -5942,6 +6092,114 @@ mod tests {
         assert!(!NtlmPolicy::Deny.permits(RdpAuthMode::Ntlm));
         assert!(NtlmPolicy::Deny.permits(RdpAuthMode::Kerberos));
         assert!(NtlmPolicy::Deny.permits(RdpAuthMode::KerberosRestrictedAdmin));
+        assert!(NtlmPolicy::Deny.permits(RdpAuthMode::KerberosRemoteGuard));
+    }
+
+    #[test]
+    fn test_remote_guard_outbound_identity_string_forms() {
+        assert_eq!(
+            RemoteGuardOutboundIdentity::default(),
+            RemoteGuardOutboundIdentity::Deny,
+            "an installation that sets nothing grants nothing"
+        );
+        for policy in RemoteGuardOutboundIdentity::ALL {
+            assert_eq!(
+                RemoteGuardOutboundIdentity::parse(policy.as_str()),
+                Some(policy)
+            );
+        }
+        assert_eq!(RemoteGuardOutboundIdentity::Deny.as_str(), "deny");
+        assert_eq!(RemoteGuardOutboundIdentity::Allow.as_str(), "allow");
+        assert!(!RemoteGuardOutboundIdentity::Deny.grants_outbound_identity());
+        assert!(RemoteGuardOutboundIdentity::Allow.grants_outbound_identity());
+        // Exactly one value grants.
+        assert_eq!(
+            RemoteGuardOutboundIdentity::ALL
+                .into_iter()
+                .filter(RemoteGuardOutboundIdentity::grants_outbound_identity)
+                .count(),
+            1
+        );
+        // The two policies do not share an environment variable.
+        assert_ne!(RemoteGuardOutboundIdentity::ENV, NtlmPolicy::ENV);
+    }
+
+    /// A mistyped policy is an error: it is read neither as `allow` nor
+    /// as the `deny` default.
+    #[test]
+    fn attack_mistyped_remote_guard_outbound_identity_read_as_allow_is_rejected() {
+        assert!(
+            RemoteGuardOutboundIdentity::from_env_value(None).is_err(),
+            "an absent variable is an error, not a default"
+        );
+        assert_eq!(
+            RemoteGuardOutboundIdentity::from_env_value(Some("allow")),
+            Ok(RemoteGuardOutboundIdentity::Allow)
+        );
+        assert_eq!(
+            RemoteGuardOutboundIdentity::from_env_value(Some("deny")),
+            Ok(RemoteGuardOutboundIdentity::Deny)
+        );
+        for bad in [
+            "", "Allow", "ALLOW", "allow ", " allow", "allow\n", "allowed", "yes", "true", "1",
+            "Deny", "denny", "on",
+        ] {
+            assert!(
+                RemoteGuardOutboundIdentity::from_env_value(Some(bad)).is_err(),
+                "{bad:?}"
+            );
+            assert_eq!(RemoteGuardOutboundIdentity::parse(bad), None, "{bad:?}");
+        }
+        // Same closed set through serde (the TOML path).
+        #[derive(serde::Deserialize)]
+        struct Probe {
+            #[allow(dead_code)]
+            p: RemoteGuardOutboundIdentity,
+        }
+        assert!(serde_json::from_str::<Probe>(r#"{"p":"deny"}"#).is_ok());
+        assert!(serde_json::from_str::<Probe>(r#"{"p":"allow"}"#).is_ok());
+        for bad in [
+            r#"{"p":"Allow"}"#,
+            r#"{"p":"allowed"}"#,
+            r#"{"p":""}"#,
+            r#"{"p":true}"#,
+            r#"{"p":1}"#,
+            r#"{"p":["allow"]}"#,
+        ] {
+            assert!(serde_json::from_str::<Probe>(bad).is_err(), "{bad}");
+        }
+    }
+
+    /// `"services"` is a planned value. Until it is implemented it is a
+    /// configuration error that says so, never a value that grants.
+    #[test]
+    fn attack_services_value_is_rejected_until_implemented() {
+        assert_eq!(RemoteGuardOutboundIdentity::parse("services"), None);
+        let env = RemoteGuardOutboundIdentity::from_env_value(Some("services"))
+            .expect_err("services is refused");
+        assert!(env.contains("planned and not implemented"), "{env}");
+        #[derive(Debug, serde::Deserialize)]
+        struct Probe {
+            #[allow(dead_code)]
+            p: RemoteGuardOutboundIdentity,
+        }
+        let toml = serde_json::from_str::<Probe>(r#"{"p":"services"}"#)
+            .expect_err("services is refused")
+            .to_string();
+        assert!(toml.contains("remote_guard_outbound_identity"), "{toml}");
+        assert!(toml.contains("planned and not implemented"), "{toml}");
+    }
+
+    /// The policy serializes to its canonical string, so a value written
+    /// by one service is read back by another.
+    #[test]
+    fn test_remote_guard_outbound_identity_serde_round_trip() {
+        for policy in RemoteGuardOutboundIdentity::ALL {
+            let json = serde_json::to_string(&policy).unwrap();
+            assert_eq!(json, format!("\"{}\"", policy.as_str()));
+            let back: RemoteGuardOutboundIdentity = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, policy);
+        }
     }
 
     /// A mistyped policy is an error, never a silent `allow`.
@@ -5980,6 +6238,34 @@ mod tests {
     }
 
     proptest::proptest! {
+        /// `parse`, the env reader and serde accept the two canonical
+        /// strings and nothing else.
+        #[test]
+        fn proptest_remote_guard_outbound_identity_parse_is_exact(s in "\\PC{0,12}") {
+            let expected = RemoteGuardOutboundIdentity::ALL
+                .into_iter()
+                .find(|p| p.as_str() == s);
+            proptest::prop_assert_eq!(RemoteGuardOutboundIdentity::parse(&s), expected);
+            proptest::prop_assert_eq!(
+                RemoteGuardOutboundIdentity::from_env_value(Some(&s)).ok(),
+                expected
+            );
+            let json = serde_json::to_string(&s).unwrap();
+            proptest::prop_assert_eq!(
+                serde_json::from_str::<RemoteGuardOutboundIdentity>(&json).ok(),
+                expected
+            );
+        }
+
+        /// A value that is not exactly `allow` never grants an outbound
+        /// identity, whatever it looks like.
+        #[test]
+        fn proptest_only_the_exact_allow_string_grants(s in "(?i)[ a-z_]{0,10}") {
+            let granted = RemoteGuardOutboundIdentity::parse(&s)
+                .is_some_and(|p| p.grants_outbound_identity());
+            proptest::prop_assert_eq!(granted, s == "allow");
+        }
+
         /// `parse` and the env reader accept the two canonical strings
         /// and nothing else.
         #[test]
@@ -6003,10 +6289,11 @@ mod tests {
         assert_eq!(serialize(&RdpAuthFailure::CredentialsRejected), vec![16]);
         assert_eq!(serialize(&RdpAuthFailure::NegotiationRefused), vec![17]);
         assert_eq!(serialize(&RdpAuthFailure::TargetTokenRejected), vec![18]);
+        assert_eq!(serialize(&RdpAuthFailure::RemoteGuardRefused), vec![19]);
         // Appended, never inserted: the last reason is the newest.
         assert_eq!(
             RdpAuthFailure::ALL.last(),
-            Some(&RdpAuthFailure::TargetTokenRejected)
+            Some(&RdpAuthFailure::RemoteGuardRefused)
         );
     }
 

@@ -28,7 +28,7 @@ pub const MAX_DOMAIN_LEN: usize = 255;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RdpAuthSettingsError {
     #[error(
-        "Unknown RDP authentication mode: expected one of ntlm, kerberos, kerberos_restricted_admin"
+        "Unknown RDP authentication mode: expected one of ntlm, kerberos, kerberos_restricted_admin, kerberos_remote_guard"
     )]
     UnknownMode,
     #[error("rdp_auth_mode and rdp_domain only apply to RDP assets")]
@@ -253,6 +253,7 @@ pub const fn badge_label(mode: RdpAuthMode) -> &'static str {
         RdpAuthMode::Ntlm => "NTLM",
         RdpAuthMode::KerberosRestrictedAdmin => "Kerberos RA",
         RdpAuthMode::Kerberos => "Kerberos",
+        RdpAuthMode::KerberosRemoteGuard => "Kerberos RCG",
     }
 }
 
@@ -263,8 +264,11 @@ mod tests {
 
     const FQDN: &str = "srv01.corp.example.com";
     const REALM: &str = "corp.example.com";
-    const KERBEROS_MODES: [RdpAuthMode; 2] =
-        [RdpAuthMode::Kerberos, RdpAuthMode::KerberosRestrictedAdmin];
+    const KERBEROS_MODES: [RdpAuthMode; 3] = [
+        RdpAuthMode::Kerberos,
+        RdpAuthMode::KerberosRestrictedAdmin,
+        RdpAuthMode::KerberosRemoteGuard,
+    ];
 
     #[test]
     fn test_parse_requested_mode_accepts_canonical_and_blank() {

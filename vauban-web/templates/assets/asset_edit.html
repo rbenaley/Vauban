@@ -278,6 +278,7 @@
                         <option value="ntlm"{% if ntlm_denied %} disabled{% endif %}>Password / NTLMv2{% if ntlm_denied %} (forbidden by policy){% endif %}</option>
                         <option value="kerberos">Kerberos</option>
                         <option value="kerberos_restricted_admin">Kerberos - Restricted Admin</option>
+                        <option value="kerberos_remote_guard">Kerberos - Remote Credential Guard</option>
                     </select>
                     {% if ntlm_denied %}
                     <p class="mt-1 text-xs text-amber-700 dark:text-amber-300" data-ntlm-denied-notice>
@@ -285,10 +286,19 @@
                     </p>
                     {% endif %}
                     <p class="mt-1 text-xs text-gray-500 dark:text-gray-400" x-show="rdpAuthMode === 'kerberos'" x-cloak>
-                        Requires a fully-qualified hostname (SPN <code>TERMSRV/&lt;fqdn&gt;</code>), the DNS name of the domain, and a KDC for that realm in <code>[auth.kerberos]</code>. No NTLM fallback. The password is delegated to the target inside CredSSP, as in the NTLMv2 mode: use Restricted Admin for accounts that are local administrators of the target.
+                        Requires a fully-qualified hostname (SPN <code>TERMSRV/&lt;fqdn&gt;</code>), the DNS name of the domain, and a KDC for that realm in <code>[auth.kerberos]</code>. No NTLM fallback. The password is delegated to the target inside CredSSP, as in the NTLMv2 mode: use Restricted Admin for accounts that are local administrators of the target, or Remote Credential Guard for any account.
                     </p>
                     <p class="mt-1 text-xs text-gray-500 dark:text-gray-400" x-show="rdpAuthMode === 'kerberos_restricted_admin'" x-cloak>
                         Requires a fully-qualified hostname (SPN <code>TERMSRV/&lt;fqdn&gt;</code>), the DNS name of the domain, and a KDC for that realm in <code>[auth.kerberos]</code>. No NTLM fallback. The password is never delegated to the target (credential-less CredSSP); the account must be a local administrator of the target.
+                    </p>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400" x-show="rdpAuthMode === 'kerberos_remote_guard'" x-cloak data-remote-guard-notice>
+                        Requires a fully-qualified hostname (SPNs <code>TERMSRV/&lt;fqdn&gt;</code> and <code>HOST/&lt;fqdn&gt;</code>), the DNS name of the domain, a KDC for that realm in <code>[auth.kerberos]</code>, and a target that accepts Remote Credential Guard. No NTLM fallback. The password is never delegated to the target, and the account does not have to be a local administrator of it.
+                        {% if remote_guard_outbound_identity_allowed %}
+                        <span data-remote-guard-policy="allow">On this bastion the target can act on the network as the user for as long as the session is open (<code>[rdp] remote_guard_outbound_identity = "allow"</code>).</span>
+                        {% else %}
+                        <span data-remote-guard-policy="deny">On this bastion the session has no identity on the network: from it, the user cannot reach a file share or another server (<code>[rdp] remote_guard_outbound_identity = "deny"</code>).</span>
+                        {% endif %}
+                        That setting applies to every asset in this mode and is changed in the configuration file of the bastion.
                     </p>
                 </div>
 
