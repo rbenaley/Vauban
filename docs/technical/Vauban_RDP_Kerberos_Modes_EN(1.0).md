@@ -436,7 +436,8 @@ The redirection channel backend is adapted from a private module of
 the IronRDP connector. It sets the ASN.1 slot of each Kerberos
 response (`KERB_ASN1_DATA.Pdu`), which a Windows target requires and
 the upstream module leaves at 0. It is compared with the upstream
-module on every bump of the IronRDP pin.
+module on every bump of the IronRDP pin, following the
+[pin bump checklist](../runbooks/ironrdp_pin_bump_checklist.md).
 
 No domain controller is available in CI. The three modes are covered
 by an in-process harness (`session::credssp_loop_tests`): the

@@ -18,6 +18,8 @@ Related:
   "Remote Credential Guard"
 - [IronRDP upgrade smoke test](ironrdp_migration_smoke_test.md): run it
   first; this checklist assumes the three other modes still work.
+- [Moving the IronRDP pin](ironrdp_pin_bump_checklist.md): the steps
+  that lead here when the pin moves.
 - Lints: `vauban-proxy-rdp/scripts/check_patch_pins.sh`
 
 The names below are examples. Replace `srv01.contoso.com` (target),

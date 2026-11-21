@@ -131,6 +131,7 @@ openh264-sys2 = { git = "https://github.com/rbenaley/openh264-rs-avx2", rev = "3
 # This also moves the workspace to sspi 0.23.1 from crates.io, which holds
 # the Windows mechListMIC fix (Devolutions/sspi-rs#772) the sspi-rs-vb fork
 # used to carry: that fork is gone, do not bring an sspi entry back.
+# To move the rev: docs/runbooks/ironrdp_pin_bump_checklist.md.
 # Remove these entries, and check_patch_pins.sh's ironrdp rules, when a
 # published IronRDP release contains Remote Credential Guard. The proxy's
 # own backend stays until upstream offers one that sets KERB_ASN1_DATA.Pdu

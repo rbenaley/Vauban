@@ -11,7 +11,8 @@
 //! Adapted from `crates/ironrdp-connector/src/remote_guard.rs` of IronRDP
 //! (Devolutions, MIT OR Apache-2.0), at the commit the workspace manifest
 //! pins. Upstream keeps that module private, so the proxy carries its own
-//! copy. Compare the two when the pin moves. Three differences are
+//! copy. Compare the two when the pin moves
+//! (`docs/runbooks/ironrdp_pin_bump_checklist.md`). Three differences are
 //! deliberate, and are the reason a plain re-copy would be a regression:
 //!
 //! * **`KERB_ASN1_DATA.Pdu` is set.** Upstream returns it as 0. A Windows
