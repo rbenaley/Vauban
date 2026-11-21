@@ -4,7 +4,8 @@
 **Date:** 21 February 2026  
 **Author:** Richard Ben Aleya  
 **Amended:** 24 July 2026 — Kerberos KDC FD-pass (§11.3.1); crate **0.9.30**  
-**Amended:** 14 November 2026 — Kerberos realm table, KDC failover, realm sentinel URL, ambient configuration isolation (§11.3.1)
+**Amended:** 14 November 2026 — Kerberos realm table, KDC failover, realm sentinel URL, ambient configuration isolation (§11.3.1)  
+**Amended:** 21 November 2026 — Remote Credential Guard, fourth authentication mode (§11.3.1); crate **0.9.61**. The three Kerberos modes are compared in [Vauban RDP Kerberos Authentication Modes](Vauban_RDP_Kerberos_Modes_EN(1.0).md)
 
 ---
 
@@ -912,10 +913,10 @@ handle. The key stays in the proxy.
 
 The connector is not told about the mode: it would run CredSSP itself,
 with a package list the proxy does not control. The proxy sets the
-flag, checks the answer, drives CredSSP and installs the channel, and
-uses the connector's channel backend (framing, NDR decoding, version
-negotiation, status codes) with its own decision point,
-`remote_guard::PolicyContext`.
+flag, checks the answer, drives CredSSP and installs the channel. The
+channel backend (framing, NDR decoding, version negotiation, status
+codes) is the proxy's own, `remote_guard_channel.rs`, with its
+decision point, `remote_guard::PolicyContext`.
 
 *Outbound identity.* What the proxy answers is a bastion-wide setting,
 `[rdp] remote_guard_outbound_identity`:
@@ -943,7 +944,7 @@ refusal of a session, then a count every five minutes.
 *Redirected NTLM* is never granted, under either value: no Kerberos
 mode reaches NTLM. The CredSSP client is never given an NTLM
 supplemental credential, and the policy context reports NTLM as
-unavailable, so the connector refuses every NTLM request, its version
+unavailable, so the backend refuses every NTLM request, its version
 negotiation included. From such a session a resource reached by IP
 address is therefore not accessible, whatever the setting.
 
@@ -1033,6 +1034,7 @@ evidence only, most specific first:
 | `encryption_type_unsupported` | KDC code 14 | enable AES on the account or service |
 | `pre_auth_not_required` | first KDC reply is an AS-REP | clear the pre-authentication exemption |
 | `restricted_admin_refused` | logon refused in Restricted Admin mode | `DisableRestrictedAdmin = 0`, local administrator |
+| `remote_guard_refused` | logon refused in Remote Credential Guard mode | Remote Desktop logon right, Remote Credential Guard accepted by the target, `setspn -Q HOST/<fqdn>` |
 | `credentials_rejected` | logon refused in another mode | credentials, Remote Desktop logon right |
 | `kerberos_package_refused` | Kerberos mode, token the client cannot use, no service ticket issued | target joined to the domain |
 | `target_token_rejected` | Kerberos mode, the KDC answered the whole exchange without an error (at least three replies), then the client refused a token of the target | the cause after `caused by:` in the proxy log; not the account, the realm or the SPN |
@@ -1040,8 +1042,8 @@ evidence only, most specific first:
 | `ntlm_forbidden` | `[rdp] ntlm_policy = "deny"` and a mode that is not a Kerberos mode | switch the asset to a Kerberos mode |
 | `other` | none of the above | proxy log for the session |
 
-`restricted_admin_refused`, `credentials_rejected`,
-`kerberos_package_refused` and `target_token_rejected` are inferred
+`restricted_admin_refused`, `remote_guard_refused`,
+`credentials_rejected`, `kerberos_package_refused` and `target_token_rejected` are inferred
 from how the target answers, not from a code that names the cause.
 `target_token_rejected` (0.9.59) separates a target that answered in
 Kerberos from one that could not: before it, a refused `mechListMIC`
