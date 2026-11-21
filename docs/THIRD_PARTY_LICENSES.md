@@ -173,9 +173,10 @@ The `ironrdp-*` crates are built from
 `https://github.com/rbenaley/IronRDP-vb`, a fork of
 `https://github.com/Devolutions/IronRDP` pinned by commit in the
 workspace `[patch.crates-io]`: the upstream main branch (Copyright (c)
-Devolutions Inc.) plus two commits: one sets the ASN.1 slot of the
+Devolutions Inc.) plus three commits: one sets the ASN.1 slot of the
 redirected Kerberos responses of Remote Credential Guard, with its
-tests; the other takes a DNS resolver out of a cargo feature. The slot values are the ones the FreeRDP `rdpear` channel uses.
+tests; one takes a DNS resolver out of a cargo feature; one makes a
+module public. The slot values are the ones the FreeRDP `rdpear` channel uses.
 The crates keep their upstream license, MIT OR Apache-2.0.
 
 ## sspi test helper (MIT)

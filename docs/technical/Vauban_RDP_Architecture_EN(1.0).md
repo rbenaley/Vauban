@@ -753,9 +753,9 @@ seals, then enrolled via `AccessGuardWiring::fds` into
 can read/write the access pipe but cannot acquire any new resource —
 the dispatcher and `authorize()` calls run entirely on pre-opened FDs.
 
-#### 11.3.1 Kerberos KDC FD-pass (both Kerberos modes)
+#### 11.3.1 Kerberos KDC FD-pass (every Kerberos mode)
 
-An RDP asset has one of three NLA authentication modes. What a mode
+An RDP asset has one of four NLA authentication modes. What a mode
 means on the wire is one table, `auth_mode_profile` in
 `vauban-proxy-rdp/src/session.rs`:
 
@@ -764,13 +764,25 @@ means on the wire is one table, `auth_mode_profile` in
 | `ntlm` | none | identity | NTLM | local accounts, hosts outside a domain |
 | `kerberos` | none | identity | Kerberos only | domain accounts that are not local administrators of the target |
 | `kerberos_restricted_admin` | `RESTRICTED_ADMIN_MODE_REQUIRED` | empty | Kerberos only | local administrators of the target |
+| `kerberos_remote_guard` | `REDIRECTED_AUTHENTICATION_MODE_REQUIRED` | a service ticket and a TGT without its key | Kerberos only | any domain account |
 
-Neither Kerberos mode falls back to NTLM: the SPNEGO package list is
+The profile holds one value per mode, what the target receives
+(`TargetCredentials`: the password, nothing, or Remote Credential
+Guard credentials). The negotiation flag, the flag the target must
+announce back, the CredSSP mode and the fate of the password in the
+Client Info PDU are all computed from it, so no two of them can
+disagree.
+
+No Kerberos mode falls back to NTLM: the SPNEGO package list is
 `kerberos` alone, so a target that selects NTLM fails the CredSSP
 sequence. In `kerberos` the password is delegated to the target inside
 CredSSP, as in `ntlm`; what changes is that the target is authenticated
-by a service ticket and no NTLM response crosses the network. Only
-`kerberos_restricted_admin` keeps the password off the target.
+by a service ticket and no NTLM response crosses the network.
+`kerberos_restricted_admin` and `kerberos_remote_guard` keep the
+password off the target. The first is reserved to local administrators
+of the target and gives the session the identity of the target machine
+on the network. The second serves any domain account: see
+"Remote Credential Guard" below.
 
 **Turning NTLM off.** `[rdp] ntlm_policy` is `"allow"` (default) or
 `"deny"`. Under `deny`, a session is opened only for an asset in a
@@ -822,7 +834,8 @@ paths that share one validator, `services::rdp_auth_mode::resolve`:
 Rules, identical on both paths:
 
 - `rdp_auth_mode` is one of `ntlm`, `kerberos`,
-  `kerberos_restricted_admin`. Any other value is refused (HTTP 400 on
+  `kerberos_restricted_admin`, `kerberos_remote_guard`. Any other value
+  is refused (HTTP 400 on
   the API, a flash error on the form). It is never stored as `ntlm`.
 - Absent on create, the mode is `ntlm`. Absent on update, the stored
   mode and domain are kept; an empty `rdp_domain` clears the domain.
@@ -858,16 +871,121 @@ run. Consequence: a target that cannot do NLA (for example xrdp
 without it) is no longer reachable, in the NTLM mode either. This is a
 behavior change of 0.9.50.
 
-**Restricted Admin and the Client Info PDU.** After CredSSP, RDP sends
-the Client Info PDU (`TS_INFO_PACKET`), which IronRDP fills with the
-configured user name and password. In `kerberos_restricted_admin` the
-proxy removes the password from that configuration as soon as the
-CredSSP client has taken its own copy (`strip_client_info_password`, in
-`perform_credssp_step`, before any I/O), so the target receives neither
-TSCredentials nor a Client Info password. In `kerberos` and `ntlm` the
-password is delegated by design and the PDU carries it.
+**The Client Info PDU.** After CredSSP, RDP sends the Client Info PDU
+(`TS_INFO_PACKET`), which IronRDP fills with the configured user name
+and password. In `kerberos_restricted_admin` and
+`kerberos_remote_guard` the proxy removes the password from that
+configuration as soon as the CredSSP client has taken its own copy
+(`strip_client_info_password`, in `perform_credssp_step`, before any
+I/O), so the target receives no password, neither in TSCredentials nor
+in the Client Info PDU. In `kerberos` and `ntlm` the password is
+delegated by design and the PDU carries it.
 
-In either Kerberos mode, sspi issues `NetworkRequest` TCP exchanges (typically AS-REQ then TGS-REQ for `TERMSRV/<fqdn>`). The
+**Remote Credential Guard (`kerberos_remote_guard`).** The mode opens a
+session for any domain account without giving the target anything it
+can reuse. Instead of a password, the CredSSP exchange carries
+`TSRemoteGuardCreds`: a ticket for the computer account of the target
+(`HOST/<fqdn>`) and a forwarded TGT whose session key is replaced by a
+handle. The key stays in the proxy.
+
+1. The X.224 Connection Request carries
+   `REDIRECTED_AUTHENTICATION_MODE_REQUIRED`. A target that does not
+   answer `REDIRECTED_AUTHENTICATION_MODE_SUPPORTED` is refused
+   (`negotiation_refused`) before any ticket is sent.
+2. CredSSP runs with the Kerberos package only, in
+   `CredSspMode::RemoteGuard`. The KDC exchanges go through the
+   supervisor broker, as in the other Kerberos modes: an AS exchange,
+   then three ticket requests (`TERMSRV/<fqdn>`, `HOST/<fqdn>`, and the
+   forwarded TGT). The asset hostname must therefore be the name under
+   which the target's computer account is registered.
+3. Once the target has accepted the logon, the Kerberos context of the
+   exchange becomes the session that answers the target
+   (`sspi::rcg::RemoteGuardSession`). The proxy installs it on the
+   dynamic channel carrier, as the backend of the
+   `Microsoft::Windows::RDS::AuthRedirection` channel ([MS-RDPEAR]),
+   behind its own policy (`attach_remote_guard_channel`). No other
+   mode installs that channel.
+4. For as long as the session is open, each time the target needs
+   Kerberos for the user it asks the proxy for the operations that need
+   the key. The target talks to the KDC itself; the proxy only
+   computes. The KDC broker is not used after the logon.
+
+The connector is not told about the mode: it would run CredSSP itself,
+with a package list the proxy does not control. The proxy sets the
+flag, checks the answer, drives CredSSP and installs the channel, and
+uses the connector's channel backend (framing, NDR decoding, version
+negotiation, status codes) with its own decision point,
+`remote_guard::PolicyContext`.
+
+*Outbound identity.* What the proxy answers is a bastion-wide setting,
+`[rdp] remote_guard_outbound_identity`:
+
+| Value | The proxy | From the session, the user |
+|---|---|---|
+| `"deny"` (default) | answers the version negotiation the logon needs, and refuses every other operation with `STATUS_NOT_SUPPORTED` | has no identity on the network: no service ticket is obtained, and a ticket already held cannot be used, because each use needs an authenticator from the proxy |
+| `"allow"` | performs the operations | reaches other services as themselves, for as long as the session is open |
+
+The setting follows the model of `ntlm_policy`: a closed set read
+exactly, a value outside it stops the supervisor and vauban-web at
+load, the supervisor hands it to the RDP proxy alone in
+`VAUBAN_RDP_REMOTE_GUARD_OUTBOUND_IDENTITY`, the proxy reads it once,
+removes it from its environment, exits if it is absent or not
+canonical, and answers `deny` before it is read. A change takes effect
+when the proxy restarts; a session keeps the value it was opened with.
+vauban-web reads the key to show it, read-only, on the asset forms. It
+decides nothing with it. `"services"`, a list of reachable services, is
+planned and is refused until it is implemented.
+
+Under `deny` a Windows target keeps asking, about once per second. The
+proxy answers each request and writes one log line for the first
+refusal of a session, then a count every five minutes.
+
+*Redirected NTLM* is never granted, under either value: no Kerberos
+mode reaches NTLM. The CredSSP client is never given an NTLM
+supplemental credential, and the policy context reports NTLM as
+unavailable, so the connector refuses every NTLM request, its version
+negotiation included. From such a session a resource reached by IP
+address is therefore not accessible, whatever the setting.
+
+*What is logged.* At the logon, the value of the setting. Under
+`allow`, each ticket the target requests (`ComputeTgsChecksum`: the
+service named in the request body) and each ticket it obtains
+(`UnpackKdcReplyBody`: the service named in the KDC reply), with the
+session identifier. A service name is chosen by the target or relayed
+by the KDC: it is reduced to printable ASCII, bounded, and written
+through the single-line log writer. No other argument of a request is
+logged: they are keys, or are encrypted with one.
+
+*Request-loop guard.* A target whose Kerberos module does not accept
+the proxy's responses asks for the same operations without end and
+never brings back a KDC reply. Under `allow`, the proxy counts the
+ticket requests it answered since the last KDC reply; at 240 within 60
+seconds it logs the cause, closes the channel (the keys are erased)
+and the session ends. A working logon is a few tens of operations.
+
+*What changes for the threat model.*
+
+- The proxy keeps the key of the user's TGT for the whole session. In
+  every other mode it holds no Kerberos secret once the session is
+  open.
+- Under `allow`, a compromised target can act on the network as the
+  user for as long as the session is open. The bastion is the one that
+  signs. It obtains nothing it can use after the session ends.
+- Under `deny`, the proxy signs nothing for the target.
+- Every message on the channel is untrusted input: bounded in size,
+  decoded strictly, and any protection error closes the channel and
+  erases the keys.
+
+*Target support.* The redirected Kerberos responses carry the slot of
+their ASN.1 type in the target's Kerberos module (`KERB_ASN1_DATA.Pdu`).
+The values used are those of Windows versions up to Server 2022, with
+the shifted value for newer modules taken from the FreeRDP `rdpear`
+channel. The first set was checked against a domain-joined Windows
+target on 2026-11-21; the shifted one is not checked. A target that
+needs a value the proxy does not send is the case the request-loop
+guard closes.
+
+In every Kerberos mode, sspi issues `NetworkRequest` TCP exchanges (typically AS-REQ then TGS-REQ for `TERMSRV/<fqdn>`). The
 sealed proxy cannot `connect()` to the KDC, so each request leases a
 connected socket from the supervisor:
 
@@ -940,12 +1058,14 @@ and `RDP session connected` carry `auth_mode`.
 
 **The IronRDP fork.** The `ironrdp-*` crates come from
 `https://github.com/rbenaley/IronRDP-vb`, pinned by commit in the
-workspace `[patch.crates-io]`: the upstream main branch plus two
+workspace `[patch.crates-io]`: the upstream main branch plus three
 commits. Upstream main carries Remote Credential Guard under the
 version numbers of the published crates, so no published crate has it.
 One commit keeps the DNS resolver of `sspi` out of the connector's
 `remote-guard` feature: the proxy reaches a KDC through the supervisor
-broker only. The other sets `KERB_ASN1_DATA.Pdu` in the redirected Kerberos
+broker only. One makes the backend of the authentication redirection
+channel public, so the proxy installs it around its own policy. The
+third sets `KERB_ASN1_DATA.Pdu` in the redirected Kerberos
 responses: a Windows target decodes each response with that slot, and
 with slot 0 it rejects them all, which leaves the session without an
 outbound identity. `sspi` is 0.23.1 from crates.io. It holds the fix
@@ -983,6 +1103,21 @@ in CI. The CredSSP leg is covered by two harnesses in
   filter first reproduces the MIC `sspi` computed, so it cannot sign
   with the wrong key unnoticed. Against `sspi` 0.23.0 from crates.io
   the two completion tests fail with the error met in production.
+  In `kerberos_remote_guard` the client leg completes against the
+  same harness (four KDC exchanges, password absent from everything
+  the client sent, redirection channel installed), and the test
+  target, which authenticates the client but does not implement
+  `TSRemoteGuardCreds`, refuses the last message. That mode asks for
+  sequence detection, so the MIC numbered 0 is refused there: the
+  filter does not stand for a Windows target in that mode.
+- **Redirection channel, in the default suite** (`remote_guard::tests`).
+  The proxy's policy context runs behind the connector's real channel
+  backend, around a scripted context in place of the `sspi` session:
+  version negotiation and refusals under `deny`, delegation under
+  `allow`, NTLM refused under both, the request-loop guard, the
+  reading and reduction of service names. A Windows target accepting
+  the logon and using the channel is not covered in CI: see
+  `docs/runbooks/rdp_remote_credential_guard_smoke_test.md`.
 - **MIT KDC, opt-in** (`session::mit_kdc_tests`). A throwaway MIT realm
   on loopback. The proxy obtains a TGT from it through the production
   path: lease request, a stand-in supervisor that passes the connected
