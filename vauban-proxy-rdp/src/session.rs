@@ -3002,7 +3002,7 @@ where
 
 /// Largest message the authentication redirection channel reassembles
 /// (the bound the connector's own Remote Credential Guard path uses).
-const REMOTE_GUARD_MAX_MESSAGE_SIZE: usize = ironrdp_connector::remote_guard::MAX_MESSAGE_SIZE;
+const REMOTE_GUARD_MAX_MESSAGE_SIZE: usize = crate::remote_guard_channel::MAX_MESSAGE_SIZE;
 
 /// What the NLA leg of a session is driven by.
 #[derive(Debug, Clone)]
@@ -3025,7 +3025,9 @@ pub struct NlaSettings {
 /// running CredSSP itself, with a package list the proxy does not
 /// control), so this is the proxy's own version of the connector's
 /// `complete_credssp`, with the same three checks: a carrier, a bounded
-/// carrier, and no channel of that name already.
+/// carrier, and no channel of that name already. The backend is the
+/// proxy's own as well ([`crate::remote_guard_channel`]): the connector's
+/// is private, and returns `KERB_ASN1_DATA.Pdu` as 0.
 ///
 /// Redirected NTLM is never enabled: `enable_remote_guard_ntlm` is not
 /// called on the CredSSP client, so the target receives no NTLM
@@ -3066,11 +3068,11 @@ fn attach_remote_guard_channel(
         settings.remote_guard_outbound_identity,
         settings.session_id.clone(),
     );
-    let backend = ironrdp_connector::remote_guard::Backend {
+    let backend = crate::remote_guard_channel::Backend {
         context: Some(context),
         negotiated: false,
         ntlm_negotiated: false,
-        // The version negotiation is answered by the connector, in every
+        // The version negotiation is answered by the backend, in every
         // policy: a Windows target closes the connection when it is
         // refused. What follows it is the policy context's decision.
         kerberos_allowed: true,

@@ -35,13 +35,12 @@ tokio.workspace = true
 # which pins picky =7.0.0-rc.25 and through it curve25519-dalek =5.0.0-rc.1.
 # The sub-crates are depended on directly so the stack sits on a picky
 # release candidate that accepts the stable dalek releases.
-# Every ironrdp-* crate is taken from the fork named in the workspace
-# `[patch.crates-io]`; the versions below are the ones it declares.
-# `remote-guard` brings Remote Credential Guard (ironrdp-rdpear and
-# sspi's `rcg` module). In the fork it does not bring sspi's DNS
-# resolver: the proxy names its KDC and never asks sspi to look one up
-# (kerberos_realm_preflight_invariants_test.rs, patch_pins_invariants_test.rs).
-ironrdp-connector = { version = "0.12", features = ["remote-guard"] }
+# Every ironrdp-* crate is taken from upstream main, at the commit of the
+# workspace `[patch.crates-io]`; the versions below are the ones it declares.
+# The connector's `remote-guard` feature stays off: it would bring sspi's
+# DNS resolver, and the proxy has its own channel backend
+# (remote_guard_channel.rs, patch_pins_invariants_test.rs).
+ironrdp-connector = "0.12"
 ironrdp-session = "0.13"
 ironrdp-graphics = "0.11"
 ironrdp-input = "0.9"
@@ -52,10 +51,10 @@ ironrdp-core = "0.3"
 ironrdp-async = "0.12"
 ironrdp-tokio = "0.12"
 ironrdp-svc = "0.10"
-# Remote Credential Guard channel. Not on crates.io: taken from the fork
+# Remote Credential Guard channel. Not on crates.io: taken from upstream
 # directly, on the rev of the workspace `[patch.crates-io]` entries
 # (check_patch_pins.sh keeps the two equal).
-ironrdp-rdpear = { git = "https://github.com/rbenaley/IronRDP-vb", rev = "6083bc3d2dc693e8cc4db586913fd8112ece1d90" }
+ironrdp-rdpear = { git = "https://github.com/Devolutions/IronRDP", rev = "a8da54ba4d849370bc92e1d5230cc18e99cf5ff1" }
 # Service names of the redirected Kerberos operations, for the log
 # (`remote_guard.rs`). Already in the tree through `sspi`.
 picky-krb = "0.13"

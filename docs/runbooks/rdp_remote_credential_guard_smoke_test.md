@@ -9,7 +9,7 @@
 >
 > Audience: release / staging operators.
 > Severity: **BLOCKING** for the release that ships the mode, and for
-> any later bump of the IronRDP fork or of `sspi`. Do not ship without
+> any later bump of the IronRDP pin or of `sspi`. Do not ship without
 > A to G.
 
 Related:
@@ -191,7 +191,7 @@ version with that line.
 
 | Stack | Validated on | By |
 |---|---|---|
-| IronRDP fork at `6083bc3d` / sspi 0.23.1, proxy of the release that ships the mode | _pending first manual pass_ | _--_ |
+| IronRDP main at `a8da54ba` / sspi 0.23.1, proxy of the release that ships the mode | _pending first manual pass_ | _--_ |
 
 The redirected operations of this stack, with the IronRDP client
 instead of the proxy, passed against a domain-joined Windows target on

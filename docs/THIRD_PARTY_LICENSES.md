@@ -167,17 +167,19 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## IronRDP (MIT OR Apache-2.0), from a fork
+## IronRDP (MIT OR Apache-2.0), from its main branch
 
 The `ironrdp-*` crates are built from
-`https://github.com/rbenaley/IronRDP-vb`, a fork of
-`https://github.com/Devolutions/IronRDP` pinned by commit in the
-workspace `[patch.crates-io]`: the upstream main branch (Copyright (c)
-Devolutions Inc.) plus three commits: one sets the ASN.1 slot of the
-redirected Kerberos responses of Remote Credential Guard, with its
-tests; one takes a DNS resolver out of a cargo feature; one makes a
-module public. The slot values are the ones the FreeRDP `rdpear` channel uses.
-The crates keep their upstream license, MIT OR Apache-2.0.
+`https://github.com/Devolutions/IronRDP` (Copyright (c) Devolutions
+Inc.), pinned by commit in the workspace `[patch.crates-io]`. They keep
+their license, MIT OR Apache-2.0.
+
+`vauban-proxy-rdp/src/remote_guard_channel.rs` is adapted from
+`crates/ironrdp-connector/src/remote_guard.rs` of that repository, at
+the same commit, under the same license. It differs in the ASN.1 slot
+of the redirected Kerberos responses of Remote Credential Guard, whose
+values are the ones the FreeRDP `rdpear` channel uses, and in leaving
+redirected NTLM out.
 
 ## sspi test helper (MIT)
 

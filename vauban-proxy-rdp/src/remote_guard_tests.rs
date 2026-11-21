@@ -1,7 +1,7 @@
 //! Tests of the Remote Credential Guard policy context.
 //!
 //! The inner context is scripted: it stands for the `sspi` session, so
-//! the policy is exercised through the connector's real `Backend` (NDR
+//! the policy is exercised through the proxy's real `Backend` (NDR
 //! decoding, version negotiation, status mapping, response framing)
 //! without a live Kerberos exchange. The exchange itself is covered by
 //! `session_credssp_loop_tests` and by the smoke runbook.
@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use ironrdp_connector::remote_guard::{
+use crate::remote_guard_channel::{
     Backend, KERBEROS, MAX_MESSAGE_SIZE, NTLM, PROFILE, STATUS_NOT_SUPPORTED, WRAP_OVERHEAD,
     asn1_output,
 };
@@ -58,7 +58,7 @@ impl Probe {
 }
 
 /// Stands for `sspi::rcg::RemoteGuardSession`: hands the next plaintext
-/// to the connector, and answers every Kerberos operation it is asked.
+/// to the backend, and answers every Kerberos operation it is asked.
 struct Scripted {
     plaintext: Vec<u8>,
     fail_execute: bool,
@@ -130,7 +130,7 @@ fn backend(policy: RemoteGuardOutboundIdentity) -> (TestBackend, Probe) {
         context: Some(PolicyContext::new(inner, policy, SESSION.to_string())),
         negotiated: false,
         ntlm_negotiated: false,
-        // As in production: the connector answers the version negotiation.
+        // As in production: the backend answers the version negotiation.
         kerberos_allowed: true,
     };
     (backend, probe)
@@ -300,7 +300,7 @@ fn every_operation() -> Vec<KerberosRequest> {
 fn deny_answers_the_version_negotiation() {
     let (mut backend, probe) = backend(RemoteGuardOutboundIdentity::Deny);
     assert_eq!(negotiate(&mut backend), 0);
-    assert_eq!(probe.executed(), 0, "the connector answers it, not sspi");
+    assert_eq!(probe.executed(), 0, "the backend answers it, not sspi");
 }
 
 /// Under `deny` no operation reaches the `sspi` session, so no key of
@@ -357,7 +357,7 @@ fn allow_performs_the_operations() {
 }
 
 /// Before the version negotiation nothing is performed, in either
-/// policy: `allow` does not skip the connector's own sequencing.
+/// policy: `allow` does not skip the backend's own sequencing.
 #[test]
 fn attack_operation_before_negotiation_is_rejected() {
     for policy in RemoteGuardOutboundIdentity::ALL {
@@ -417,7 +417,7 @@ fn attack_ntlm_operation_in_remote_guard_is_rejected() {
 }
 
 /// Called directly, the context refuses NTLM too: the answer does not
-/// depend on the connector checking `ntlm_available` first.
+/// depend on the backend checking `ntlm_available` first.
 #[test]
 fn attack_ntlm_request_reaching_the_context_is_rejected() {
     for policy in RemoteGuardOutboundIdentity::ALL {

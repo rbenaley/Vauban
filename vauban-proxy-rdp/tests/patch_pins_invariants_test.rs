@@ -4,8 +4,10 @@
 //!
 //! `Cargo.lock` is not versioned: an entry without a `rev` builds whatever
 //! its branch holds that day. The `ironrdp-*` entries carry Remote
-//! Credential Guard and the fix without which its sessions have no
-//! outbound identity; they must all come from the one fork, on one rev.
+//! Credential Guard, which no published crate has; they must all come
+//! from upstream IronRDP, on one rev. The proxy has its own backend for
+//! the redirection channel and leaves the connector's `remote-guard`
+//! feature off.
 //! `sspi` comes from crates.io: 0.23.1 holds the Windows mechListMIC fix
 //! the `sspi-rs-vb` fork used to carry.
 
@@ -54,8 +56,10 @@ fn every_patch_entry_is_pinned_by_a_full_commit_id() {
     }
 }
 
-const IRONRDP_FORK: &str = "git = \"https://github.com/rbenaley/IronRDP-vb\"";
-const IRONRDP_REV: &str = "6083bc3d2dc693e8cc4db586913fd8112ece1d90";
+const IRONRDP_REPO: &str = "git = \"https://github.com/Devolutions/IronRDP\"";
+const IRONRDP_REV: &str = "a8da54ba4d849370bc92e1d5230cc18e99cf5ff1";
+/// Any other full commit id, for the tests that move one entry.
+const OTHER_REV: &str = "0123456789abcdef0123456789abcdef01234567";
 
 fn ironrdp_entries(manifest: &str) -> Vec<&str> {
     patch_entries(manifest)
@@ -70,7 +74,7 @@ fn name_of(entry: &str) -> &str {
 }
 
 #[test]
-fn every_ironrdp_crate_comes_from_the_fork_on_one_rev() {
+fn every_ironrdp_crate_comes_from_upstream_on_one_rev() {
     let entries = ironrdp_entries(MANIFEST);
     assert!(
         entries
@@ -80,8 +84,8 @@ fn every_ironrdp_crate_comes_from_the_fork_on_one_rev() {
     );
     for entry in &entries {
         assert!(
-            entry.contains(IRONRDP_FORK),
-            "an ironrdp entry must come from the fork: {entry}"
+            entry.contains(IRONRDP_REPO),
+            "an ironrdp entry must come from upstream IronRDP: {entry}"
         );
         assert_eq!(
             rev_of(entry),
@@ -94,7 +98,7 @@ fn every_ironrdp_crate_comes_from_the_fork_on_one_rev() {
 /// Every `ironrdp-*` package the proxy resolves is patched. One left on
 /// crates.io would be a second copy of the types the others exchange.
 /// `ironrdp-rdpear` is not on crates.io: it has no entry and reaches the
-/// tree through the fork's connector.
+/// tree as a direct dependency of the proxy.
 #[test]
 fn every_resolved_ironrdp_crate_has_an_entry() {
     let patched: Vec<&str> = ironrdp_entries(MANIFEST).into_iter().map(name_of).collect();
@@ -111,8 +115,8 @@ fn every_resolved_ironrdp_crate_has_an_entry() {
         seen += 1;
         let name = line.split(' ').next().unwrap();
         assert!(
-            line.contains("rbenaley/IronRDP-vb"),
-            "{name} does not come from the fork: {line}"
+            line.contains("github.com/Devolutions/IronRDP?rev="),
+            "{name} does not come from upstream IronRDP: {line}"
         );
         assert!(
             name == "ironrdp-rdpear" || patched.contains(&name),
@@ -132,7 +136,7 @@ fn sspi_comes_from_the_registry() {
     );
 }
 
-/// The manifest states why the fork exists and when it goes away.
+/// The manifest states why the entries exist and when they go away.
 #[test]
 fn the_ironrdp_entries_state_their_removal_condition() {
     let section = MANIFEST
@@ -145,6 +149,7 @@ fn the_ironrdp_entries_state_their_removal_condition() {
     );
     assert!(section.contains("KERB_ASN1_DATA.Pdu"));
     assert!(section.contains("without a DNS resolver"));
+    assert!(section.contains("remote_guard_channel.rs"));
 }
 
 /// Run the lint on `manifest` and on the proxy's own manifest, written
@@ -174,8 +179,8 @@ fn run_script_on(name: &str, manifest: &str) -> bool {
     run_script_on_both(name, manifest, PROXY_MANIFEST)
 }
 
-/// The line of the proxy manifest that takes `ironrdp-rdpear` from the
-/// fork.
+/// The line of the proxy manifest that takes `ironrdp-rdpear` from
+/// upstream.
 fn rdpear_line() -> &'static str {
     PROXY_MANIFEST
         .lines()
@@ -183,31 +188,31 @@ fn rdpear_line() -> &'static str {
         .expect("ironrdp-rdpear dependency")
 }
 
-/// `ironrdp-rdpear` is not on crates.io: the proxy takes it from the
-/// fork directly, on the rev of the patch entries.
+/// `ironrdp-rdpear` is not on crates.io: the proxy takes it from
+/// upstream directly, on the rev of the patch entries.
 #[test]
-fn the_direct_fork_dependency_is_on_the_patch_rev() {
+fn the_direct_git_dependency_is_on_the_patch_rev() {
     let line = rdpear_line();
-    assert!(line.contains(IRONRDP_FORK), "{line}");
+    assert!(line.contains(IRONRDP_REPO), "{line}");
     assert_eq!(rev_of(line), Some(IRONRDP_REV), "{line}");
     assert!(!line.contains("branch = ") && !line.contains("tag = "));
 }
 
 #[test]
-fn attack_the_lint_refuses_a_direct_fork_dependency_on_another_rev() {
+fn attack_the_lint_refuses_a_direct_git_dependency_on_another_rev() {
     let line = rdpear_line();
-    let other = line.replacen(IRONRDP_REV, "a8da54ba4d849370bc92e1d5230cc18e99cf5ff1", 1);
+    let other = line.replacen(IRONRDP_REV, OTHER_REV, 1);
     assert_ne!(other, line);
     let proxy = PROXY_MANIFEST.replacen(line, &other, 1);
     assert!(!run_script_on_both("direct_rev", MANIFEST, &proxy));
 }
 
 #[test]
-fn attack_the_lint_refuses_a_direct_fork_dependency_following_a_branch() {
+fn attack_the_lint_refuses_a_direct_git_dependency_following_a_branch() {
     let line = rdpear_line();
     let branch = line.replacen(
         &format!("rev = \"{IRONRDP_REV}\""),
-        "branch = \"vb/rcg-asn1-pdu\"",
+        "branch = \"master\"",
         1,
     );
     assert_ne!(branch, line);
@@ -245,7 +250,7 @@ fn attack_the_lint_refuses_an_entry_following_a_branch() {
     let line = connector_line();
     let branch_line = line.replacen(
         &format!("rev = \"{IRONRDP_REV}\""),
-        "branch = \"vb/rcg-asn1-pdu\"",
+        "branch = \"master\"",
         1,
     );
     let branch = MANIFEST.replacen(line, &branch_line, 1);
@@ -253,7 +258,7 @@ fn attack_the_lint_refuses_an_entry_following_a_branch() {
 }
 
 #[test]
-fn attack_the_lint_refuses_a_manifest_without_the_connector_fork() {
+fn attack_the_lint_refuses_a_manifest_without_the_connector_entry() {
     let without: String = MANIFEST
         .lines()
         .filter(|line| !line.starts_with("ironrdp-connector = "))
@@ -265,7 +270,7 @@ fn attack_the_lint_refuses_a_manifest_without_the_connector_fork() {
 #[test]
 fn attack_the_lint_refuses_an_ironrdp_crate_from_another_repository() {
     let line = connector_line();
-    let elsewhere_line = line.replacen("rbenaley/IronRDP-vb", "someone/IronRDP", 1);
+    let elsewhere_line = line.replacen("Devolutions/IronRDP", "someone/IronRDP", 1);
     let elsewhere = MANIFEST.replacen(line, &elsewhere_line, 1);
     assert!(!run_script_on("elsewhere", &elsewhere));
 }
@@ -273,7 +278,7 @@ fn attack_the_lint_refuses_an_ironrdp_crate_from_another_repository() {
 #[test]
 fn attack_the_lint_refuses_ironrdp_crates_on_two_revs() {
     let line = connector_line();
-    let other_line = line.replacen(IRONRDP_REV, "a8da54ba4d849370bc92e1d5230cc18e99cf5ff1", 1);
+    let other_line = line.replacen(IRONRDP_REV, OTHER_REV, 1);
     let split = MANIFEST.replacen(line, &other_line, 1);
     assert!(!run_script_on("two_revs", &split));
 }
@@ -291,10 +296,34 @@ fn attack_the_lint_refuses_an_sspi_entry_brought_back() {
     assert!(!run_script_on("sspi_back", &with_sspi));
 }
 
-/// The proxy is sandboxed and reaches a KDC through the supervisor broker.
-/// The fork keeps `sspi`'s DNS resolver out of the connector's
-/// `remote-guard` feature; a pin that moves back to a revision where the
-/// feature brings it in fails here (and under `cargo deny`: the resolver
+/// The connector's `remote-guard` feature brings `sspi`'s DNS resolver
+/// and a channel backend that returns `KERB_ASN1_DATA.Pdu` as 0. The proxy
+/// installs its own backend and leaves the feature off.
+#[test]
+fn the_proxy_leaves_the_connector_remote_guard_feature_off() {
+    let line = PROXY_MANIFEST
+        .lines()
+        .find(|line| line.starts_with("ironrdp-connector = "))
+        .expect("ironrdp-connector dependency");
+    assert!(!line.contains("remote-guard"), "{line}");
+}
+
+#[test]
+fn attack_the_lint_refuses_the_connector_remote_guard_feature() {
+    let line = PROXY_MANIFEST
+        .lines()
+        .find(|line| line.starts_with("ironrdp-connector = "))
+        .expect("ironrdp-connector dependency");
+    let with_feature =
+        "ironrdp-connector = { version = \"0.12\", features = [\"remote-guard\"] }";
+    let proxy = PROXY_MANIFEST.replacen(line, with_feature, 1);
+    assert_ne!(proxy, PROXY_MANIFEST);
+    assert!(!run_script_on_both("connector_feature", MANIFEST, &proxy));
+}
+
+/// The proxy is sandboxed and reaches a KDC through the supervisor broker:
+/// no DNS resolver belongs in its tree. One would come back with the
+/// connector's `remote-guard` feature (and fail `cargo deny`: the resolver
 /// carries open advisories).
 #[test]
 fn the_proxy_has_no_dns_resolver_in_its_tree() {

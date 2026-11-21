@@ -26,6 +26,7 @@ mod fmp4_writer;
 mod ipc;
 mod rdp_recording_writer;
 mod remote_guard;
+mod remote_guard_channel;
 mod session;
 mod session_manager;
 #[cfg(test)]

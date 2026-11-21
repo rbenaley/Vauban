@@ -6,7 +6,7 @@
 > by hand). First applied for the 0.14 -> 0.17 migration (connector 0.10,
 > session 0.11, input 0.7, sspi 0.21). The `ironrdp-*` crates now come
 > from a fork of the upstream main branch and `sspi` is 0.23.1 from
-> crates.io: see "The IronRDP fork" in the Kerberos section.
+> crates.io: see "IronRDP from its main branch" in the Kerberos section.
 >
 > Audience: release engineers.
 > Severity: BLOCKING for the release -- do not ship an IronRDP bump
@@ -299,16 +299,17 @@ Remote Credential Guard (`kerberos_remote_guard`) has its own
 checklist: [rdp_remote_credential_guard_smoke_test.md](rdp_remote_credential_guard_smoke_test.md).
 Run it after this one on any IronRDP or `sspi` bump.
 
-### The IronRDP fork
+### IronRDP from its main branch
 
 The `ironrdp-*` crates are taken from
-`https://github.com/rbenaley/IronRDP-vb`, pinned by commit in the
-workspace `[patch.crates-io]`. The fork is the upstream main branch
-plus three commits: one sets the ASN.1 slot (`KERB_ASN1_DATA.Pdu`) of
-the redirected Kerberos responses of Remote Credential Guard, one
-takes the DNS resolver of `sspi` out of the connector's `remote-guard`
-feature, and one makes the backend of the authentication redirection
-channel public. Upstream
+`https://github.com/Devolutions/IronRDP`, pinned by commit in the
+workspace `[patch.crates-io]`. The proxy does not enable the
+connector's `remote-guard` feature: it has its own backend for the
+authentication redirection channel
+(`vauban-proxy-rdp/src/remote_guard_channel.rs`, adapted from the
+connector's), which sets the ASN.1 slot (`KERB_ASN1_DATA.Pdu`) of the
+redirected Kerberos responses and brings no DNS resolver. Compare it
+with the connector's module on every bump of the pin. Upstream
 main is ahead of the published crates under the same version numbers:
 this pass covers code that no published release contains, so run the
 whole checklist, not only the Kerberos section.
@@ -320,15 +321,18 @@ and the initiator no longer enforces that number (the checksum is
 still verified). The `sspi-rs-vb` fork that carried this fix is no
 longer used.
 
-- The build fetches the fork from GitHub: the build host needs that
+- The build fetches IronRDP from GitHub: the build host needs that
   access.
 - `vauban-proxy-rdp/scripts/check_patch_pins.sh` (run by `just lint`)
   refuses a `[patch.crates-io]` entry without a 40-character `rev`, an
   `ironrdp-*` entry from another repository or on a second commit, a
-  manifest without the `ironrdp-connector` entry, and an `sspi` entry.
+  manifest without the `ironrdp-connector` entry, the connector's
+  `remote-guard` feature, and an `sspi` entry.
 - Removal: when a published IronRDP release contains Remote Credential
-  Guard and sets the slot, delete the `ironrdp-*` entries and the
-  ironrdp rules of the script, then run checkpoints 23 to 25 again.
+  Guard, delete the `ironrdp-*` entries and the ironrdp rules of the
+  script, then run checkpoints 23 to 25 again. The proxy's own backend
+  stays until upstream offers one that sets the slot and takes the
+  proxy's policy.
 
 ## Credential envelope (web does not decrypt)
 
@@ -347,4 +351,4 @@ of `v1:` (no payload) is refused before any RDP handshake.
 |---|---|---|
 | ironrdp 0.17.0 / connector 0.10 / session 0.11 / input 0.7 / sspi 0.21.2 | _pending first manual pass_ | _--_ |
 | connector 0.12 / session 0.13 / input 0.9 / pdu 0.11 / sspi 0.23.0 (sub-crates, no `ironrdp` meta-crate) | _pending first manual pass_ | _--_ |
-| IronRDP fork at `6083bc3d` (upstream main `a8da54ba` plus three commits: the ASN.1 slot fix, the resolver-free feature, the public backend module) / sspi 0.23.1 | _pending first manual pass_ | _--_ |
+| IronRDP main at `a8da54ba`, the proxy's own redirection channel backend / sspi 0.23.1 | _pending first manual pass_ | _--_ |

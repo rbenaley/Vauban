@@ -1056,27 +1056,30 @@ from a peer), and the cause chain of the error on the `RDP session
 refused` line. Both stay in the proxy log. `Connecting to RDP server`
 and `RDP session connected` carry `auth_mode`.
 
-**The IronRDP fork.** The `ironrdp-*` crates come from
-`https://github.com/rbenaley/IronRDP-vb`, pinned by commit in the
-workspace `[patch.crates-io]`: the upstream main branch plus three
-commits. Upstream main carries Remote Credential Guard under the
-version numbers of the published crates, so no published crate has it.
-One commit keeps the DNS resolver of `sspi` out of the connector's
-`remote-guard` feature: the proxy reaches a KDC through the supervisor
-broker only. One makes the backend of the authentication redirection
-channel public, so the proxy installs it around its own policy. The
-third sets `KERB_ASN1_DATA.Pdu` in the redirected Kerberos
-responses: a Windows target decodes each response with that slot, and
-with slot 0 it rejects them all, which leaves the session without an
-outbound identity. `sspi` is 0.23.1 from crates.io. It holds the fix
+**IronRDP from its main branch.** The `ironrdp-*` crates come from
+`https://github.com/Devolutions/IronRDP`, pinned by commit in the
+workspace `[patch.crates-io]`. Upstream main carries Remote Credential
+Guard under the version numbers of the published crates, so no
+published crate has it. The proxy leaves the connector's `remote-guard`
+feature off and carries its own backend for the authentication
+redirection channel (`remote_guard_channel.rs`, adapted from the
+connector's private module), for three reasons. The feature brings the
+DNS resolver of `sspi`, and the proxy reaches a KDC through the
+supervisor broker only. The connector's backend cannot be installed
+around the proxy's policy. And it returns `KERB_ASN1_DATA.Pdu` as 0 in
+the redirected Kerberos responses: a Windows target decodes each
+response with that slot, and with slot 0 it rejects them all, which
+leaves the session without an outbound identity. The copy is compared
+with the connector's module on every bump of the pin. `sspi` is 0.23.1 from crates.io. It holds the fix
 of Devolutions/sspi-rs#772 (a Windows acceptor signs the SPNEGO
 `mechListMIC` with sequence number 0 whatever its AP-REP announced;
 the initiator no longer enforces that number and still verifies the
 checksum), which the `sspi-rs-vb` fork carried from 0.9.58 until this
 change. The entries are removed when a published IronRDP release
-contains Remote Credential Guard and sets the slot;
-`check_patch_pins.sh` keeps every `ironrdp-*` entry on the fork and on
-one commit, and refuses an `sspi` entry.
+contains Remote Credential Guard;
+`check_patch_pins.sh` keeps every `ironrdp-*` entry on that repository
+and on one commit, refuses the connector's `remote-guard` feature, and
+refuses an `sspi` entry.
 
 vauban-web shows the cause and the action to a holder of `assets:manage`
 and one generic sentence to anyone else

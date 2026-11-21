@@ -4,8 +4,7 @@
 //! number its AP-REP announced. A Windows acceptor signs it with sequence
 //! number 0, whatever the AP-REP said. `sspi` 0.23.0 refused that token on
 //! the initiator side, which failed both Kerberos RDP modes against every
-//! Windows target (met on 2026-11-19, fixed by the fork pinned in the
-//! workspace manifest).
+//! Windows target (met on 2026-11-19, fixed in `sspi` 0.23.1).
 //!
 //! [`WindowsMic`] sits in the target loop of the harness, between `sspi`'s
 //! server and the stream: it replaces the server's MIC with one numbered 0

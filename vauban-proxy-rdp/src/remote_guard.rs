@@ -6,14 +6,14 @@
 //! needs a key: the proxy is the one that signs. This module decides what
 //! is signed.
 //!
-//! The channel, its framing, its NDR codecs and the protection of its
-//! messages are upstream code (`ironrdp-rdpear`, the connector's
-//! `Backend`, `sspi::rcg`). The connector hands every decoded request to
-//! a [`Context`]; [`PolicyContext`] is the one the proxy installs, around
-//! the `sspi` session:
+//! The channel, its NDR codecs and the protection of its messages are
+//! upstream code (`ironrdp-rdpear`, `sspi::rcg`). The framing is the
+//! proxy's backend, [`crate::remote_guard_channel`]: it hands every
+//! decoded request to a [`Context`]. [`PolicyContext`] is the one the
+//! proxy installs, around the `sspi` session:
 //!
 //! * `deny`: no Kerberos operation is performed. The version negotiation
-//!   the logon needs is answered by the connector itself, before the
+//!   the logon needs is answered by the backend itself, before the
 //!   context is asked anything, so the session opens. The target obtains
 //!   no service ticket, and cannot use one it holds: each use needs an
 //!   authenticator, which is an operation.
@@ -27,7 +27,7 @@
 
 use std::time::{Duration, Instant};
 
-use ironrdp_connector::remote_guard::Context;
+use crate::remote_guard_channel::Context;
 use ironrdp_connector::sspi::{self, Error, ErrorKind, Secret};
 use ironrdp_rdpear::ndr::{self, KerberosRequest, KerberosResponseCall};
 use shared::messages::RemoteGuardOutboundIdentity;
@@ -50,7 +50,7 @@ const REFUSAL_SUMMARY_INTERVAL: Duration = Duration::from_secs(300);
 
 /// Request-loop guard: a target whose Kerberos module does not accept the
 /// responses asks for the same operations without end and never reaches
-/// a KDC reply. Observed against an unpatched connector: several hundred
+/// a KDC reply. Observed with responses that carried slot 0: several hundred
 /// ticket requests per minute, none of them completed. A healthy logon
 /// is a few tens of operations, each ticket request followed by its
 /// reply.
@@ -65,7 +65,7 @@ pub const LOOP_GUARD_MAX_UNANSWERED: u32 = 240;
 /// See [`LOOP_GUARD_MAX_UNANSWERED`].
 pub const LOOP_GUARD_WINDOW: Duration = Duration::from_secs(60);
 
-/// A redirected Kerberos operation, by name. The set the connector
+/// A redirected Kerberos operation, by name. The set the backend
 /// performs, and `Other` for the calls it does not implement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Operation {
@@ -259,7 +259,7 @@ impl<C: Context> PolicyContext<C> {
 
 impl<C: Context> Context for PolicyContext<C> {
     fn unwrap(&mut self, token: &[u8]) -> sspi::Result<Secret<Vec<u8>>> {
-        // A tripped guard closes the channel: the connector turns this
+        // A tripped guard closes the channel: the backend turns this
         // error into a channel error, drops the context (the keys are
         // erased) and the session ends.
         if self.guard.is_tripped() {
@@ -332,13 +332,13 @@ impl<C: Context> Context for PolicyContext<C> {
     }
 
     fn ntlm_available(&self) -> bool {
-        // Never: the connector then refuses every NTLM request, the
+        // Never: the backend then refuses every NTLM request, the
         // version negotiation included, before `execute_ntlm` is reached.
         false
     }
 
     fn execute_ntlm(&mut self, _request: &ndr::NtlmRequest) -> sspi::Result<ndr::NtlmResponseCall> {
-        // Unreachable through the connector (`ntlm_available` is false);
+        // Unreachable through the backend (`ntlm_available` is false);
         // refused here too, so the answer does not depend on its caller.
         self.ntlm_refusals = self.ntlm_refusals.saturating_add(1);
         if self.ntlm_refusals == 1 {
