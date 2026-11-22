@@ -1,8 +1,7 @@
 # Capacity planning guide — Vauban
 
 > For architects and operators who size a Vauban host: CPU, memory, network, SSD.  
-> Date: 2026-11-22 — applies to Vauban 0.9.61 and later.  
-> Related: [`../technical/Vauban_RDP_Architecture_EN(1.0).md`](../technical/Vauban_RDP_Architecture_EN(1.0).md), [`../technical/Vauban_Recording_Architecture_EN(1.9).md`](../technical/Vauban_Recording_Architecture_EN(1.9).md)
+> Date: 2026-11-22 — applies to Vauban 0.9.61 and later.
 
 ---
 

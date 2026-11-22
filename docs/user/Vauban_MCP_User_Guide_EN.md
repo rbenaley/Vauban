@@ -1,9 +1,7 @@
 # User guide — MCP in Vauban
 
 > For administrators and operators who use the UI.  
-> Date: 2026-10-10  
-> Architecture (hops, Mission Seal, agent view): [`../technical/Vauban_MCP_Architecture_EN(1.0).md`](../technical/Vauban_MCP_Architecture_EN(1.0).md)  
-> Authorization choice: [`../adr/009-mcp-no-oauth-for-now.md`](../adr/009-mcp-no-oauth-for-now.md)
+> Date: 2026-10-10
 
 ---
 
