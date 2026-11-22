@@ -94,7 +94,10 @@ impl VideoEncoder {
         }
 
         let rgba_source = RgbaSliceU8::new(&rgba_data[..expected_len], (w, h));
-        let yuv = YUVBuffer::from_rgb_source(rgba_source);
+        // Contiguous RGBA8 path: row-ordered and SIMD-accelerated. The generic
+        // `from_rgb_source` converts pixel by pixel in floating point and
+        // costs more than the H.264 encoding itself.
+        let yuv = YUVBuffer::from_rgba8_source(rgba_source);
 
         let elapsed = self.session_start.elapsed();
         let timestamp_us = elapsed.as_micros() as u64;
