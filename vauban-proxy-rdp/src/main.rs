@@ -45,7 +45,8 @@ use session_manager::{
 use shared::access_guard::{AccessGuard, AccessGuardMetrics, AccessGuardWiring, PROTOCOL_RDP};
 use shared::ipc::{IpcChannel, recv_fd};
 use shared::messages::{
-    ControlMessage, Message, NtlmPolicy, RdpOpenFailure, RemoteGuardOutboundIdentity, ServiceStats,
+    ControlMessage, Message, NtlmPolicy, RdpOpenFailure, RdpVideoEncoding,
+    RemoteGuardOutboundIdentity, ServiceStats,
 };
 use shared::recording_fd::{DEFAULT_BROKER_TIMEOUT, recv_fd_timed};
 use shared::sandbox as capsicum;
@@ -372,6 +373,18 @@ async fn run_service() -> Result<ServiceExit> {
     .map_err(|e| anyhow::anyhow!(e))?;
     let _ = REMOTE_GUARD_OUTBOUND_IDENTITY.set(remote_guard_policy);
 
+    // Video encoding, set by the supervisor from `[rdp] video_encoding`.
+    // A value that is absent or not canonical stops the proxy.
+    let video_encoding_raw = std::env::var_os(RdpVideoEncoding::ENV);
+    let video_encoding = match &video_encoding_raw {
+        None => RdpVideoEncoding::from_env_value(None),
+        Some(value) => match value.to_str() {
+            Some(text) => RdpVideoEncoding::from_env_value(Some(text)),
+            None => Err(format!("{} is not valid UTF-8", RdpVideoEncoding::ENV)),
+        },
+    }
+    .map_err(|e| anyhow::anyhow!(e))?;
+
     let recording_enabled: bool = std::env::var("VAUBAN_RECORDING_ENABLED")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -439,6 +452,7 @@ async fn run_service() -> Result<ServiceExit> {
         std::env::remove_var("VAUBAN_FD_PASSING_SOCKET");
         std::env::remove_var("VAUBAN_RDP_VIDEO_BITRATE_BPS");
         std::env::remove_var(NtlmPolicy::ENV);
+        std::env::remove_var(RdpVideoEncoding::ENV);
         std::env::remove_var(RemoteGuardOutboundIdentity::ENV);
         std::env::remove_var("VAUBAN_RECORDING_ENABLED");
         std::env::remove_var("VAUBAN_AUDIT_IPC_READ");
@@ -449,7 +463,9 @@ async fn run_service() -> Result<ServiceExit> {
 
     info!(
         video_bitrate_bps,
-        recording_enabled, "H.264 encoder bitrate configured"
+        video_encoding = video_encoding.as_str(),
+        recording_enabled,
+        "H.264 encoder bitrate configured"
     );
 
     let supervisor_channel =
@@ -547,7 +563,9 @@ async fn run_service() -> Result<ServiceExit> {
 
     capsicum::log_main_loop_start(&sealed, "starting main loop");
 
-    let sessions = Arc::new(SessionManager::with_bitrate(video_bitrate_bps));
+    let sessions = Arc::new(
+        SessionManager::with_bitrate(video_bitrate_bps).with_video_encoding(video_encoding),
+    );
 
     // SECURITY: Spawn the AccessGuard dispatcher. Without this task,
     // every authorize() call would hit RBAC_RECHECK_TIMEOUT (10s) and
@@ -1192,6 +1210,16 @@ async fn handle_web_message(
             debug!(session_id = %session_id, enabled, "RDP video mode request");
             if let Err(e) = sessions.set_video_mode(&session_id, enabled).await {
                 warn!(session_id = %session_id, error = %e, "Failed to set video mode");
+            }
+        }
+
+        Message::RdpSetVideoAux {
+            session_id,
+            enabled,
+        } => {
+            debug!(session_id = %session_id, enabled, "RDP auxiliary chroma stream request");
+            if let Err(e) = sessions.set_video_aux(&session_id, enabled).await {
+                warn!(session_id = %session_id, error = %e, "Failed to set auxiliary chroma stream");
             }
         }
 

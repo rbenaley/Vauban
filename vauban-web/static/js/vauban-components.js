@@ -3,6 +3,204 @@
 // This file is loaded as an external script to avoid 'unsafe-inline' in CSP.
 // Alpine.js components are registered via Alpine.data() before Alpine initializes.
 
+// AVC444 renderer (RDP viewer, `[rdp] video_encoding = "avc444"`).
+//
+// An AVC444 session carries two ordinary H.264 4:2:0 streams. The main
+// stream is the picture with subsampled chroma. Each auxiliary picture
+// carries, for the main picture that has the same timestamp, three of the
+// four full-resolution chroma samples of every 2x2 block:
+//
+//   - Y plane, rows 0..h/2  : U of the odd rows; rows h/2..h: V of the odd rows
+//   - U plane (w/2 x h/2)   : U of the odd columns of the even rows
+//   - V plane (w/2 x h/2)   : V of the odd columns of the even rows
+//
+// The fourth sample (even column, even row) is derived from the main
+// chroma, which is the average of the block.
+//
+// The planes are read with VideoFrame.copyTo(): importing a VideoFrame as
+// a texture would convert it to RGB first and clip the auxiliary picture,
+// whose "colors" are not colors.
+//
+// Returns null when the browser cannot do it (no WebGL2, no copyTo).
+function vaubanAvc444Renderer() {
+    if (typeof VideoFrame === 'undefined' || !VideoFrame.prototype.copyTo) {
+        return null;
+    }
+    var canvas = (typeof OffscreenCanvas !== 'undefined')
+        ? new OffscreenCanvas(2, 2)
+        : document.createElement('canvas');
+    var gl = canvas.getContext('webgl2', {
+        alpha: false, antialias: false, depth: false, stencil: false
+    });
+    if (!gl) {
+        return null;
+    }
+
+    var VS = '#version 300 es\n' +
+        'const vec2 P[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));\n' +
+        'void main() { gl_Position = vec4(P[gl_VertexID], 0.0, 1.0); }\n';
+    var FS = '#version 300 es\n' +
+        'precision highp float;\n' +
+        'precision highp int;\n' +
+        'uniform sampler2D mY, mC0, mC1, aY, aC0, aC1;\n' +
+        'uniform int mNv12, aNv12;\n' +
+        'uniform ivec2 size;\n' +
+        'uniform float thr;\n' +
+        'out vec4 o;\n' +
+        'vec2 mainC(ivec2 hp) {\n' +
+        '  return mNv12 == 1 ? texelFetch(mC0, hp, 0).rg\n' +
+        '    : vec2(texelFetch(mC0, hp, 0).r, texelFetch(mC1, hp, 0).r);\n' +
+        '}\n' +
+        'vec2 auxC(ivec2 hp) {\n' +
+        '  return aNv12 == 1 ? texelFetch(aC0, hp, 0).rg\n' +
+        '    : vec2(texelFetch(aC0, hp, 0).r, texelFetch(aC1, hp, 0).r);\n' +
+        '}\n' +
+        // U and V of an odd row, from the auxiliary luma plane.
+        'vec2 auxRow(int x, int j, int hh) {\n' +
+        '  return vec2(texelFetch(aY, ivec2(x, j), 0).r, texelFetch(aY, ivec2(x, hh + j), 0).r);\n' +
+        '}\n' +
+        'void main() {\n' +
+        '  ivec2 p = ivec2(int(gl_FragCoord.x), size.y - 1 - int(gl_FragCoord.y));\n' +
+        '  ivec2 hp = p >> 1;\n' +
+        '  int hh = size.y >> 1;\n' +
+        '  float y = texelFetch(mY, p, 0).r;\n' +
+        '  vec2 avg = mainC(hp);\n' +
+        '  vec2 uv;\n' +
+        '  if ((p.y & 1) == 1) {\n' +
+        '    uv = auxRow(p.x, hp.y, hh);\n' +
+        '  } else if ((p.x & 1) == 1) {\n' +
+        '    uv = auxC(hp);\n' +
+        '  } else {\n' +
+        // Fourth sample of the block: 4 * average - the three others. Kept
+        // only where it departs clearly from the average, so compression
+        // noise is not amplified in flat areas.
+        '    vec2 calc = clamp(4.0 * avg - auxC(hp) - auxRow(p.x, hp.y, hh)\n' +
+        '      - auxRow(p.x + 1, hp.y, hh), 0.0, 1.0);\n' +
+        '    uv = mix(avg, calc, step(thr, abs(calc - avg)));\n' +
+        '  }\n' +
+        // BT.601 limited range, the matrix the encoder side uses.
+        '  float c = 1.164383 * (y - 0.062745);\n' +
+        '  float d = uv.x - 0.501961;\n' +
+        '  float e = uv.y - 0.501961;\n' +
+        '  o = vec4(clamp(vec3(c + 1.596027 * e, c - 0.391762 * d - 0.812968 * e,\n' +
+        '    c + 2.017232 * d), 0.0, 1.0), 1.0);\n' +
+        '}\n';
+
+    function compile(type, src) {
+        var s = gl.createShader(type);
+        gl.shaderSource(s, src);
+        gl.compileShader(s);
+        if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+            console.warn('[RDP] AVC444 shader:', gl.getShaderInfoLog(s));
+            return null;
+        }
+        return s;
+    }
+    var vs = compile(gl.VERTEX_SHADER, VS);
+    var fs = compile(gl.FRAGMENT_SHADER, FS);
+    if (!vs || !fs) {
+        return null;
+    }
+    var prog = gl.createProgram();
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        console.warn('[RDP] AVC444 program:', gl.getProgramInfoLog(prog));
+        return null;
+    }
+    gl.useProgram(prog);
+    gl.bindVertexArray(gl.createVertexArray());
+
+    var names = ['mY', 'mC0', 'mC1', 'aY', 'aC0', 'aC1'];
+    var textures = [];
+    for (var i = 0; i < names.length; i++) {
+        var t = gl.createTexture();
+        gl.activeTexture(gl.TEXTURE0 + i);
+        gl.bindTexture(gl.TEXTURE_2D, t);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.uniform1i(gl.getUniformLocation(prog, names[i]), i);
+        textures.push(t);
+    }
+    var uMNv12 = gl.getUniformLocation(prog, 'mNv12');
+    var uANv12 = gl.getUniformLocation(prog, 'aNv12');
+    var uSize = gl.getUniformLocation(prog, 'size');
+    // 30 / 255, the threshold [MS-RDPEGFX] uses for the same derivation.
+    gl.uniform1f(gl.getUniformLocation(prog, 'thr'), 30.0 / 255.0);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+
+    var buffers = [null, null];
+
+    // Copy the planes of one decoded frame out of the decoder.
+    function copy(frame, slot) {
+        var fmt = frame.format;
+        if (fmt !== 'I420' && fmt !== 'NV12') {
+            return Promise.reject(new Error('unsupported pixel format ' + fmt));
+        }
+        var size = frame.allocationSize();
+        if (!buffers[slot] || buffers[slot].length !== size) {
+            buffers[slot] = new Uint8Array(size);
+        }
+        var buf = buffers[slot];
+        var rect = frame.visibleRect;
+        return frame.copyTo(buf).then(function (layout) {
+            return { buf: buf, layout: layout, nv12: fmt === 'NV12',
+                w: rect.width, h: rect.height };
+        });
+    }
+
+    function plane(unit, src, index, w, h, two) {
+        var l = src.layout[index];
+        gl.activeTexture(gl.TEXTURE0 + unit);
+        gl.pixelStorei(gl.UNPACK_ROW_LENGTH, two ? l.stride / 2 : l.stride);
+        gl.texImage2D(gl.TEXTURE_2D, 0, two ? gl.RG8 : gl.R8, w, h, 0,
+            two ? gl.RG : gl.RED, gl.UNSIGNED_BYTE, src.buf, l.offset);
+    }
+
+    function upload(base, src) {
+        var hw = src.w >> 1;
+        var hh = src.h >> 1;
+        plane(base, src, 0, src.w, src.h, false);
+        if (src.nv12) {
+            plane(base + 1, src, 1, hw, hh, true);
+        } else {
+            plane(base + 1, src, 1, hw, hh, false);
+            plane(base + 2, src, 2, hw, hh, false);
+        }
+    }
+
+    return {
+        canvas: canvas,
+        // Recombine one main frame and its auxiliary frame. Resolves with
+        // the canvas that holds the full-chroma picture. The caller keeps
+        // ownership of both frames.
+        render: function (main, aux) {
+            return Promise.all([copy(main, 0), copy(aux, 1)]).then(function (r) {
+                var m = r[0];
+                var a = r[1];
+                if (m.w !== a.w || m.h !== a.h || (m.w & 1) || (m.h & 1)) {
+                    throw new Error('main/auxiliary size mismatch');
+                }
+                if (canvas.width !== m.w || canvas.height !== m.h) {
+                    canvas.width = m.w;
+                    canvas.height = m.h;
+                }
+                gl.viewport(0, 0, m.w, m.h);
+                upload(0, m);
+                upload(3, a);
+                gl.uniform1i(uMNv12, m.nv12 ? 1 : 0);
+                gl.uniform1i(uANv12, a.nv12 ? 1 : 0);
+                gl.uniform2i(uSize, m.w, m.h);
+                gl.drawArrays(gl.TRIANGLES, 0, 3);
+                return canvas;
+            });
+        }
+    };
+}
+
 // Auth keepalive heartbeat (SSH/RDP sessions).
 //
 // During a live SSH/RDP session every user interaction flows over the
@@ -584,6 +782,14 @@ document.addEventListener('alpine:init', function () {
             ctx: null,
             decoder: null,
             videoMode: false,
+            // AVC444: second decoder, renderer, and frames waiting for
+            // their counterpart (keyed by timestamp).
+            avc444: false,
+            auxDecoder: null,
+            _avc444: null,
+            _avc444Pending: {},
+            _avc444Chain: Promise.resolve(),
+            _avc444Failures: 0,
             desktopWidth: 1280,
             desktopHeight: 720,
             _lastMouseSend: 0,
@@ -644,10 +850,11 @@ document.addEventListener('alpine:init', function () {
                 try {
                     this.decoder = new VideoDecoder({
                         output: function (frame) {
-                            if (self.ctx) {
-                                self.ctx.drawImage(frame, 0, 0, self.desktopWidth, self.desktopHeight);
+                            if (self.avc444) {
+                                self._avc444Pair('main', frame);
+                                return;
                             }
-                            frame.close();
+                            self._drawPlain(frame);
                         },
                         error: function (e) {
                             console.error('[RDP] VideoDecoder error:', e);
@@ -662,6 +869,110 @@ document.addEventListener('alpine:init', function () {
                     console.warn('[RDP] Failed to init VideoDecoder:', e);
                     this.decoder = null;
                 }
+                this._initAvc444();
+            },
+
+            _drawPlain: function (frame) {
+                if (this.ctx) {
+                    this.ctx.drawImage(frame, 0, 0, this.desktopWidth, this.desktopHeight);
+                }
+                frame.close();
+            },
+
+            // AVC444 is offered to the server only when this succeeds.
+            _initAvc444: function () {
+                var self = this;
+                this.auxDecoder = null;
+                this._avc444 = null;
+                if (!this.decoder) return;
+                try {
+                    var renderer = vaubanAvc444Renderer();
+                    if (!renderer) return;
+                    this.auxDecoder = new VideoDecoder({
+                        output: function (frame) {
+                            if (self.avc444) {
+                                self._avc444Pair('aux', frame);
+                                return;
+                            }
+                            frame.close();
+                        },
+                        error: function (e) {
+                            console.error('[RDP] auxiliary VideoDecoder error:', e);
+                            self._avc444Disable();
+                        }
+                    });
+                    this.auxDecoder.configure({
+                        codec: 'avc1.42001f',
+                        optimizeForLatency: true
+                    });
+                    this._avc444 = renderer;
+                } catch (e) {
+                    console.warn('[RDP] AVC444 not available:', e);
+                    this.auxDecoder = null;
+                    this._avc444 = null;
+                }
+            },
+
+            // Fall back to the main stream alone (plain 4:2:0).
+            _avc444Disable: function () {
+                if (!this.avc444) return;
+                this.avc444 = false;
+                console.warn('[RDP] AVC444 disabled, showing the main stream only');
+                var pending = this._avc444Pending;
+                this._avc444Pending = {};
+                for (var ts in pending) {
+                    if (pending[ts].main) pending[ts].main.close();
+                    if (pending[ts].aux) pending[ts].aux.close();
+                }
+            },
+
+            // Store a decoded frame until its counterpart (same timestamp)
+            // is decoded too, then recombine and draw.
+            _avc444Pair: function (kind, frame) {
+                var self = this;
+                var ts = frame.timestamp;
+                var pending = this._avc444Pending;
+                var entry = pending[ts] || (pending[ts] = {});
+                if (entry[kind]) entry[kind].close();
+                entry[kind] = frame;
+
+                if (!entry.main || !entry.aux) {
+                    // A counterpart that never comes must not hold the
+                    // display back: show stale main frames as they are.
+                    var keys = Object.keys(pending);
+                    if (keys.length > 6) {
+                        keys.sort(function (a, b) { return a - b; });
+                        var old = pending[keys[0]];
+                        delete pending[keys[0]];
+                        if (old.aux) old.aux.close();
+                        if (old.main) this._drawPlain(old.main);
+                    }
+                    return;
+                }
+
+                delete pending[ts];
+                for (var k in pending) {
+                    if (Number(k) < ts) {
+                        if (pending[k].main) pending[k].main.close();
+                        if (pending[k].aux) pending[k].aux.close();
+                        delete pending[k];
+                    }
+                }
+                var main = entry.main;
+                var aux = entry.aux;
+                this._avc444Chain = this._avc444Chain.then(function () {
+                    return self._avc444.render(main, aux).then(function (canvas) {
+                        self._avc444Failures = 0;
+                        if (self.ctx) {
+                            self.ctx.drawImage(canvas, 0, 0, self.desktopWidth, self.desktopHeight);
+                        }
+                        main.close();
+                    }, function (e) {
+                        console.warn('[RDP] AVC444 render failed:', e);
+                        self._drawPlain(main);
+                        if (++self._avc444Failures >= 3) self._avc444Disable();
+                    }).then(function () { aux.close(); });
+                });
             },
 
             connectWs: function () {
@@ -684,7 +995,11 @@ document.addEventListener('alpine:init', function () {
 
                     self._initVideoDecoder();
                     if (self.decoder) {
-                        self.sendInput({ type: 'capabilities', video_codecs: ['avc1.42001f'] });
+                        self.sendInput({
+                            type: 'capabilities',
+                            video_codecs: ['avc1.42001f'],
+                            avc444: !!self._avc444
+                        });
                         console.log('[RDP] Sent H.264 capabilities');
                     }
                 };
@@ -705,7 +1020,9 @@ document.addEventListener('alpine:init', function () {
                                 console.log('[RDP] desktop ' + msg.type + ': ' + msg.width + 'x' + msg.height);
                             } else if (msg.type === 'mode' && msg.video) {
                                 self.videoMode = true;
-                                console.log('[RDP] Server confirmed H.264 video mode');
+                                self.avc444 = !!msg.avc444 && !!self._avc444;
+                                console.log('[RDP] Server confirmed H.264 video mode' +
+                                    (self.avc444 ? ' (AVC444)' : ''));
                             } else if (msg.error) {
                                 self.error = msg.error;
                             }
@@ -722,6 +1039,8 @@ document.addEventListener('alpine:init', function () {
                     // Discriminate: byte 0 == 0x01 => H.264 video frame, otherwise PNG region
                     if (buf[0] === 0x01 && self.decoder && self.videoMode) {
                         self._handleVideoFrame(event.data, buf);
+                    } else if (buf[0] === 0x02 && self.decoder && self.videoMode) {
+                        self._handleAuxFrame(event.data, buf);
                     } else {
                         self._handlePngRegion(event.data, buf);
                     }
@@ -775,6 +1094,14 @@ document.addEventListener('alpine:init', function () {
                             optimizeForLatency: true
                         });
                     }
+                    if (this.auxDecoder && this.avc444) {
+                        this.auxDecoder.configure({
+                            codec: 'avc1.42001f',
+                            codedWidth: width,
+                            codedHeight: height,
+                            optimizeForLatency: true
+                        });
+                    }
                 }
 
                 this._videoFrameCount++;
@@ -793,6 +1120,25 @@ document.addEventListener('alpine:init', function () {
                     this.decoder.decode(chunk);
                 } catch (e) {
                     console.error('[RDP] decode error:', e);
+                }
+            },
+
+            _handleAuxFrame: function (arrayBuf, buf) {
+                // Header (6 bytes): type(1) + flags(1) + timestamp_ms(4 LE).
+                // Same timestamp as the main frame it completes.
+                if (!this.avc444 || !this.auxDecoder) return;
+                var dv = new DataView(arrayBuf);
+                var isKeyframe = (buf[1] & 0x01) !== 0;
+                var timestampMs = dv.getUint32(2, true);
+                try {
+                    this.auxDecoder.decode(new EncodedVideoChunk({
+                        type: isKeyframe ? 'key' : 'delta',
+                        timestamp: timestampMs * 1000,
+                        data: buf.slice(6)
+                    }));
+                } catch (e) {
+                    console.error('[RDP] auxiliary decode error:', e);
+                    this._avc444Disable();
                 }
             },
 

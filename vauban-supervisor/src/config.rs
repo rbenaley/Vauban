@@ -682,6 +682,12 @@ pub struct RdpProxyConfig {
     /// H.264 encoder bitrate in bits per second (default: 5 Mbps).
     #[serde(default = "default_video_bitrate_bps")]
     pub video_bitrate_bps: u32,
+    /// Chroma resolution of the H.264 video: `"avc420"` (default) or
+    /// `"avc444"`. Any other value fails deserialization, so the
+    /// supervisor refuses to start. vauban-web reads the same key from
+    /// the same file.
+    #[serde(default)]
+    pub video_encoding: shared::messages::RdpVideoEncoding,
     /// NTLM policy for RDP sessions: `"allow"` (default) or `"deny"`.
     /// Any other value fails deserialization, so the supervisor refuses
     /// to start instead of running with NTLM allowed by accident.
@@ -705,6 +711,7 @@ impl Default for RdpProxyConfig {
     fn default() -> Self {
         Self {
             video_bitrate_bps: default_video_bitrate_bps(),
+            video_encoding: shared::messages::RdpVideoEncoding::default(),
             ntlm_policy: shared::messages::NtlmPolicy::default(),
             remote_guard_outbound_identity: shared::messages::RemoteGuardOutboundIdentity::default(
             ),
@@ -1602,6 +1609,13 @@ impl SupervisorConfig {
                     "VAUBAN_RECORDING_ENABLED".to_string(),
                     rdp_recording.to_string(),
                 ));
+                // Video encoding (`[rdp] video_encoding`). Always set, so
+                // the proxy never has to guess a default from an absent
+                // variable.
+                vars.push((
+                    shared::messages::RdpVideoEncoding::ENV.to_string(),
+                    self.rdp.video_encoding.as_str().to_string(),
+                ));
             }
             "proxy_ssh" => {
                 let ssh_recording = self.recording.ssh_recording_enabled();
@@ -2243,6 +2257,51 @@ mod tests {
     }
 
     #[test]
+    fn test_rdp_video_encoding_default_and_values() {
+        use shared::messages::RdpVideoEncoding as Enc;
+        assert_eq!(RdpProxyConfig::default().video_encoding, Enc::Avc420);
+        let parsed: RdpProxyConfig = toml::from_str("").expect("empty");
+        assert_eq!(parsed.video_encoding, Enc::Avc420);
+        let parsed: RdpProxyConfig = toml::from_str("video_encoding = \"avc420\"").expect("avc420");
+        assert_eq!(parsed.video_encoding, Enc::Avc420);
+        let parsed: RdpProxyConfig = toml::from_str("video_encoding = \"avc444\"").expect("avc444");
+        assert_eq!(parsed.video_encoding, Enc::Avc444);
+    }
+
+    #[test]
+    fn test_rdp_video_encoding_rejects_anything_else() {
+        for bad in [
+            "video_encoding = \"AVC444\"",
+            "video_encoding = \"avc444 \"",
+            "video_encoding = \"444\"",
+            "video_encoding = \"\"",
+            "video_encoding = true",
+            "video_encoding = 444",
+        ] {
+            assert!(
+                toml::from_str::<RdpProxyConfig>(bad).is_err(),
+                "must be rejected: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_rdp_video_encoding_handed_to_the_proxy() {
+        use shared::messages::RdpVideoEncoding as Enc;
+        for enc in Enc::ALL {
+            let mut config = test_config();
+            config.rdp.video_encoding = enc;
+            let vars = config.service_env_vars("proxy_rdp");
+            let found: Vec<_> = vars.iter().filter(|(k, _)| k == Enc::ENV).collect();
+            assert_eq!(found.len(), 1, "exactly one {}", Enc::ENV);
+            assert_eq!(found[0].1, enc.as_str());
+            assert_eq!(Enc::from_env_value(Some(&found[0].1)), Ok(enc));
+        }
+        assert!(Enc::from_env_value(None).is_err());
+        assert!(Enc::from_env_value(Some("Avc444")).is_err());
+    }
+
+    #[test]
     fn test_rdp_config_loaded_from_toml() {
         let config = test_config();
         assert_eq!(config.rdp.video_bitrate_bps, 5_000_000);
@@ -2254,7 +2313,7 @@ mod tests {
     fn test_service_env_vars_proxy_rdp() {
         let config = test_config();
         let vars = config.service_env_vars("proxy_rdp");
-        assert_eq!(vars.len(), 5);
+        assert_eq!(vars.len(), 6);
         assert_eq!(vars[0].0, "VAUBAN_RDP_VIDEO_BITRATE_BPS");
         assert_eq!(vars[0].1, "5000000");
         assert_eq!(vars[1].0, "KRB5_CONFIG");
@@ -2265,6 +2324,8 @@ mod tests {
         assert_eq!(vars[3].1, "deny");
         assert_eq!(vars[4].0, "VAUBAN_RECORDING_ENABLED");
         assert_eq!(vars[4].1, "true");
+        assert_eq!(vars[5].0, "VAUBAN_RDP_VIDEO_ENCODING");
+        assert_eq!(vars[5].1, "avc420");
     }
 
     /// The policy reaches the RDP proxy as its canonical string, which

@@ -2,7 +2,7 @@
 
 use crate::error::{SessionError, SessionResult};
 use crate::session::{RdpSession, SessionCommand, SessionConfig};
-use shared::messages::{Message, RdpInputEvent};
+use shared::messages::{Message, RdpInputEvent, RdpVideoEncoding};
 use std::collections::HashMap;
 use std::fs::File;
 use std::sync::Arc;
@@ -45,6 +45,7 @@ pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, SessionHandle>>>,
     active_count: Arc<AtomicU32>,
     video_bitrate_bps: u32,
+    video_encoding: RdpVideoEncoding,
 }
 
 impl SessionManager {
@@ -57,6 +58,33 @@ impl SessionManager {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             active_count: Arc::new(AtomicU32::new(0)),
             video_bitrate_bps,
+            video_encoding: RdpVideoEncoding::default(),
+        }
+    }
+
+    /// Set the video encoding read from `[rdp] video_encoding`.
+    pub fn with_video_encoding(mut self, video_encoding: RdpVideoEncoding) -> Self {
+        self.video_encoding = video_encoding;
+        self
+    }
+
+    /// Ask a session for the auxiliary chroma stream.
+    ///
+    /// The request is honored only under `[rdp] video_encoding = "avc444"`:
+    /// the value injected by the supervisor decides, not the IPC message,
+    /// so a compromised vauban-web cannot turn the second encoder on.
+    pub async fn set_video_aux(&self, session_id: &str, enabled: bool) -> SessionResult<()> {
+        let enabled = enabled && self.video_encoding == RdpVideoEncoding::Avc444;
+        let sessions = self.sessions.read().await;
+        if let Some(handle) = sessions.get(session_id) {
+            handle
+                .tx
+                .send(SessionCommand::SetVideoAux { enabled })
+                .await
+                .map_err(|_| SessionError::SessionClosed)?;
+            Ok(())
+        } else {
+            Err(SessionError::SessionNotFound(session_id.to_string()))
         }
     }
 

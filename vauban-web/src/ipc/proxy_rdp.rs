@@ -148,6 +148,13 @@ pub enum RdpSessionEvent {
         height: u16,
         data: Vec<u8>,
     },
+    /// Auxiliary chroma frame of an AVC444 pair; completes the
+    /// `VideoFrame` that has the same timestamp.
+    VideoAuxFrame {
+        timestamp_us: u64,
+        is_keyframe: bool,
+        data: Vec<u8>,
+    },
 }
 
 /// Async client for communicating with vauban-proxy-rdp.
@@ -291,6 +298,19 @@ impl ProxyRdpClient {
     /// Enable or disable H.264 video mode for a session.
     pub fn set_video_mode(&self, session_id: &str, enabled: bool) -> AppResult<()> {
         let msg = Message::RdpSetVideoMode {
+            session_id: session_id.to_string(),
+            enabled,
+        };
+        self.core
+            .send_fire_and_forget(&msg)
+            .map_err(|e| e.into_app_ipc())
+    }
+
+    /// Ask the proxy for the auxiliary chroma stream of a session. Must
+    /// be sent before `set_video_mode`: the proxy reads it when it starts
+    /// the encoder.
+    pub fn set_video_aux(&self, session_id: &str, enabled: bool) -> AppResult<()> {
+        let msg = Message::RdpSetVideoAux {
             session_id: session_id.to_string(),
             enabled,
         };
@@ -635,6 +655,25 @@ impl ProxyRdpClient {
                     };
                     if tx.send(event).await.is_err() {
                         warn!(session_id = %session_id, "Failed to forward video frame, WebSocket dropped");
+                    }
+                }
+            }
+
+            Message::RdpVideoAuxFrame {
+                session_id,
+                timestamp_us,
+                is_keyframe,
+                data,
+            } => {
+                let senders = self.session_display_senders.lock().await;
+                if let Some(tx) = senders.get(&session_id) {
+                    let event = RdpSessionEvent::VideoAuxFrame {
+                        timestamp_us,
+                        is_keyframe,
+                        data,
+                    };
+                    if tx.send(event).await.is_err() {
+                        warn!(session_id = %session_id, "Failed to forward auxiliary video frame, WebSocket dropped");
                     }
                 }
             }

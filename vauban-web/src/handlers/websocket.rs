@@ -2295,6 +2295,11 @@ enum RdpCommand {
     },
     Capabilities {
         video_codecs: Vec<String>,
+        /// The browser can recombine the main and auxiliary H.264
+        /// streams into a full-chroma picture. Defaults to false so
+        /// older frontends still decode.
+        #[serde(default)]
+        avc444: bool,
     },
 }
 
@@ -2387,20 +2392,33 @@ async fn handle_rdp_socket(
                     Some(Ok(Message::Text(text))) => {
                         if let Ok(cmd) = serde_json::from_str::<RdpCommand>(&text) {
                             match cmd {
-                                RdpCommand::Capabilities { video_codecs } => {
+                                RdpCommand::Capabilities { video_codecs, avc444 } => {
                                     let supports_h264 = video_codecs.iter().any(|c| c.starts_with("avc1"));
-                                    debug!(session_id = %session_id, ?video_codecs, supports_h264, "RDP capabilities received");
+                                    // The auxiliary chroma stream needs both the
+                                    // browser and `[rdp] video_encoding = "avc444"`.
+                                    let use_avc444 = supports_h264
+                                        && avc444
+                                        && state.config.rdp.video_encoding
+                                            == shared::messages::RdpVideoEncoding::Avc444;
+                                    debug!(session_id = %session_id, ?video_codecs, supports_h264, use_avc444, "RDP capabilities received");
                                     if supports_h264 {
                                         _video_mode = true;
                                         let pc = proxy_client.clone();
                                         let sid = session_id.clone();
                                         if let Err(e) = tokio::task::spawn_blocking(move || {
+                                            // Aux first: the proxy reads it when
+                                            // video mode starts the encoder.
+                                            pc.set_video_aux(&sid, use_avc444)?;
                                             pc.set_video_mode(&sid, true)
                                         }).await.unwrap_or_else(|e| Err(crate::error::AppError::Ipc(e.to_string()))) {
                                             warn!(session_id = %session_id, error = %e, "Failed to enable video mode");
                                             _video_mode = false;
                                         }
-                                        let confirm = r#"{"type":"mode","video":true}"#;
+                                        let confirm = if use_avc444 {
+                                            r#"{"type":"mode","video":true,"avc444":true}"#
+                                        } else {
+                                            r#"{"type":"mode","video":true}"#
+                                        };
                                         let _ = sender.send(Message::Text(confirm.to_string().into())).await;
                                     }
                                 }
@@ -2546,6 +2564,20 @@ async fn handle_rdp_socket(
                         );
                         if sender.send(Message::Binary(buf.into())).await.is_err() {
                             warn!(session_id = %session_id, "Failed to send video frame to WebSocket");
+                            should_close = true;
+                        }
+                    }
+                    Some(crate::ipc::proxy_rdp::RdpSessionEvent::VideoAuxFrame { timestamp_us, is_keyframe, data }) => {
+                        // Binary header (6 bytes): type(1) + flags(1) + timestamp_ms(4 LE) + H.264 NAL data.
+                        // Same timestamp as the main frame it completes.
+                        let timestamp_ms = (timestamp_us / 1000) as u32;
+                        let mut buf = Vec::with_capacity(6 + data.len());
+                        buf.push(0x02); // auxiliary chroma frame marker
+                        buf.push(if is_keyframe { 0x01 } else { 0x00 });
+                        buf.extend_from_slice(&timestamp_ms.to_le_bytes());
+                        buf.extend_from_slice(&data);
+                        if sender.send(Message::Binary(buf.into())).await.is_err() {
+                            warn!(session_id = %session_id, "Failed to send auxiliary video frame to WebSocket");
                             should_close = true;
                         }
                     }
@@ -3435,7 +3467,7 @@ mod tests {
     fn test_rdp_command_capabilities_h264() {
         let json = r#"{"type":"capabilities","video_codecs":["avc1.42001f"]}"#;
         let cmd: RdpCommand = serde_json::from_str(json).unwrap();
-        if let RdpCommand::Capabilities { video_codecs } = cmd {
+        if let RdpCommand::Capabilities { video_codecs, .. } = cmd {
             assert_eq!(video_codecs.len(), 1);
             assert!(video_codecs[0].starts_with("avc1"));
         } else {
@@ -3444,10 +3476,26 @@ mod tests {
     }
 
     #[test]
+    fn test_rdp_capabilities_avc444_defaults_to_false() {
+        let cmd: RdpCommand =
+            serde_json::from_str(r#"{"type":"capabilities","video_codecs":["avc1.42001f"]}"#)
+                .expect("older frontend");
+        assert!(matches!(
+            cmd,
+            RdpCommand::Capabilities { avc444: false, .. }
+        ));
+        let cmd: RdpCommand = serde_json::from_str(
+            r#"{"type":"capabilities","video_codecs":["avc1.42001f"],"avc444":true}"#,
+        )
+        .expect("avc444 frontend");
+        assert!(matches!(cmd, RdpCommand::Capabilities { avc444: true, .. }));
+    }
+
+    #[test]
     fn test_rdp_command_capabilities_empty() {
         let json = r#"{"type":"capabilities","video_codecs":[]}"#;
         let cmd: RdpCommand = serde_json::from_str(json).unwrap();
-        if let RdpCommand::Capabilities { video_codecs } = cmd {
+        if let RdpCommand::Capabilities { video_codecs, .. } = cmd {
             assert!(video_codecs.is_empty());
             assert!(!video_codecs.iter().any(|c| c.starts_with("avc1")));
         } else {
@@ -3459,7 +3507,7 @@ mod tests {
     fn test_rdp_command_capabilities_multiple_codecs() {
         let json = r#"{"type":"capabilities","video_codecs":["avc1.42001f","hev1.1.6.L93.B0"]}"#;
         let cmd: RdpCommand = serde_json::from_str(json).unwrap();
-        if let RdpCommand::Capabilities { video_codecs } = cmd {
+        if let RdpCommand::Capabilities { video_codecs, .. } = cmd {
             assert_eq!(video_codecs.len(), 2);
             assert!(video_codecs.iter().any(|c| c.starts_with("avc1")));
         } else {

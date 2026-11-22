@@ -219,6 +219,15 @@ max_connections_per_user = 30
 # Default: 5 Mbps (suitable for LAN / low-latency environments).
 # Recommended range: 2_000_000 (low quality) to 30_000_000 (high quality).
 video_bitrate_bps = 5_000_000
+# Chroma resolution of the H.264 stream sent to the browser: "avc420"
+# (default) or "avc444". "avc420" sends one 4:2:0 stream. "avc444" adds a
+# second 4:2:0 stream that carries the chroma samples dropped by the first
+# one; the browser recombines both into a full-chroma picture. It sharpens
+# colored text at the cost of more CPU on Vauban and more bandwidth.
+# A browser that cannot recombine receives "avc420" for that session.
+# Recordings are always "avc420".
+# Any other value stops the supervisor and vauban-web at startup.
+video_encoding = "avc420"
 
 # NTLM policy for RDP sessions: "allow" (default) or "deny".
 #

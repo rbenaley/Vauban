@@ -117,8 +117,19 @@ pub struct RdpSession {
 #[allow(dead_code)]
 pub enum SessionCommand {
     Input(RdpInputEvent),
-    Resize { width: u16, height: u16 },
-    SetVideoMode { enabled: bool, bitrate_bps: u32 },
+    Resize {
+        width: u16,
+        height: u16,
+    },
+    SetVideoMode {
+        enabled: bool,
+        bitrate_bps: u32,
+    },
+    /// Whether the encoder thread also produces the auxiliary chroma
+    /// stream. Read when the encoder thread is spawned.
+    SetVideoAux {
+        enabled: bool,
+    },
     Close,
 }
 
@@ -525,10 +536,14 @@ enum EncoderCommand {
 }
 
 /// Spawns a background thread that encodes H.264 frames without blocking async I/O.
+///
+/// With `aux`, every frame also carries the auxiliary chroma frame of
+/// `[rdp] video_encoding = "avc444"`.
 fn spawn_encoder_thread(
     width: u16,
     height: u16,
     bitrate_bps: u32,
+    aux: bool,
     mut cmd_rx: mpsc::Receiver<EncoderCommand>,
     result_tx: mpsc::Sender<(crate::video_encoder::VideoFrame, u64)>,
     session_id: String,
@@ -541,6 +556,8 @@ fn spawn_encoder_thread(
         } else {
             VideoEncoder::with_defaults(width, height)
         };
+        let encoder_result =
+            encoder_result.and_then(|enc| if aux { enc.with_aux() } else { Ok(enc) });
         let mut encoder = match encoder_result {
             Ok(enc) => enc,
             Err(e) => {
@@ -548,7 +565,7 @@ fn spawn_encoder_thread(
                 return;
             }
         };
-        info!(session_id = %session_id, "H.264 encoder thread started");
+        info!(session_id = %session_id, aux, "H.264 encoder thread started");
 
         while let Some(cmd) = cmd_rx.blocking_recv() {
             match cmd {
@@ -640,6 +657,7 @@ async fn active_session_loop(
     let mut pdu_count: u64 = 0;
 
     let mut video_mode = false;
+    let mut video_aux = false;
     let framebuffer_dirty = Arc::new(AtomicBool::new(false));
     let mut encode_interval = interval(std::time::Duration::from_millis(16)); // 60 FPS max
     let mut suppress_encoding_until: Option<Instant> = None;
@@ -928,6 +946,7 @@ async fn active_session_loop(
                                 image.width(),
                                 image.height(),
                                 bitrate_bps,
+                                video_aux,
                                 snap_rx,
                                 encoded_tx.clone(),
                                 session_id.clone(),
@@ -936,6 +955,10 @@ async fn active_session_loop(
                             framebuffer_dirty.store(true, Ordering::Relaxed);
                             info!(session_id = %session_id, "H.264 encoder thread spawned");
                         }
+                    }
+                    Some(SessionCommand::SetVideoAux { enabled }) => {
+                        info!(session_id = %session_id, enabled, "Auxiliary chroma stream toggled");
+                        video_aux = enabled;
                     }
                     Some(SessionCommand::Close) => {
                         info!(session_id = %session_id, "Close requested");
@@ -1070,6 +1093,20 @@ async fn active_session_loop(
                 if web_tx.send(msg).await.is_err() {
                     warn!(session_id = %session_id, "Web channel closed");
                     return Ok(());
+                }
+                // The auxiliary chroma frame follows its main frame and is
+                // never handed to the recording writer.
+                if let Some(aux) = frame.aux {
+                    let msg = Message::RdpVideoAuxFrame {
+                        session_id: session_id.clone(),
+                        timestamp_us: frame.timestamp_us,
+                        is_keyframe: aux.is_keyframe,
+                        data: aux.data,
+                    };
+                    if web_tx.send(msg).await.is_err() {
+                        warn!(session_id = %session_id, "Web channel closed");
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -5992,7 +6029,15 @@ mod tests {
         let mut result_tx =
             tokio::sync::mpsc::channel::<(crate::video_encoder::VideoFrame, u64)>(8);
 
-        spawn_encoder_thread(1280, 720, 0, cmd_rx.1, result_tx.0, "test-odd".to_string());
+        spawn_encoder_thread(
+            1280,
+            720,
+            0,
+            false,
+            cmd_rx.1,
+            result_tx.0,
+            "test-odd".to_string(),
+        );
 
         let odd_w: u16 = 1727;
         let odd_h: u16 = 1117;
@@ -6022,6 +6067,7 @@ mod tests {
             1280,
             720,
             0,
+            false,
             cmd_rx.1,
             result_tx.0,
             "test-reconf-odd".to_string(),
@@ -6058,6 +6104,7 @@ mod tests {
             1280,
             720,
             0,
+            false,
             cmd_rx.1,
             result_tx.0,
             "test-fullscreen".to_string(),
@@ -6102,6 +6149,7 @@ mod tests {
             1280,
             720,
             20_000_000,
+            false,
             cmd_rx.1,
             result_tx.0,
             "test-bitrate".to_string(),
@@ -6127,6 +6175,7 @@ mod tests {
             1280,
             720,
             0,
+            false,
             cmd_rx.1,
             result_tx.0,
             "test-default-bitrate".to_string(),

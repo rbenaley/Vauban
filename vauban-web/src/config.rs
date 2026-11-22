@@ -394,6 +394,13 @@ pub struct RdpSettings {
     /// which enforces it too.
     #[serde(default)]
     pub ntlm_policy: shared::messages::NtlmPolicy,
+    /// Chroma resolution of the H.264 video: `"avc420"` (default) or
+    /// `"avc444"`. The web tier offers the auxiliary chroma stream to a
+    /// browser only under `"avc444"`; the RDP proxy checks the same key
+    /// before it encodes that stream. Any other value fails
+    /// deserialization, so the web tier refuses to start.
+    #[serde(default)]
+    pub video_encoding: shared::messages::RdpVideoEncoding,
     /// Outbound identity of Remote Credential Guard sessions: `"deny"`
     /// (default) or `"allow"`. The web tier only shows it: the supervisor
     /// hands the same key to the RDP proxy, which is the one that answers

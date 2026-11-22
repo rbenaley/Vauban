@@ -223,6 +223,58 @@ impl NtlmPolicy {
     }
 }
 
+/// Chroma resolution of the H.264 video sent to the browser
+/// (`[rdp] video_encoding`).
+///
+/// - `Avc420` (default): one 4:2:0 stream.
+/// - `Avc444`: the same 4:2:0 stream plus an auxiliary 4:2:0 stream that
+///   carries the chroma samples the first one dropped. A browser that can
+///   recombine both shows full-resolution chroma; any other browser keeps
+///   receiving the first stream only. Recordings hold the first stream.
+///
+/// A value outside the set is a configuration error (the service refuses
+/// to start).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RdpVideoEncoding {
+    #[default]
+    Avc420,
+    Avc444,
+}
+
+impl RdpVideoEncoding {
+    /// Environment variable through which the supervisor hands the value
+    /// to `vauban-proxy-rdp`.
+    pub const ENV: &'static str = "VAUBAN_RDP_VIDEO_ENCODING";
+
+    /// Every value.
+    pub const ALL: [RdpVideoEncoding; 2] = [RdpVideoEncoding::Avc420, RdpVideoEncoding::Avc444];
+
+    /// Canonical string, as written in the configuration.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            RdpVideoEncoding::Avc420 => "avc420",
+            RdpVideoEncoding::Avc444 => "avc444",
+        }
+    }
+
+    /// Exact parse of the canonical string. No trimming, no case folding.
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.as_str() == s)
+    }
+
+    /// Read the value from a process environment value. The supervisor
+    /// always sets the variable, so an absent value is an error, exactly
+    /// like a value that is not canonical.
+    pub fn from_env_value(value: Option<&str>) -> Result<Self, String> {
+        match value {
+            None => Err(format!("{} is not set", Self::ENV)),
+            Some(raw) => Self::parse(raw)
+                .ok_or_else(|| format!("{} must be \"avc420\" or \"avc444\"", Self::ENV)),
+        }
+    }
+}
+
 /// Bastion-wide policy on the outbound identity of Remote Credential
 /// Guard sessions (`[rdp] remote_guard_outbound_identity`).
 ///
@@ -3391,6 +3443,30 @@ pub enum Message {
     RdpSetVideoMode {
         session_id: String,
         enabled: bool,
+    },
+
+    /// Ask for the auxiliary chroma stream of a session (Web -> ProxyRdp).
+    ///
+    /// Sent before `RdpSetVideoMode` when the browser can recombine the
+    /// two streams. The proxy honors it only when `[rdp] video_encoding`
+    /// is `"avc444"`.
+    RdpSetVideoAux {
+        session_id: String,
+        enabled: bool,
+    },
+
+    /// Auxiliary H.264 frame of an AVC444 session (ProxyRdp -> Web).
+    ///
+    /// Carries the chroma samples dropped by the `RdpVideoFrame` that has
+    /// the same `timestamp_us`. Never recorded.
+    RdpVideoAuxFrame {
+        session_id: String,
+        /// Timestamp of the main frame this one completes.
+        timestamp_us: u64,
+        /// true = keyframe of the auxiliary stream.
+        is_keyframe: bool,
+        /// H.264 NAL unit(s) for this frame.
+        data: Vec<u8>,
     },
 
     /// Request to close an RDP session.
