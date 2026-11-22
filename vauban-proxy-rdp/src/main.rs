@@ -45,7 +45,7 @@ use session_manager::{
 use shared::access_guard::{AccessGuard, AccessGuardMetrics, AccessGuardWiring, PROTOCOL_RDP};
 use shared::ipc::{IpcChannel, recv_fd};
 use shared::messages::{
-    ControlMessage, Message, NtlmPolicy, RdpOpenFailure, RdpVideoEncoding,
+    ControlMessage, Message, NtlmPolicy, RdpOpenFailure, RdpTargetCompression, RdpVideoEncoding,
     RemoteGuardOutboundIdentity, ServiceStats,
 };
 use shared::recording_fd::{DEFAULT_BROKER_TIMEOUT, recv_fd_timed};
@@ -85,6 +85,20 @@ fn remote_guard_outbound_identity() -> RemoteGuardOutboundIdentity {
         .get()
         .copied()
         .unwrap_or(RemoteGuardOutboundIdentity::Deny)
+}
+
+/// Target-side compression of this process, set once at startup from
+/// the environment the supervisor provides.
+static TARGET_COMPRESSION: std::sync::OnceLock<RdpTargetCompression> = std::sync::OnceLock::new();
+
+/// What the proxy offers the target for its pictures. Before startup has
+/// set it (which no session can precede) the answer is the historical
+/// behavior.
+fn target_compression() -> RdpTargetCompression {
+    TARGET_COMPRESSION
+        .get()
+        .copied()
+        .unwrap_or(RdpTargetCompression::Lossy)
 }
 
 struct ServiceState {
@@ -385,6 +399,19 @@ async fn run_service() -> Result<ServiceExit> {
     }
     .map_err(|e| anyhow::anyhow!(e))?;
 
+    // Target-side compression, set by the supervisor from
+    // `[rdp] target_compression`. Absent or not canonical stops the proxy.
+    let target_compression_raw = std::env::var_os(RdpTargetCompression::ENV);
+    let target_compression = match &target_compression_raw {
+        None => RdpTargetCompression::from_env_value(None),
+        Some(value) => match value.to_str() {
+            Some(text) => RdpTargetCompression::from_env_value(Some(text)),
+            None => Err(format!("{} is not valid UTF-8", RdpTargetCompression::ENV)),
+        },
+    }
+    .map_err(|e| anyhow::anyhow!(e))?;
+    let _ = TARGET_COMPRESSION.set(target_compression);
+
     let recording_enabled: bool = std::env::var("VAUBAN_RECORDING_ENABLED")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -453,6 +480,7 @@ async fn run_service() -> Result<ServiceExit> {
         std::env::remove_var("VAUBAN_RDP_VIDEO_BITRATE_BPS");
         std::env::remove_var(NtlmPolicy::ENV);
         std::env::remove_var(RdpVideoEncoding::ENV);
+        std::env::remove_var(RdpTargetCompression::ENV);
         std::env::remove_var(RemoteGuardOutboundIdentity::ENV);
         std::env::remove_var("VAUBAN_RECORDING_ENABLED");
         std::env::remove_var("VAUBAN_AUDIT_IPC_READ");
@@ -464,6 +492,7 @@ async fn run_service() -> Result<ServiceExit> {
     info!(
         video_bitrate_bps,
         video_encoding = video_encoding.as_str(),
+        target_compression = target_compression.as_str(),
         recording_enabled,
         "H.264 encoder bitrate configured"
     );

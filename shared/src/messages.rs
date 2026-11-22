@@ -275,6 +275,61 @@ impl RdpVideoEncoding {
     }
 }
 
+/// Whether the RDP target may degrade the pictures it sends to the
+/// bastion (`[rdp] target_compression`).
+///
+/// - `Lossy` (default, the historical behavior): the bastion announces
+///   the RemoteFX codec and lets the target subsample color and reduce
+///   color fidelity.
+/// - `Lossless`: neither is offered; the target sends exact pixels.
+///
+/// This only concerns the link between the target and the bastion. The
+/// video sent to the browser is encoded by the bastion either way.
+///
+/// A value outside the set is a configuration error (the service refuses
+/// to start).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RdpTargetCompression {
+    #[default]
+    Lossy,
+    Lossless,
+}
+
+impl RdpTargetCompression {
+    /// Environment variable through which the supervisor hands the value
+    /// to `vauban-proxy-rdp`.
+    pub const ENV: &'static str = "VAUBAN_RDP_TARGET_COMPRESSION";
+
+    /// Every value.
+    pub const ALL: [RdpTargetCompression; 2] =
+        [RdpTargetCompression::Lossy, RdpTargetCompression::Lossless];
+
+    /// Canonical string, as written in the configuration.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            RdpTargetCompression::Lossy => "lossy",
+            RdpTargetCompression::Lossless => "lossless",
+        }
+    }
+
+    /// Exact parse of the canonical string. No trimming, no case folding.
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.as_str() == s)
+    }
+
+    /// Read the value from a process environment value. The supervisor
+    /// always sets the variable, so an absent value is an error, exactly
+    /// like a value that is not canonical.
+    pub fn from_env_value(value: Option<&str>) -> Result<Self, String> {
+        match value {
+            None => Err(format!("{} is not set", Self::ENV)),
+            Some(raw) => Self::parse(raw)
+                .ok_or_else(|| format!("{} must be \"lossy\" or \"lossless\"", Self::ENV)),
+        }
+    }
+}
+
 /// Bastion-wide policy on the outbound identity of Remote Credential
 /// Guard sessions (`[rdp] remote_guard_outbound_identity`).
 ///

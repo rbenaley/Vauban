@@ -220,6 +220,15 @@ video_bitrate_bps = 5_000_000
 # Recordings are always "avc420".
 # Any other value stops the supervisor and vauban-web at startup.
 video_encoding = "avc420"
+# Whether the RDP target may degrade the pictures it sends to Vauban:
+# "lossy" (default) or "lossless". "lossy" announces the RemoteFX codec and
+# lets the target subsample color and reduce color fidelity. "lossless"
+# offers neither: the target sends exact pixels, at the cost of more
+# bandwidth between the target and Vauban. The video sent to the browser
+# is encoded by Vauban either way. "avc444" restores color detail only if
+# the target has not already dropped it.
+# Any other value stops the supervisor at startup.
+target_compression = "lossy"
 
 [recording]
 enabled = true

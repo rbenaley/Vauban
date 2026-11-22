@@ -104,6 +104,52 @@ pub fn build_aux_yuv(rgba: &[u8], w: usize, h: usize) -> Vec<u8> {
     out
 }
 
+/// Chroma difference (out of 255) above which a 2x2 block counts as
+/// holding color detail.
+const CHROMA_DETAIL_THRESHOLD: u8 = 16;
+
+/// Share, in thousandths, of the 2x2 blocks of an RGBA picture whose
+/// chroma varies inside the block: the detail 4:2:0 subsampling drops.
+///
+/// Returns the share on the even grid (blocks starting at even
+/// coordinates) and on the grid shifted by one pixel. A picture whose
+/// color was already subsampled upstream shows almost none on the even
+/// grid while the shifted grid still sees the block edges.
+pub fn chroma_detail_permille(rgba: &[u8], w: usize, h: usize) -> (u32, u32) {
+    let grid = |offset: usize| -> u32 {
+        if w < offset + 2 || h < offset + 2 || rgba.len() < w * h * 4 {
+            return 0;
+        }
+        let (mut blocks, mut detailed) = (0u64, 0u64);
+        let mut y = offset;
+        while y + 1 < h {
+            let mut x = offset;
+            while x + 1 < w {
+                let (mut u_min, mut u_max, mut v_min, mut v_max) = (255u8, 0u8, 255u8, 0u8);
+                for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                    let i = ((y + dy) * w + x + dx) * 4;
+                    let px = &rgba[i..i + 4];
+                    let (u, v) = (chroma_u(px), chroma_v(px));
+                    u_min = u_min.min(u);
+                    u_max = u_max.max(u);
+                    v_min = v_min.min(v);
+                    v_max = v_max.max(v);
+                }
+                blocks += 1;
+                if u_max - u_min > CHROMA_DETAIL_THRESHOLD
+                    || v_max - v_min > CHROMA_DETAIL_THRESHOLD
+                {
+                    detailed += 1;
+                }
+                x += 2;
+            }
+            y += 2;
+        }
+        (detailed * 1000).checked_div(blocks).unwrap_or(0) as u32
+    };
+    (grid(0), grid(1))
+}
+
 /// H.264 encoder wrapping OpenH264 for RDP framebuffer encoding.
 pub struct VideoEncoder {
     encoder: Encoder,
@@ -523,6 +569,39 @@ mod tests {
         // Below the threshold the average stands in for the sample; above
         // it only the rounding of the average (x4) remains.
         assert!(worst < 30, "fourth chroma sample off by {worst}");
+    }
+
+    #[test]
+    fn test_chroma_detail_sees_fine_color_only() {
+        // Gray text: luma detail, no chroma detail.
+        let mut gray = vec![0u8; 16 * 16 * 4];
+        for (i, px) in gray.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let v = if i % 3 == 0 { 255 } else { 0 };
+            px.copy_from_slice(&[v, v, v, 255]);
+        }
+        assert_eq!(chroma_detail_permille(&gray, 16, 16), (0, 0));
+
+        // 1-pixel colored detail: every block varies, on both grids.
+        let fine = colored_detail_rgba(16, 16);
+        let (even, odd) = chroma_detail_permille(&fine, 16, 16);
+        assert!(even > 900 && odd > 900, "even={even} odd={odd}");
+
+        // Color constant inside each even 2x2 block (subsampled upstream):
+        // nothing on the even grid, block edges on the shifted grid.
+        let mut sub = vec![0u8; 16 * 16 * 4];
+        for y in 0..16usize {
+            for x in 0..16usize {
+                let c = if ((x / 2) + (y / 2)) % 2 == 0 {
+                    [255, 0, 0, 255]
+                } else {
+                    [0, 0, 255, 255]
+                };
+                sub[(y * 16 + x) * 4..(y * 16 + x) * 4 + 4].copy_from_slice(&c);
+            }
+        }
+        let (even, odd) = chroma_detail_permille(&sub, 16, 16);
+        assert_eq!(even, 0);
+        assert!(odd > 900, "odd={odd}");
     }
 
     #[test]

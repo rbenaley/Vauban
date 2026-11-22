@@ -688,6 +688,11 @@ pub struct RdpProxyConfig {
     /// the same file.
     #[serde(default)]
     pub video_encoding: shared::messages::RdpVideoEncoding,
+    /// Whether the target may degrade the pictures it sends: `"lossy"`
+    /// (default) or `"lossless"`. Any other value fails deserialization,
+    /// so the supervisor refuses to start.
+    #[serde(default)]
+    pub target_compression: shared::messages::RdpTargetCompression,
     /// NTLM policy for RDP sessions: `"allow"` (default) or `"deny"`.
     /// Any other value fails deserialization, so the supervisor refuses
     /// to start instead of running with NTLM allowed by accident.
@@ -712,6 +717,7 @@ impl Default for RdpProxyConfig {
         Self {
             video_bitrate_bps: default_video_bitrate_bps(),
             video_encoding: shared::messages::RdpVideoEncoding::default(),
+            target_compression: shared::messages::RdpTargetCompression::default(),
             ntlm_policy: shared::messages::NtlmPolicy::default(),
             remote_guard_outbound_identity: shared::messages::RemoteGuardOutboundIdentity::default(
             ),
@@ -1616,6 +1622,12 @@ impl SupervisorConfig {
                     shared::messages::RdpVideoEncoding::ENV.to_string(),
                     self.rdp.video_encoding.as_str().to_string(),
                 ));
+                // Target-side compression (`[rdp] target_compression`).
+                // Always set, for the same reason.
+                vars.push((
+                    shared::messages::RdpTargetCompression::ENV.to_string(),
+                    self.rdp.target_compression.as_str().to_string(),
+                ));
             }
             "proxy_ssh" => {
                 let ssh_recording = self.recording.ssh_recording_enabled();
@@ -2269,6 +2281,37 @@ mod tests {
     }
 
     #[test]
+    fn test_rdp_target_compression_values() {
+        use shared::messages::RdpTargetCompression as Tc;
+        assert_eq!(RdpProxyConfig::default().target_compression, Tc::Lossy);
+        let parsed: RdpProxyConfig = toml::from_str("").expect("empty");
+        assert_eq!(parsed.target_compression, Tc::Lossy);
+        let parsed: RdpProxyConfig =
+            toml::from_str("target_compression = \"lossless\"").expect("lossless");
+        assert_eq!(parsed.target_compression, Tc::Lossless);
+        for bad in [
+            "target_compression = \"Lossless\"",
+            "target_compression = \"none\"",
+            "target_compression = \"\"",
+            "target_compression = false",
+        ] {
+            assert!(
+                toml::from_str::<RdpProxyConfig>(bad).is_err(),
+                "must be rejected: {bad}"
+            );
+        }
+        for tc in Tc::ALL {
+            let mut config = test_config();
+            config.rdp.target_compression = tc;
+            let vars = config.service_env_vars("proxy_rdp");
+            let found: Vec<_> = vars.iter().filter(|(k, _)| k == Tc::ENV).collect();
+            assert_eq!(found.len(), 1);
+            assert_eq!(Tc::from_env_value(Some(&found[0].1)), Ok(tc));
+        }
+        assert!(Tc::from_env_value(None).is_err());
+    }
+
+    #[test]
     fn test_rdp_video_encoding_rejects_anything_else() {
         for bad in [
             "video_encoding = \"AVC444\"",
@@ -2313,7 +2356,7 @@ mod tests {
     fn test_service_env_vars_proxy_rdp() {
         let config = test_config();
         let vars = config.service_env_vars("proxy_rdp");
-        assert_eq!(vars.len(), 6);
+        assert_eq!(vars.len(), 7);
         assert_eq!(vars[0].0, "VAUBAN_RDP_VIDEO_BITRATE_BPS");
         assert_eq!(vars[0].1, "5000000");
         assert_eq!(vars[1].0, "KRB5_CONFIG");
@@ -2326,6 +2369,8 @@ mod tests {
         assert_eq!(vars[4].1, "true");
         assert_eq!(vars[5].0, "VAUBAN_RDP_VIDEO_ENCODING");
         assert_eq!(vars[5].1, "avc420");
+        assert_eq!(vars[6].0, "VAUBAN_RDP_TARGET_COMPRESSION");
+        assert_eq!(vars[6].1, "lossy");
     }
 
     /// The policy reaches the RDP proxy as its canonical string, which

@@ -461,11 +461,22 @@ fn build_connector_config(
         enable_audio_capture: false,
         // No EGFX graphics pipeline: bitmap updates over fast-path only.
         support_dyn_vc_gfx_protocol: false,
-        bitmap: Some(ironrdp_connector::BitmapConfig {
-            lossy_compression: true,
-            color_depth: 32,
-            codecs: capability_sets::client_codecs_capabilities(&[])
-                .unwrap_or_else(|_| capability_sets::BitmapCodecs(Vec::new())),
+        // `[rdp] target_compression`. "lossy" announces RemoteFX and lets
+        // the target subsample color and reduce color fidelity. "lossless"
+        // offers neither: no codec, so no surface commands, and bitmap
+        // updates without color loss.
+        bitmap: Some(match crate::target_compression() {
+            shared::messages::RdpTargetCompression::Lossy => ironrdp_connector::BitmapConfig {
+                lossy_compression: true,
+                color_depth: 32,
+                codecs: capability_sets::client_codecs_capabilities(&[])
+                    .unwrap_or_else(|_| capability_sets::BitmapCodecs(Vec::new())),
+            },
+            shared::messages::RdpTargetCompression::Lossless => ironrdp_connector::BitmapConfig {
+                lossy_compression: false,
+                color_depth: 32,
+                codecs: capability_sets::BitmapCodecs(Vec::new()),
+            },
         }),
         client_build: 0,
         client_name: "Vauban".to_owned(),
@@ -978,8 +989,20 @@ async fn active_session_loop(
                         .checked_div(perf_encoded_frames)
                         .map(|us_per_frame| us_per_frame / 1000)
                         .unwrap_or(0);
+                    // Share of 2x2 blocks whose color really varies in the
+                    // picture received from the target, on the even grid
+                    // and on the grid shifted by one pixel. Even near zero
+                    // with odd well above it: the target subsampled color.
+                    let (chroma_detail_even, chroma_detail_odd) =
+                        crate::video_encoder::chroma_detail_permille(
+                            image.data(),
+                            usize::from(image.width()),
+                            usize::from(image.height()),
+                        );
                     info!(
                         session_id = %session_id,
+                        chroma_detail_even,
+                        chroma_detail_odd,
                         gfx_updates_5s = perf_gfx_updates,
                         encoded_frames_5s = perf_encoded_frames,
                         dirty_skips_5s = perf_dirty_skips,
