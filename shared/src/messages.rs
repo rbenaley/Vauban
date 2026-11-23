@@ -3500,30 +3500,6 @@ pub enum Message {
         enabled: bool,
     },
 
-    /// Ask for the auxiliary chroma stream of a session (Web -> ProxyRdp).
-    ///
-    /// Sent before `RdpSetVideoMode` when the browser can recombine the
-    /// two streams. The proxy honors it only when `[rdp] video_encoding`
-    /// is `"avc444"`.
-    RdpSetVideoAux {
-        session_id: String,
-        enabled: bool,
-    },
-
-    /// Auxiliary H.264 frame of an AVC444 session (ProxyRdp -> Web).
-    ///
-    /// Carries the chroma samples dropped by the `RdpVideoFrame` that has
-    /// the same `timestamp_us`. Never recorded.
-    RdpVideoAuxFrame {
-        session_id: String,
-        /// Timestamp of the main frame this one completes.
-        timestamp_us: u64,
-        /// true = keyframe of the auxiliary stream.
-        is_keyframe: bool,
-        /// H.264 NAL unit(s) for this frame.
-        data: Vec<u8>,
-    },
-
     /// Request to close an RDP session.
     RdpSessionClose {
         session_id: String,
@@ -4372,6 +4348,30 @@ pub enum Message {
         port: u16,
         target_service: Service,
         session_token: Vec<u8>,
+    },
+
+    /// Ask for the auxiliary chroma stream of a session (Web -> ProxyRdp).
+    ///
+    /// Sent before `RdpSetVideoMode` when the browser can recombine the
+    /// two streams. The proxy honors it only when `[rdp] video_encoding`
+    /// is `"avc444"`. Appended at END.
+    RdpSetVideoAux {
+        session_id: String,
+        enabled: bool,
+    },
+
+    /// Auxiliary H.264 frame of an AVC444 session (ProxyRdp -> Web).
+    ///
+    /// Carries the chroma samples dropped by the `RdpVideoFrame` that has
+    /// the same `timestamp_us`. Never recorded. Appended at END.
+    RdpVideoAuxFrame {
+        session_id: String,
+        /// Timestamp of the main frame this one completes.
+        timestamp_us: u64,
+        /// true = keyframe of the auxiliary stream.
+        is_keyframe: bool,
+        /// H.264 NAL unit(s) for this frame.
+        data: Vec<u8>,
     },
 }
 
