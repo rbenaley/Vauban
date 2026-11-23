@@ -391,10 +391,7 @@ impl Context for rg::RemoteGuardSession {
         false
     }
 
-    fn execute_ntlm(
-        &mut self,
-        _request: &ndr::NtlmRequest,
-    ) -> sspi::Result<ndr::NtlmResponseCall> {
+    fn execute_ntlm(&mut self, _request: &ndr::NtlmRequest) -> sspi::Result<ndr::NtlmResponseCall> {
         Err(Error::new(
             ErrorKind::UnsupportedFunction,
             "RCG NTLM operation is unsupported",
@@ -457,9 +454,8 @@ impl Context for rg::RemoteGuardSession {
                         gss_checksum: request.gss_checksum.as_ref().map(asn1).transpose()?,
                         key_usage: request.key_usage,
                     })?;
-                let pdu = authenticator_pdu(
-                    request.gss_checksum.as_ref().map(|checksum| checksum.pdu),
-                );
+                let pdu =
+                    authenticator_pdu(request.gss_checksum.as_ref().map(|checksum| checksum.pdu));
                 Ok(Response::CreateApReqAuthenticator(
                     ndr::CreateApReqAuthenticatorResponse {
                         authenticator_time: result.authenticator_time,

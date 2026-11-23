@@ -314,8 +314,7 @@ fn attack_the_lint_refuses_the_connector_remote_guard_feature() {
         .lines()
         .find(|line| line.starts_with("ironrdp-connector = "))
         .expect("ironrdp-connector dependency");
-    let with_feature =
-        "ironrdp-connector = { version = \"0.12\", features = [\"remote-guard\"] }";
+    let with_feature = "ironrdp-connector = { version = \"0.12\", features = [\"remote-guard\"] }";
     let proxy = PROXY_MANIFEST.replacen(line, with_feature, 1);
     assert_ne!(proxy, PROXY_MANIFEST);
     assert!(!run_script_on_both("connector_feature", MANIFEST, &proxy));

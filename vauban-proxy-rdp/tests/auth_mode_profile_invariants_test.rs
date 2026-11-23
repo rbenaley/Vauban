@@ -165,7 +165,11 @@ fn the_remote_guard_session_only_exists_behind_the_policy() {
         1
     );
     assert_eq!(prod.matches(".attach_dynamic_channel(").count(), 1);
-    assert_eq!(prod.matches("crate::remote_guard_channel::Backend {").count(), 1);
+    assert_eq!(
+        prod.matches("crate::remote_guard_channel::Backend {")
+            .count(),
+        1
+    );
     let attach = prod
         .find("fn attach_remote_guard_channel(")
         .expect("attach_remote_guard_channel");
