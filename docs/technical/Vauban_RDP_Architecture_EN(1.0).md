@@ -169,7 +169,7 @@ The RDP connector is configured for maximum compatibility with Windows servers:
 | Color depth | 32-bit (RGBx) | Best quality; server may downgrade to 16-bit |
 | Bitmap compression | Lossy enabled | Reduces bandwidth for bitmap regions |
 | Keyboard layout | US (0x0409) | Standard layout; keys mapped by scancode |
-| Performance flags | Disable wallpaper, themes, animations | Reduces unnecessary graphics updates |
+| Performance flags | Disable wallpaper, themes, animations; enable font smoothing | Reduces unnecessary graphics updates; text is anti-aliased |
 | Dynamic Virtual Channels | DrdynvcClient + DisplayControlClient | Required for runtime resolution changes |
 | Pointer rendering | Software (client-side) | More responsive cursor tracking |
 

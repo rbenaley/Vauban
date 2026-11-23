@@ -515,7 +515,9 @@ fn build_connector_config(
             | PerformanceFlags::DISABLE_CURSOR_SHADOW
             | PerformanceFlags::DISABLE_CURSORSETTINGS
             | PerformanceFlags::DISABLE_FULLWINDOWDRAG
-            | PerformanceFlags::DISABLE_MENUANIMATIONS,
+            | PerformanceFlags::DISABLE_MENUANIMATIONS
+            // Without it the target renders text with no anti-aliasing.
+            | PerformanceFlags::ENABLE_FONT_SMOOTHING,
         desktop_scale_factor: 0,
         hardware_id: None,
         license_cache: None,
@@ -4002,6 +4004,7 @@ mod tests {
             PerformanceFlags::DISABLE_CURSORSETTINGS,
             PerformanceFlags::DISABLE_FULLWINDOWDRAG,
             PerformanceFlags::DISABLE_MENUANIMATIONS,
+            PerformanceFlags::ENABLE_FONT_SMOOTHING,
         ] {
             assert!(
                 config.performance_flags.contains(flag),
