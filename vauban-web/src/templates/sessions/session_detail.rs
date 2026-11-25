@@ -183,6 +183,10 @@ pub struct SessionDetailTemplate {
     pub show_play_recording: bool,
     /// Approval detail is admin-only; owners must not receive a dead link.
     pub show_approval_link: bool,
+    /// The asset name links to `/assets/manage/{uuid}` only for a caller
+    /// holding `assets:manage`; everyone else gets plain text, since the
+    /// user zone has no per-asset page.
+    pub show_asset_manage_link: bool,
 }
 
 #[cfg(test)]
@@ -384,6 +388,7 @@ mod tests {
             session: detail,
             show_play_recording: false,
             show_approval_link: false,
+            show_asset_manage_link: false,
         };
         let html = template.render().expect("render");
         assert!(
@@ -480,6 +485,7 @@ mod tests {
             session: create_test_session_detail("active", "ssh"),
             show_play_recording: true,
             show_approval_link: false,
+            show_asset_manage_link: false,
         };
 
         let result = template.render();
@@ -510,6 +516,7 @@ mod tests {
             session: create_test_session_detail("active", "ssh"),
             show_play_recording: false,
             show_approval_link: false,
+            show_asset_manage_link: false,
         };
 
         assert!(!template.show_play_recording);
@@ -518,5 +525,44 @@ mod tests {
             result.is_ok(),
             "SessionDetailTemplate should render without play button"
         );
+    }
+
+    fn render_with_asset_manage_link(show_asset_manage_link: bool) -> String {
+        let template = SessionDetailTemplate {
+            title: "Session Detail".to_string(),
+            user: None,
+            vauban: VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+                ..Default::default()
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            session: create_test_session_detail("active", "ssh"),
+            show_play_recording: false,
+            show_approval_link: false,
+            show_asset_manage_link,
+        };
+        template
+            .render()
+            .expect("SessionDetailTemplate should render")
+    }
+
+    #[test]
+    fn test_asset_name_links_to_the_admin_page_for_an_asset_manager() {
+        let html = render_with_asset_manage_link(true);
+        assert!(html.contains(r#"href="/assets/manage/asset-uuid""#));
+        assert!(!html.contains(r#"href="/assets/asset-uuid""#));
+    }
+
+    /// `/assets/{uuid}` is a constant 410 in the user zone: a caller
+    /// without `assets:manage` gets the name as text, not a dead link.
+    #[test]
+    fn test_asset_name_is_plain_text_without_assets_manage() {
+        let html = render_with_asset_manage_link(false);
+        assert!(!html.contains(r#"href="/assets/"#), "no asset link at all");
     }
 }

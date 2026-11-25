@@ -198,7 +198,7 @@
                         </div>
                         <div class="flex items-center gap-2 sm:flex-shrink-0">
                             {% if req.is_approved() %}
-                            <a href="/assets/{{ req.uuid }}"
+                            <a href="{{ req.connect_url() }}" data-testid="connect-{{ req.uuid }}"
                                class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500">
                                 <svg class="-ml-0.5 mr-1 h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
                                     <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/>

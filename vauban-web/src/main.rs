@@ -1701,9 +1701,9 @@ async fn create_app(state: AppState) -> Result<Router, AppError> {
         // session-only, no CRUD). All asset CRUD lives under
         // `/assets/manage/*`, gated by `require_assets_manage`. The
         // user zone exposes a single GET on `/assets` (list filtered
-        // by access rules) and a single GET on `/assets/{uuid}`
-        // (connect / request-access page); every other verb is in the
-        // admin nest below. There is intentionally NO legacy-URL
+        // by access rules, with the connect / request-access controls
+        // on each row); `/assets/{uuid}` is a constant 410 tombstone
+        // (see below) and every other verb is in the admin nest. There is intentionally NO legacy-URL
         // redirect because v1.0 has not shipped, so we do not have any
         // bookmarks or external clients to preserve compatibility for.
         .route("/assets", get(handlers::web::asset_list))

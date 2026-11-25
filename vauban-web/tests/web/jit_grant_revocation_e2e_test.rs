@@ -906,8 +906,63 @@ async fn e2e_my_requests_revoked_badge_no_connect() {
         "my-requests must show the Revoked badge"
     );
     assert!(
-        !body.contains(&format!("/assets/{}", grant_uuid)),
+        !body.contains(&format!("data-testid=\"connect-{}\"", grant_uuid)),
         "my-requests must not offer a Connect link for a revoked grant"
+    );
+}
+
+/// The Connect button of an approved request leads to a page that
+/// exists. It used to point at `/assets/{request uuid}`, the removed
+/// user-zone detail page, which answers a constant 410.
+#[tokio::test]
+async fn e2e_my_requests_approved_connect_link_resolves() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("mrc_adm")).await;
+    let user_name = unique_name("mrc_usr");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+    let asset_id = create_simple_ssh_asset(&mut conn, &unique_name("mrc_ast"), admin_id).await;
+    let grant_uuid = create_approved_session(&mut conn, user_id, asset_id, Some(3600)).await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+    let cookie = format!("access_token={}", token);
+    let response = app
+        .server
+        .get("/sessions/my-requests")
+        .add_header(COOKIE, cookie.clone())
+        .await;
+    assert_status(&response, 200);
+    let body = response.text();
+
+    // The anchor carrying the test id: `<a href="..." data-testid="connect-<uuid>"`.
+    let marker = format!("\" data-testid=\"connect-{}\"", grant_uuid);
+    let end = body
+        .find(&marker)
+        .unwrap_or_else(|| panic!("approved request must offer a Connect link"));
+    let start = body[..end]
+        .rfind("href=\"")
+        .unwrap_or_else(|| panic!("Connect link must carry an href"))
+        + "href=\"".len();
+    let href = body[start..end].replace("&amp;", "&");
+
+    assert!(
+        href.starts_with("/assets?search="),
+        "Connect must lead to the asset list, got {href}"
+    );
+    assert!(
+        !body.contains(&format!("/assets/{}", grant_uuid)),
+        "the request UUID must not appear in an asset path"
+    );
+
+    let target = app.server.get(&href).add_header(COOKIE, cookie).await;
+    assert_status(&target, 200);
+    assert!(
+        !target.text().contains("Asset detail page has moved"),
+        "Connect must not land on the 410 tombstone"
     );
 }
 

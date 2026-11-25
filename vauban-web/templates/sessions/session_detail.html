@@ -100,9 +100,16 @@
                 <div>
                     <dt class="text-sm font-medium text-gray-500 dark:text-gray-400">Asset</dt>
                     <dd class="mt-1 text-sm">
-                        <a href="/assets/{{ session.asset_uuid }}" class="text-vauban-600 hover:text-vauban-500 dark:text-vauban-400">
+                        {# The user zone has no per-asset page (`/assets/{uuid}`
+                           is a constant 410). Only a caller who may manage
+                           assets gets a link, to the admin page. #}
+                        {% if show_asset_manage_link %}
+                        <a href="/assets/manage/{{ session.asset_uuid }}" class="text-vauban-600 hover:text-vauban-500 dark:text-vauban-400">
                             {{ session.asset_name }}
                         </a>
+                        {% else %}
+                        <span class="text-gray-900 dark:text-white">{{ session.asset_name }}</span>
+                        {% endif %}
                         <span class="text-gray-500 dark:text-gray-400">({{ session.asset_hostname }})</span>
                     </dd>
                 </div>

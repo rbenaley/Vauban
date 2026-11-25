@@ -60,6 +60,18 @@ impl MyRequestItem {
         self.status == "approved"
     }
 
+    /// Where the Connect button of an approved request leads: the asset
+    /// list, narrowed to this asset by name. The list row carries the
+    /// real Connect control (justification, MFA, IACS and MCP branches).
+    /// There is no per-asset page in the user zone: `/assets/{uuid}` is a
+    /// constant 410, and `uuid` here is the request's, not the asset's.
+    pub fn connect_url(&self) -> String {
+        let query: String = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("search", &self.asset_name)
+            .finish();
+        format!("/assets?{query}")
+    }
+
     /// Human-readable duration display (e.g. "2h", "30min", "Unlimited").
     pub fn duration_display(&self) -> String {
         crate::utils::duration_display(self.max_session_duration)
@@ -298,6 +310,66 @@ mod tests {
         assert_eq!(item.approved_by.as_deref(), Some("admin"));
     }
 
+    // ---- connect_url ----
+
+    #[test]
+    fn test_connect_url_targets_the_asset_list_by_name() {
+        let item = make_item("approved", None);
+        assert_eq!(item.connect_url(), "/assets?search=Server+A");
+    }
+
+    /// The user zone has no per-asset page: `/assets/{uuid}` answers a
+    /// constant 410. The Connect button must not lead there, and must
+    /// not put the request's UUID in an asset path.
+    #[test]
+    fn test_connect_url_is_not_the_removed_asset_detail_page() {
+        let item = make_item("approved", None);
+        let url = item.connect_url();
+        assert!(!url.starts_with("/assets/"), "got {url}");
+        assert!(!url.contains(&item.uuid), "got {url}");
+    }
+
+    #[test]
+    fn test_connect_url_encodes_reserved_characters() {
+        let mut item = make_item("approved", None);
+        item.asset_name = "a&b=c #1?\"<x>".to_string();
+        let url = item.connect_url();
+        let query = url.strip_prefix("/assets?").expect("asset list URL");
+        for forbidden in ['&', '#', '?', '"', '<', '>', ' '] {
+            assert!(
+                !query.contains(forbidden),
+                "{forbidden:?} left raw in {url}"
+            );
+        }
+        let pairs: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes())
+            .into_owned()
+            .collect();
+        assert_eq!(pairs, vec![("search".to_string(), item.asset_name.clone())]);
+    }
+
+    proptest::proptest! {
+        /// For any asset name the URL stays on the asset list, carries
+        /// exactly one `search` parameter, and that parameter decodes
+        /// back to the name.
+        #[test]
+        fn proptest_connect_url_round_trips_any_asset_name(name in ".{0,64}") {
+            let mut item = make_item("approved", None);
+            item.asset_name = name.clone();
+            let url = item.connect_url();
+            let query = url.strip_prefix("/assets?");
+            proptest::prop_assert!(query.is_some(), "not an asset list URL: {}", url);
+            let query = query.unwrap_or_default();
+            proptest::prop_assert!(
+                !query.contains(['&', '#', '?', '"', '<', '>', ' ', '/']),
+                "reserved character left raw in {}", url
+            );
+            let pairs: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes())
+                .into_owned()
+                .collect();
+            proptest::prop_assert_eq!(pairs, vec![("search".to_string(), name)]);
+        }
+    }
+
     // ---- template render ----
 
     #[test]
@@ -341,6 +413,14 @@ mod tests {
 
         let html = template.render().expect("template should render");
         assert!(html.contains("1h"), "should show 1h duration");
+        assert!(
+            html.contains(r#"href="/assets?search=Server+A""#),
+            "approved request must link to the asset list"
+        );
+        assert!(
+            !html.contains(r#"href="/assets/"#),
+            "no link to the removed /assets/{{uuid}} page"
+        );
         assert!(html.contains("Unlimited"), "should show Unlimited");
         assert!(
             html.contains("ws-connect=\"/ws/notifications\""),

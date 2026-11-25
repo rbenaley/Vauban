@@ -533,6 +533,7 @@ pub async fn session_detail(
         session,
         show_play_recording: user_is_admin,
         show_approval_link: user_is_admin,
+        show_asset_manage_link: perms.assets_manage,
     };
 
     match template.render() {
@@ -1513,7 +1514,7 @@ pub async fn submit_access_request(
             return htmx_or_redirect(
                 is_htmx,
                 crate::services::access_request::JUSTIFICATION_REQUIRED_MESSAGE,
-                &format!("/assets/{}", form.asset_uuid),
+                "/assets",
             );
         }
     };
@@ -1559,7 +1560,7 @@ pub async fn submit_access_request(
         return htmx_or_redirect(
             is_htmx,
             "The requested protocol does not match this asset",
-            &format!("/assets/{}", form.asset_uuid),
+            "/assets",
         );
     }
 
@@ -1570,11 +1571,7 @@ pub async fn submit_access_request(
                 let user_uuid_parsed = match uuid::Uuid::parse_str(&auth_user.uuid) {
                     Ok(u) => u,
                     Err(_) => {
-                        return htmx_or_redirect(
-                            is_htmx,
-                            "Invalid user session",
-                            &format!("/assets/{}", form.asset_uuid),
-                        );
+                        return htmx_or_redirect(is_htmx, "Invalid user session", "/assets");
                     }
                 };
                 let mfa_secret_opt: Option<String> = crate::schema::users::table
@@ -1594,28 +1591,20 @@ pub async fn submit_access_request(
                             crate::services::auth::AuthService::verify_totp(&secret, code)
                         };
                         if !valid {
-                            return htmx_or_redirect(
-                                is_htmx,
-                                "Invalid MFA code",
-                                &format!("/assets/{}", form.asset_uuid),
-                            );
+                            return htmx_or_redirect(is_htmx, "Invalid MFA code", "/assets");
                         }
                     }
                     None => {
                         return htmx_or_redirect(
                             is_htmx,
                             "MFA is not configured for your account",
-                            &format!("/assets/{}", form.asset_uuid),
+                            "/assets",
                         );
                     }
                 }
             }
             _ => {
-                return htmx_or_redirect(
-                    is_htmx,
-                    "MFA code is required (6 digits)",
-                    &format!("/assets/{}", form.asset_uuid),
-                );
+                return htmx_or_redirect(is_htmx, "MFA code is required (6 digits)", "/assets");
             }
         }
     }

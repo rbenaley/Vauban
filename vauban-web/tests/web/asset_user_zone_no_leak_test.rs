@@ -394,3 +394,102 @@ async fn case5_verify_host_key_endpoint_is_still_mounted_for_admin() {
         "GET /assets/{{uuid}}/verify-host-key MUST stay mounted"
     );
 }
+
+/// A validation failure of `POST /sessions/request` without HTMX sends
+/// the browser back to the asset list. It used to redirect to
+/// `/assets/{uuid}`, the removed detail page (constant 410).
+#[tokio::test]
+async fn access_request_validation_failure_redirects_to_the_asset_list() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let user_name = unique_name("issue45_user");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+    let asset = create_test_ssh_asset(&mut conn, &unique_name("issue45_asset")).await;
+    let asset_uuid = asset.asset.uuid;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+    let csrf = app.generate_csrf_token();
+
+    // No `HX-Request` header and no justification.
+    let response = app
+        .server
+        .post("/sessions/request")
+        .add_header(
+            COOKIE,
+            format!("access_token={}; __vauban_csrf={}", token, csrf),
+        )
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("asset_uuid", &asset_uuid.to_string()),
+            ("session_type", "ssh"),
+        ])
+        .await;
+
+    assert_status(&response, 303);
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(location, "/assets", "must not redirect to /assets/{{uuid}}");
+}
+
+fn collect_files(dir: &std::path::Path, ext: &str, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(&path, ext, out);
+        } else if path.extension().is_some_and(|e| e == ext) {
+            out.push(path);
+        }
+    }
+}
+
+/// Source pin: nothing links or redirects to the bare `/assets/{uuid}`
+/// URL. In the user zone that path is a constant 410; sub-routes
+/// (`/assets/{uuid}/connect`, ...) and `/assets/manage/{uuid}` remain.
+#[test]
+fn no_template_or_handler_targets_the_removed_asset_detail_page() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut offenders = Vec::new();
+
+    // Templates: `/assets/{{ expr }}` must be followed by `/`.
+    let mut templates = Vec::new();
+    collect_files(&root.join("templates"), "html", &mut templates);
+    assert!(!templates.is_empty(), "templates directory not found");
+    for path in templates {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut rest = text.as_str();
+        while let Some(pos) = rest.find("/assets/{{") {
+            let after = &rest[pos + "/assets/{{".len()..];
+            let Some(close) = after.find("}}") else { break };
+            if !after[close + 2..].starts_with('/') {
+                offenders.push(path.display().to_string());
+            }
+            rest = &after[close + 2..];
+        }
+    }
+
+    // Handlers: a format string that is exactly `/assets/{}`.
+    let mut handlers = Vec::new();
+    collect_files(&root.join("src/handlers"), "rs", &mut handlers);
+    assert!(!handlers.is_empty(), "handlers directory not found");
+    for path in handlers {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        if text.contains("\"/assets/{}\"") {
+            offenders.push(path.display().to_string());
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "link or redirect to the removed /assets/{{uuid}} page in: {offenders:?}"
+    );
+}
