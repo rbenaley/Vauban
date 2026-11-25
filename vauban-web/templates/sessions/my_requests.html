@@ -198,13 +198,56 @@
                         </div>
                         <div class="flex items-center gap-2 sm:flex-shrink-0">
                             {% if req.is_approved() %}
-                            <a href="{{ req.connect_url() }}" data-testid="connect-{{ req.uuid }}"
-                               class="inline-flex items-center rounded-md bg-vauban-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500">
-                                <svg class="-ml-0.5 mr-1 h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/>
-                                </svg>
-                                Connect
+                            {# Connect opens the session from here, as the row
+                               of the asset list does: same endpoints, same two
+                               modals (included once at the end of this page),
+                               same three branches. Keep it in step with
+                               `assets/asset_list.html`; a source pin compares
+                               them. `/assets/{uuid}` itself is a constant 410:
+                               nothing may link to it. #}
+                            <span data-testid="connect-{{ req.uuid }}" class="inline-flex">
+                            {% if req.is_iacs %}
+                            {% if iacs_connect_allowed %}
+                            {% if user_has_active_ews %}
+                            <form hx-post="/assets/{{ req.asset_uuid }}/connect-iacs"
+                                  hx-swap="none"
+                                  x-data="csrf"
+                                  class="inline">
+                                <input type="hidden" name="csrf_token" x-model="token" />
+                                <button type="submit"
+                                        class="rounded-md bg-vauban-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600 [.htmx-request_&]:opacity-50 [.htmx-request_&]:cursor-wait">
+                                    <span class="[.htmx-request_&]:hidden">Connect</span>
+                                    <span class="hidden [.htmx-request_&]:inline">Opening tunnel...</span>
+                                </button>
+                            </form>
+                            {% else %}
+                            <a href="/iacs/onboard"
+                               title="No active Engineering Workstation -- onboard one to open IACS tunnels."
+                               class="inline-flex items-center rounded-md border border-dashed border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 px-3 py-1.5 text-sm font-semibold text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/50">
+                                Onboard EWS first
                             </a>
+                            {% endif %}
+                            {% endif %}
+                            {% else if require_justification || req.require_mfa || req.asset_type == "mcp" %}
+                            <button type="button"
+                                    @click="$store.justificationModal.open('{{ req.asset_uuid }}', '{{ req.asset_type }}', {{ req.require_mfa }}, {{ require_justification || req.asset_type == "mcp" }})"
+                                    class="rounded-md bg-vauban-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600">
+                                Connect
+                            </button>
+                            {% else %}
+                            <form hx-post="/assets/{{ req.asset_uuid }}/{%- if req.asset_type == "rdp" -%}connect-rdp{%- else if req.asset_type == "mcp" -%}connect-mcp{%- else -%}connect{%- endif -%}"
+                                  hx-swap="none"
+                                  x-data="csrf"
+                                  class="inline">
+                                <input type="hidden" name="csrf_token" x-model="token" />
+                                <button type="submit"
+                                        class="rounded-md bg-vauban-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-vauban-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-vauban-600 [.htmx-request_&]:opacity-50 [.htmx-request_&]:cursor-wait">
+                                    <span class="[.htmx-request_&]:hidden">Connect</span>
+                                    <span class="hidden [.htmx-request_&]:inline">Connecting...</span>
+                                </button>
+                            </form>
+                            {% endif %}
+                            </span>
                             {% endif %}
                             {% if let Some(did) = req.decision_id.as_ref() %}
                             <span class="font-mono text-xs text-gray-500 dark:text-gray-400">{{ did }}</span>
@@ -545,6 +588,13 @@
         </div>
     </div>
     {% endif %}
+
+    {# The two modals the Connect control drives, as on the asset list.
+       Included once per page; the Alpine stores carry the asset. The
+       access-request modal is here because a connect handler answers
+       `show-access-request-modal` when the approval has lapsed. #}
+    {% include "sessions/access_request_modal.html" %}
+    {% include "sessions/justification_modal.html" %}
 </div>
 {% endblock %}
 </parameter>

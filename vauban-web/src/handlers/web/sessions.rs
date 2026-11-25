@@ -2939,6 +2939,8 @@ pub async fn my_requests(
         Option<String>,
         Option<i32>,
         Option<String>,
+        i32,
+        uuid::Uuid,
     )> = {
         let mut rows_query = proxy_sessions::table
             .inner_join(schema_assets::table)
@@ -2972,6 +2974,8 @@ pub async fn my_requests(
                 users::username.nullable(),
                 proxy_sessions::max_session_duration,
                 proxy_sessions::decision_id,
+                schema_assets::id,
+                schema_assets::uuid,
             ))
             .order(proxy_sessions::created_at.desc())
             .limit(window.limit_i64())
@@ -3002,6 +3006,29 @@ pub async fn my_requests(
                 .collect()
         };
 
+    // The Connect control of an approved request is the asset list's:
+    // same endpoints, same modals. It needs the same per-asset MFA hint
+    // and the same page-level IACS precondition. Only approved rows
+    // render the control, so only their assets are looked up.
+    let approved_asset_ids: Vec<i32> = {
+        let mut ids: Vec<i32> = requests_data
+            .iter()
+            .filter(|r| r.5 == "approved")
+            .map(|r| r.12)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    };
+    let mfa_assets = crate::services::access_request::mfa_required_asset_ids(
+        &mut conn,
+        user_id,
+        &approved_asset_ids,
+    )
+    .await;
+    let user_has_active_ews =
+        crate::services::access_request::user_has_active_ews(&mut conn, user_id).await;
+
     let requests: Vec<crate::templates::sessions::my_requests::MyRequestItem> = requests_data
         .into_iter()
         .map(
@@ -3018,6 +3045,8 @@ pub async fn my_requests(
                 approved_by,
                 max_session_duration,
                 decision_id,
+                asset_id,
+                asset_uuid,
             )| {
                 let contestation = decision_id.as_ref().and_then(|did| contested.get(did)).map(
                     |(uuid, status)| crate::templates::sessions::my_requests::MyContestation {
@@ -3027,6 +3056,10 @@ pub async fn my_requests(
                 );
                 crate::templates::sessions::my_requests::MyRequestItem {
                     uuid: uuid.to_string(),
+                    asset_uuid: asset_uuid.to_string(),
+                    is_iacs: crate::models::asset::AssetType::try_parse(&asset_type)
+                        .is_some_and(|t| t.is_iacs()),
+                    require_mfa: mfa_assets.contains(&asset_id),
                     asset_name,
                     asset_hostname,
                     asset_type,
@@ -3088,6 +3121,9 @@ pub async fn my_requests(
         requests,
         pagination,
         iacs_visible,
+        require_justification: state.config.security.require_justification,
+        iacs_connect_allowed: perms.assets_connect_iacs,
+        user_has_active_ews,
         iacs_request_allowed,
         ews_items,
         csrf_token: csrf_token_for_forms,

@@ -7,9 +7,18 @@ use askama::Template;
 #[derive(Debug, Clone)]
 pub struct MyRequestItem {
     pub uuid: String,
+    /// The asset's UUID (not the request's): the Connect control of an
+    /// approved request posts to `/assets/{asset_uuid}/connect*`, the
+    /// endpoints the asset list uses.
+    pub asset_uuid: String,
     pub asset_name: String,
     pub asset_hostname: String,
     pub asset_type: String,
+    /// Pre-resolved `AssetType::is_iacs()`, as on the asset list.
+    pub is_iacs: bool,
+    /// An access rule of the caller requires a second factor for this
+    /// asset. Display hint, as on the asset list; the server decides.
+    pub require_mfa: bool,
     pub session_type: String,
     pub status: String,
     pub justification: Option<String>,
@@ -60,18 +69,6 @@ impl MyRequestItem {
         self.status == "approved"
     }
 
-    /// Where the Connect button of an approved request leads: the asset
-    /// list, narrowed to this asset by name. The list row carries the
-    /// real Connect control (justification, MFA, IACS and MCP branches).
-    /// There is no per-asset page in the user zone: `/assets/{uuid}` is a
-    /// constant 410, and `uuid` here is the request's, not the asset's.
-    pub fn connect_url(&self) -> String {
-        let query: String = url::form_urlencoded::Serializer::new(String::new())
-            .append_pair("search", &self.asset_name)
-            .finish();
-        format!("/assets?{query}")
-    }
-
     /// Human-readable duration display (e.g. "2h", "30min", "Unlimited").
     pub fn duration_display(&self) -> String {
         crate::utils::duration_display(self.max_session_duration)
@@ -85,6 +82,9 @@ mod tests {
     fn make_item(status: &str, duration: Option<i32>) -> MyRequestItem {
         MyRequestItem {
             uuid: "uuid-123".to_string(),
+            asset_uuid: "asset-uuid-1".to_string(),
+            is_iacs: false,
+            require_mfa: false,
             asset_name: "Server A".to_string(),
             asset_hostname: "srv-a.local".to_string(),
             asset_type: "linux".to_string(),
@@ -310,64 +310,154 @@ mod tests {
         assert_eq!(item.approved_by.as_deref(), Some("admin"));
     }
 
-    // ---- connect_url ----
+    // ---- Connect control of an approved request ----
 
-    #[test]
-    fn test_connect_url_targets_the_asset_list_by_name() {
-        let item = make_item("approved", None);
-        assert_eq!(item.connect_url(), "/assets?search=Server+A");
+    fn render_requests(
+        requests: Vec<MyRequestItem>,
+        require_justification: bool,
+        iacs_connect_allowed: bool,
+        user_has_active_ews: bool,
+    ) -> String {
+        let template = MyRequestsTemplate {
+            title: "My Requests".to_string(),
+            user: None,
+            vauban: crate::templates::base::VaubanConfig {
+                brand_name: "VAUBAN".to_string(),
+                brand_logo: None,
+                theme: "dark".to_string(),
+                ..Default::default()
+            },
+            messages: Vec::new(),
+            language_code: "en".to_string(),
+            sidebar_content: None,
+            header_user: None,
+            requests,
+            pagination: None,
+            iacs_visible: false,
+            require_justification,
+            iacs_connect_allowed,
+            user_has_active_ews,
+            iacs_request_allowed: false,
+            ews_items: Vec::new(),
+            csrf_token: "tk".to_string(),
+            search: None,
+            status_filter: None,
+            statuses: crate::services::status_vocab::MY_REQUESTS.options(),
+            ews_search: None,
+            ews_state_filter: None,
+        };
+        template.render().expect("template should render")
     }
 
-    /// The user zone has no per-asset page: `/assets/{uuid}` answers a
-    /// constant 410. The Connect button must not lead there, and must
-    /// not put the request's UUID in an asset path.
-    #[test]
-    fn test_connect_url_is_not_the_removed_asset_detail_page() {
-        let item = make_item("approved", None);
-        let url = item.connect_url();
-        assert!(!url.starts_with("/assets/"), "got {url}");
-        assert!(!url.contains(&item.uuid), "got {url}");
-    }
-
-    #[test]
-    fn test_connect_url_encodes_reserved_characters() {
+    fn approved(asset_type: &str) -> MyRequestItem {
         let mut item = make_item("approved", None);
-        item.asset_name = "a&b=c #1?\"<x>".to_string();
-        let url = item.connect_url();
-        let query = url.strip_prefix("/assets?").expect("asset list URL");
-        for forbidden in ['&', '#', '?', '"', '<', '>', ' '] {
-            assert!(
-                !query.contains(forbidden),
-                "{forbidden:?} left raw in {url}"
-            );
-        }
-        let pairs: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes())
-            .into_owned()
-            .collect();
-        assert_eq!(pairs, vec![("search".to_string(), item.asset_name.clone())]);
+        item.asset_type = asset_type.to_string();
+        item
     }
 
-    proptest::proptest! {
-        /// For any asset name the URL stays on the asset list, carries
-        /// exactly one `search` parameter, and that parameter decodes
-        /// back to the name.
-        #[test]
-        fn proptest_connect_url_round_trips_any_asset_name(name in ".{0,64}") {
-            let mut item = make_item("approved", None);
-            item.asset_name = name.clone();
-            let url = item.connect_url();
-            let query = url.strip_prefix("/assets?");
-            proptest::prop_assert!(query.is_some(), "not an asset list URL: {}", url);
-            let query = query.unwrap_or_default();
-            proptest::prop_assert!(
-                !query.contains(['&', '#', '?', '"', '<', '>', ' ', '/']),
-                "reserved character left raw in {}", url
+    #[test]
+    fn test_connect_posts_to_the_asset_connect_endpoint_per_type() {
+        for (asset_type, endpoint) in [("ssh", "connect"), ("rdp", "connect-rdp")] {
+            let html = render_requests(vec![approved(asset_type)], false, false, false);
+            assert!(
+                html.contains(&format!(r#"hx-post="/assets/asset-uuid-1/{endpoint}""#)),
+                "{asset_type}: Connect must post to /assets/<asset uuid>/{endpoint}"
             );
-            let pairs: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes())
-                .into_owned()
-                .collect();
-            proptest::prop_assert_eq!(pairs, vec![("search".to_string(), name)]);
+            assert!(
+                !html.contains(r#"@click="$store.justificationModal.open("#),
+                "{asset_type}: no modal when nothing is asked"
+            );
         }
+    }
+
+    /// The path carries the asset's UUID. The request's UUID in an asset
+    /// path was the defect: `/assets/{uuid}` is a constant 410.
+    #[test]
+    fn test_connect_never_puts_the_request_uuid_in_an_asset_path() {
+        for (justification, mfa) in [(false, false), (true, false), (false, true)] {
+            let mut item = approved("ssh");
+            item.require_mfa = mfa;
+            let html = render_requests(vec![item], justification, false, false);
+            assert!(!html.contains("/assets/uuid-123"));
+            assert!(!html.contains(r#"href="/assets/"#));
+        }
+    }
+
+    #[test]
+    fn test_connect_opens_the_justification_modal_when_required() {
+        let html = render_requests(vec![approved("ssh")], true, false, false);
+        assert!(
+            html.contains(
+                "$store.justificationModal.open(&#39;asset-uuid-1&#39;, &#39;ssh&#39;, false, true)"
+            ) || html
+                .contains("$store.justificationModal.open('asset-uuid-1', 'ssh', false, true)")
+        );
+        assert!(!html.contains(r#"hx-post="/assets/asset-uuid-1/connect""#));
+    }
+
+    #[test]
+    fn test_connect_opens_the_code_modal_when_the_rule_requires_mfa() {
+        let mut item = approved("rdp");
+        item.require_mfa = true;
+        let html = render_requests(vec![item], false, false, false);
+        assert!(
+            html.contains("$store.justificationModal.open('asset-uuid-1', 'rdp', true, false)")
+        );
+    }
+
+    #[test]
+    fn test_connect_for_mcp_always_goes_through_the_modal() {
+        let html = render_requests(vec![approved("mcp")], false, false, false);
+        assert!(
+            html.contains("$store.justificationModal.open('asset-uuid-1', 'mcp', false, true)")
+        );
+    }
+
+    #[test]
+    fn test_iacs_connect_follows_the_three_way_gate() {
+        let iacs = || {
+            let mut item = approved("iacs_modbus");
+            item.is_iacs = true;
+            item
+        };
+        let form = r#"hx-post="/assets/asset-uuid-1/connect-iacs""#;
+
+        let html = render_requests(vec![iacs()], false, true, true);
+        assert!(html.contains(form), "allowed + workstation: tunnel form");
+
+        let html = render_requests(vec![iacs()], false, true, false);
+        assert!(!html.contains(form));
+        assert!(
+            html.contains(r#"href="/iacs/onboard""#),
+            "no workstation: onboard link"
+        );
+
+        let html = render_requests(vec![iacs()], true, false, true);
+        assert!(!html.contains(form), "not allowed: nothing");
+        assert!(!html.contains(r#"href="/iacs/onboard""#));
+        assert!(!html.contains(r#"@click="$store.justificationModal.open("#));
+    }
+
+    #[test]
+    fn test_only_an_approved_request_carries_a_connect_control() {
+        for status in ["pending", "rejected", "revoked", "expired", "active"] {
+            let html = render_requests(vec![make_item(status, None)], true, true, true);
+            assert!(
+                !html.contains(r#"data-testid="connect-uuid-123""#),
+                "{status}: no Connect control"
+            );
+        }
+        let html = render_requests(vec![make_item("approved", None)], false, false, false);
+        assert!(html.contains(r#"data-testid="connect-uuid-123""#));
+    }
+
+    /// The Connect control drives the two modals of the asset list; the
+    /// page must carry them, once.
+    #[test]
+    fn test_page_includes_both_connect_modals_once() {
+        let html = render_requests(vec![approved("ssh"), approved("rdp")], true, false, false);
+        assert_eq!(html.matches(r#"id="justification-modal-text""#).count(), 1);
+        assert!(html.contains("$store.accessModal.show = false"));
     }
 
     // ---- template render ----
@@ -401,6 +491,9 @@ mod tests {
             ],
             pagination: None,
             iacs_visible: false,
+            require_justification: false,
+            iacs_connect_allowed: false,
+            user_has_active_ews: false,
             iacs_request_allowed: false,
             ews_items: Vec::new(),
             csrf_token: "tk".to_string(),
@@ -414,8 +507,8 @@ mod tests {
         let html = template.render().expect("template should render");
         assert!(html.contains("1h"), "should show 1h duration");
         assert!(
-            html.contains(r#"href="/assets?search=Server+A""#),
-            "approved request must link to the asset list"
+            html.contains(r#"hx-post="/assets/asset-uuid-1/connect""#),
+            "approved request must carry the direct Connect form"
         );
         assert!(
             !html.contains(r#"href="/assets/"#),
@@ -476,6 +569,9 @@ mod tests {
                 requests: vec![make_item(status, Some(3600))],
                 pagination: None,
                 iacs_visible: false,
+                require_justification: false,
+                iacs_connect_allowed: false,
+                user_has_active_ews: false,
                 iacs_request_allowed: false,
                 ews_items: Vec::new(),
                 csrf_token: "tk".to_string(),
@@ -524,6 +620,9 @@ mod tests {
             requests: Vec::new(),
             pagination: None,
             iacs_visible: false,
+            require_justification: false,
+            iacs_connect_allowed: false,
+            user_has_active_ews: false,
             iacs_request_allowed: false,
             ews_items: Vec::new(),
             csrf_token: "tk".to_string(),
@@ -568,6 +667,9 @@ mod tests {
             requests: items,
             pagination,
             iacs_visible: false,
+            require_justification: false,
+            iacs_connect_allowed: false,
+            user_has_active_ews: false,
             iacs_request_allowed: false,
             ews_items: Vec::new(),
             csrf_token: "tk".to_string(),
@@ -731,6 +833,14 @@ pub struct MyRequestsTemplate {
     /// suppressed -- including the heading -- and `ews_items` is
     /// guaranteed empty by the handler.
     pub iacs_visible: bool,
+    /// `[security] require_justification`: the Connect control of an
+    /// approved request opens the justification modal, as on the list.
+    pub require_justification: bool,
+    /// Casbin + kill-switch (`assets:connect_iacs`): without it the IACS
+    /// Connect control is not rendered at all.
+    pub iacs_connect_allowed: bool,
+    /// The caller owns an active Engineering Workstation.
+    pub user_has_active_ews: bool,
     /// True when the caller may submit / edit / cancel / auto-offboard
     /// (`iacs_request`). Drives the "Onboard EWS" CTA and the per-row
     /// owner-actionable buttons.

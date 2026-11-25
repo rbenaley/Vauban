@@ -493,3 +493,135 @@ fn no_template_or_handler_targets_the_removed_asset_detail_page() {
         "link or redirect to the removed /assets/{{uuid}} page in: {offenders:?}"
     );
 }
+
+/// Issue #45: from My Requests, Connect on an approved request opens
+/// the session the way the asset list does. Both pages carry the same
+/// form, posting to `/assets/{asset uuid}/connect`, and that endpoint
+/// answers. The button used to be a link to `/assets/{request uuid}`,
+/// the removed detail page (constant 410).
+#[tokio::test]
+async fn my_requests_connect_is_the_asset_list_connect() {
+    let app = TestApp::spawn().await;
+    let mut conn = app.get_conn().await;
+
+    let admin_id = create_simple_admin_user(&mut conn, &unique_name("issue45_c_admin")).await;
+    let user_name = unique_name("issue45_c_user");
+    let user_id = create_simple_user(&mut conn, &user_name).await;
+    let user_uuid = get_user_uuid(&mut conn, user_id).await;
+
+    let ug = create_test_vauban_group(&mut conn, &unique_name("issue45_c_ug")).await;
+    add_user_to_vauban_group(&mut conn, user_id, &ug).await;
+    let ag = create_test_asset_group(&mut conn, &unique_name("issue45_c_ag")).await;
+    let asset_id =
+        create_test_asset_in_group(&mut conn, &unique_name("issue45_c_asset"), admin_id, &ag).await;
+    let asset_uuid = get_asset_uuid(&mut conn, asset_id).await;
+    // Approval required, no MFA; the request below is approved.
+    create_test_access_rule_with_constraints(&mut conn, &ug, &ag, &["ssh"], false, true, Some(600))
+        .await;
+    let grant_uuid = create_approved_session(&mut conn, user_id, asset_id, Some(600)).await;
+
+    let token = app
+        .generate_test_token(&user_uuid.to_string(), &user_name, false, false)
+        .await;
+    let csrf = app.generate_csrf_token();
+    let cookie = format!("access_token={}; __vauban_csrf={}", token, csrf);
+
+    let connect_form = format!("hx-post=\"/assets/{}/connect\"", asset_uuid);
+
+    let list = app
+        .server
+        .get("/assets")
+        .add_header(COOKIE, cookie.clone())
+        .await;
+    assert_status(&list, 200);
+    let list_body = list.text();
+    let list_uses_modal =
+        list_body.contains(&format!("$store.justificationModal.open('{}'", asset_uuid));
+    assert!(
+        list_body.contains(&connect_form) || list_uses_modal,
+        "the asset list must offer Connect for the approved asset"
+    );
+
+    let mine = app
+        .server
+        .get("/sessions/my-requests")
+        .add_header(COOKIE, cookie.clone())
+        .await;
+    assert_status(&mine, 200);
+    let mine_body = mine.text();
+    assert!(
+        mine_body.contains(&format!("data-testid=\"connect-{}\"", grant_uuid)),
+        "the approved request must carry a Connect control"
+    );
+    // Same control on both pages: the direct form, or the modal button.
+    assert_eq!(
+        mine_body.contains(&connect_form),
+        list_body.contains(&connect_form),
+        "My Requests and the asset list must offer the same direct Connect form"
+    );
+    assert_eq!(
+        mine_body.contains(&format!("$store.justificationModal.open('{}'", asset_uuid)),
+        list_body.contains(&format!("$store.justificationModal.open('{}'", asset_uuid)),
+        "My Requests and the asset list must open the same modal"
+    );
+    assert!(
+        !mine_body.contains(&format!("/assets/{}", grant_uuid)),
+        "the request UUID must not appear in an asset path"
+    );
+    assert!(
+        mine_body.contains("id=\"justification-modal-text\"")
+            || mine_body.contains("justificationModal.show"),
+        "My Requests must include the modals the Connect control drives"
+    );
+
+    // The endpoint the control posts to answers; it is not the tombstone.
+    let response = app
+        .server
+        .post(&format!("/assets/{}/connect", asset_uuid))
+        .add_header(COOKIE, cookie)
+        .add_header(
+            axum::http::header::HeaderName::from_static("hx-request"),
+            "true",
+        )
+        .form(&[
+            ("csrf_token", csrf.as_str()),
+            ("justification", "issue45 e2e: connect from My Requests"),
+        ])
+        .await;
+    let status = response.status_code().as_u16();
+    assert_ne!(status, 410, "Connect must not reach the 410 tombstone");
+    assert_ne!(status, 404, "the connect endpoint must be mounted");
+    assert!(
+        !response.text().contains("Asset detail page has moved"),
+        "Connect must not answer with the tombstone body"
+    );
+}
+
+/// Source pin: the Connect control of My Requests stays in step with
+/// the one of the asset list. Same endpoints, same modal call, same two
+/// modal includes. A change on one side alone fails here.
+#[test]
+fn my_requests_connect_control_matches_the_asset_list() {
+    let list = include_str!("../../templates/assets/asset_list.html");
+    let mine = include_str!("../../templates/sessions/my_requests.html")
+        .replace("req.asset_uuid", "asset.uuid")
+        .replace("req.", "asset.");
+
+    for snippet in [
+        // direct form: endpoint switch on the asset type
+        r#"<form hx-post="/assets/{{ asset.uuid }}/{%- if asset.asset_type == "rdp" -%}connect-rdp{%- else if asset.asset_type == "mcp" -%}connect-mcp{%- else -%}connect{%- endif -%}""#,
+        // branch that sends Connect through the modal
+        r#"{% else if require_justification || asset.require_mfa || asset.asset_type == "mcp" %}"#,
+        r#"@click="$store.justificationModal.open('{{ asset.uuid }}', '{{ asset.asset_type }}', {{ asset.require_mfa }}, {{ require_justification || asset.asset_type == "mcp" }})""#,
+        // IACS tunnel form and its gates
+        r#"<form hx-post="/assets/{{ asset.uuid }}/connect-iacs""#,
+        "{% if iacs_connect_allowed %}",
+        r#"<a href="/iacs/onboard""#,
+        // the two modals
+        r#"{% include "sessions/access_request_modal.html" %}"#,
+        r#"{% include "sessions/justification_modal.html" %}"#,
+    ] {
+        assert!(list.contains(snippet), "asset_list.html lost: {snippet}");
+        assert!(mine.contains(snippet), "my_requests.html lost: {snippet}");
+    }
+}

@@ -198,6 +198,78 @@ pub fn request_modal_response(
 pub const APPROVAL_REQUIRED_MESSAGE: &str =
     "Access requires approval. Please submit an access request from the /assets catalogue.";
 
+/// Among `asset_ids`, the assets for which an active access rule of
+/// `user_id` requires a second factor at connect time. A rule on the
+/// virtual "All assets" group covers every id.
+///
+/// Display hint only: it decides whether a Connect button opens the
+/// authenticator-code modal straight away. The connect handlers stay the
+/// authority and answer `show-connect-mfa-modal` when the code is
+/// missing. Same predicate as the asset list (`handlers::web::assets`).
+pub async fn mfa_required_asset_ids(
+    conn: &mut diesel_async::AsyncPgConnection,
+    user_id: i32,
+    asset_ids: &[i32],
+) -> std::collections::HashSet<i32> {
+    use crate::schema::{access_rules, asset_asset_groups, user_groups};
+    use diesel::{ExpressionMethods, JoinOnDsl, QueryDsl};
+    use diesel_async::RunQueryDsl;
+
+    if asset_ids.is_empty() {
+        return std::collections::HashSet::new();
+    }
+
+    let virtual_id = crate::services::virtual_group::virtual_asset_group_id();
+    let virtual_rules: i64 = access_rules::table
+        .inner_join(user_groups::table.on(user_groups::group_id.eq(access_rules::user_group_id)))
+        .filter(user_groups::user_id.eq(user_id))
+        .filter(access_rules::is_active.eq(true))
+        .filter(access_rules::require_mfa.eq(true))
+        .filter(access_rules::asset_group_id.eq(virtual_id))
+        .select(diesel::dsl::count_star())
+        .first(conn)
+        .await
+        .unwrap_or(0);
+    if virtual_rules > 0 {
+        return asset_ids.iter().copied().collect();
+    }
+
+    let ids: Vec<i32> = access_rules::table
+        .inner_join(
+            asset_asset_groups::table
+                .on(asset_asset_groups::asset_group_id.eq(access_rules::asset_group_id)),
+        )
+        .inner_join(user_groups::table.on(user_groups::group_id.eq(access_rules::user_group_id)))
+        .filter(user_groups::user_id.eq(user_id))
+        .filter(access_rules::is_active.eq(true))
+        .filter(access_rules::require_mfa.eq(true))
+        .filter(asset_asset_groups::asset_id.eq_any(asset_ids))
+        .select(asset_asset_groups::asset_id)
+        .distinct()
+        .load(conn)
+        .await
+        .unwrap_or_default();
+    ids.into_iter().collect()
+}
+
+/// True when `user_id` owns an Engineering Workstation that is neither
+/// disabled nor offboarded: the precondition of an IACS Connect button.
+pub async fn user_has_active_ews(conn: &mut diesel_async::AsyncPgConnection, user_id: i32) -> bool {
+    use crate::schema::ews;
+    use diesel::{ExpressionMethods, QueryDsl};
+    use diesel_async::RunQueryDsl;
+
+    let count: i64 = ews::table
+        .filter(ews::user_id.eq(user_id))
+        .filter(ews::disabled_at.is_null())
+        .filter(ews::offboarded_at.is_null())
+        .select(diesel::dsl::count_star())
+        .first(conn)
+        .await
+        .unwrap_or(0);
+    count > 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

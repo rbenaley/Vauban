@@ -278,6 +278,9 @@ fn approval_list_select_marks_every_vocab_value_selected() {
 
 fn make_my_requests(status_filter: Option<String>) -> MyRequestsTemplate {
     MyRequestsTemplate {
+        require_justification: false,
+        iacs_connect_allowed: false,
+        user_has_active_ews: false,
         title: "My Requests".to_string(),
         user: Some(admin_user()),
         vauban: vauban_cfg(),

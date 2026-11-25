@@ -1278,6 +1278,9 @@ fn deleted_assets_list_unfiltered_empty_state_keeps_audit_wording() {
 
 fn one_my_request() -> MyRequestItem {
     MyRequestItem {
+        asset_uuid: "asset-uuid-1".to_string(),
+        is_iacs: false,
+        require_mfa: false,
         uuid: "req-1".to_string(),
         asset_name: "prod-db-01".to_string(),
         asset_hostname: "prod-db-01.example.com".to_string(),
@@ -1319,6 +1322,9 @@ fn make_my_requests(
     ews_state_filter: Option<String>,
 ) -> MyRequestsTemplate {
     MyRequestsTemplate {
+        require_justification: false,
+        iacs_connect_allowed: false,
+        user_has_active_ews: false,
         title: "My Requests".to_string(),
         user: Some(admin_user()),
         vauban: vauban_cfg(),
