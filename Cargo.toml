@@ -29,7 +29,7 @@ members = [
 default-members = ["vauban-supervisor"]
 
 [workspace.package]
-version = "0.9.62"
+version = "0.9.63"
 edition = "2024"
 rust-version = "1.98"
 authors = ["Richard Ben Aleya"]
